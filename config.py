@@ -23,3 +23,7 @@ LLM_MODE = "mock"
 LLM_BASE_URL = "https://<사내-llm-호스트>/v1"  # 운영 시 교체
 LLM_API_KEY = "dummy"  # 사내 서빙이 키 불요면 임의값
 LLM_MODEL = "<사내-모델명>"
+
+# 분석 루프 통제 (analysis_loop_design.md 부품 4b)
+MAX_LOOPS = 6              # 가드레일: 최대 순환 횟수 (무한루프 차단)
+CONFIDENCE_THRESHOLD = 0.8 # finalize 승인 임계 확신도

@@ -1,16 +1,25 @@
-"""LangGraph 상태 정의.
+"""LangGraph 상태 정의 (누적형).
 
-last_wafer_id 는 시나리오 1에서 검출한 wafer 를 시나리오 2("그 wafer")가
-이어받기 위한 멀티턴 연결 고리다.
+분석 루프는 "현재까지 결과를 보고" 다음 분석을 판단하므로,
+messages/findings 는 덮어쓰기가 아니라 reducer 로 누적한다.
+findings 는 감사(audit) 기록 — 매 tool 실행의 {loop, tool, args, result, thought}
+가 쌓여 리포트의 분석 근거가 된다.
 """
 
-from typing import Any, Optional, TypedDict
+import operator
+from typing import Annotated, Any, TypedDict
+
+from langgraph.graph.message import add_messages
 
 
 class AgentState(TypedDict, total=False):
-    question: str               # 사용자 질문
-    intent: str                 # 의도 파악 결과 (라우팅 레이블)
-    tool_result: Any            # 도구 실행 결과 (구조화 dict)
-    last_wafer_id: Optional[str]  # 턴 간 이어지는 대상 wafer (시나리오 1→2)
-    last_similar_wafers: list[str]  # 직전 유사 검색 결과 (시나리오 2→3 확장용)
-    answer: str                 # 최종 자연어 답변
+    question: str                                   # 사용자 질문
+    messages: Annotated[list, add_messages]         # LLM 대화 누적 (루프의 문맥)
+    findings: Annotated[list[dict], operator.add]   # 감사 기록 누적 (분석 근거)
+    target_wafer: str                               # 현황파악이 지목한 분석 대상
+    status_summary: str                             # 현황파악 요약 (리포트 재료)
+    loop_count: int                                 # 순환 횟수 (가드레일)
+    finalize_accepted: bool                         # 게이트 승인 여부
+    final_hypothesis: str                           # 승인된 원인 가설
+    final_confidence: float                         # 승인 시 확신도
+    report: str                                     # 최종 리포트
