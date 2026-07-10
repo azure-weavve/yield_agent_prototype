@@ -1,88 +1,123 @@
-"""LangGraph 노드: 의도 파악 / 도구 실행(경로별) / 답변 생성.
+"""LangGraph 노드: 현황파악(고정) / 분석(LLM) / 도구 실행+게이트 / 리포팅(고정).
 
-- 의도 파악·답변 생성 = LLM (해석·표현)
-- 도구 실행 = 결정론적 함수 (정확한 수치)
-라우팅은 의도 파악 결과를 따라 build.py 의 conditional edge 가 경로별 도구 노드로 분기.
+- 골격(status, report)은 고정 — 순서는 개발자가 못박는다.
+- analyze ⇄ tools 순환 구간만 LLM 이 자율 판단한다.
+- tools 노드는 세 가지를 한다:
+    (1) 분석 tool 실행 (수치는 여기서만 나온다)
+    (2) 감사 기록: 매 실행을 findings 에 {loop, tool, args, result, thought} 로 남긴다
+    (3) finalize 게이트: LLM 의 종료 제안을 confidence 로 승인/반려 (LLM 은 제안, 코드가 결정)
 """
 
+import json
+
+from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+
+import config
 from llm.client import get_llm
 from tools import yield_tools as yt
-from tools.eds_search import get_searcher
+from tools.agent_tools import TOOLS_BY_NAME
 
 _llm = get_llm()
-_searcher = None  # hnswlib 인덱스 로드는 무거우므로 최초 사용 시 1회만
+
+ANALYZE_SYSTEM_PROMPT = """너는 반도체 수율 분석 전문가다. 대상 wafer 의 불량 원인을 특정 공정 단계(가능하면 장비)까지 좁혀라.
+
+규칙:
+- 매 단계, 지금까지의 tool 결과로 원인을 확신할 수 있는지 스스로 평가하라.
+- 확신이 부족하면 근거를 좁힐 tool 을 하나 더 호출하라. tool 호출 시 현재 가설과 이 tool 을 부르는 이유를 한두 문장으로 함께 서술하라 (분석 기록으로 남는다).
+- 원인을 좁혔고 근거가 충분하면 finalize(hypothesis, confidence) 로 종료를 제안하라. 확신도가 낮으면 반려된다.
+- 수치는 tool 결과를 그대로 인용하고 절대 임의로 만들지 마라."""
 
 
-def _searcher_lazy():
-    global _searcher
-    if _searcher is None:
-        _searcher = get_searcher()
-    return _searcher
-
-
-# ---------------------------------------------------------------- 의도 파악 노드 (LLM)
-def intent_node(state: dict) -> dict:
-    return {"intent": _llm.classify_intent(state["question"])}
-
-
-# ---------------------------------------------------------------- 도구 노드: 수율 조회 (시나리오 1)
-def yield_tool_node(state: dict) -> dict:
+# ------------------------------------------------ 고정 골격: 현황 파악
+def status_node(state: dict) -> dict:
     lots = yt.find_low_yield_lots()
-    # 가장 수율 낮은 lot 의 worst wafer 를 다음 턴(시나리오 2)으로 넘긴다.
-    wafer_id = lots[0]["worst_wafer"]["wafer_id"] if lots else state.get("last_wafer_id")
+    target = lots[0]["worst_wafer"]["wafer_id"]
+    summary = _summarize_lots(lots)
+    seed = [
+        SystemMessage(content=ANALYZE_SYSTEM_PROMPT),
+        HumanMessage(content=(
+            f"현황:\n{summary}\n\n대상 wafer: {target}\n질문: {state['question']}"
+        )),
+    ]
     return {
-        "tool_result": {"kind": "low_yield_lots", "lots": lots},
-        "last_wafer_id": wafer_id,
+        "messages": seed,
+        "target_wafer": target,
+        "status_summary": summary,
+        "findings": [{
+            "loop": 0, "tool": "find_low_yield_lots", "args": {},
+            "result": lots, "thought": "현황 파악 (고정 골격)",
+        }],
     }
 
 
-# ---------------------------------------------------------------- 도구 노드: 유사 검색 (시나리오 2)
-def similar_tool_node(state: dict) -> dict:
-    wafer_id = state.get("last_wafer_id")
-    if not wafer_id:
-        return {"tool_result": {"kind": "no_target"}}
-
-    results = _searcher_lazy().search(wafer_id, k=5)
-    return {
-        "tool_result": {"kind": "similar", "wafer_id": wafer_id, "results": results},
-        "last_similar_wafers": [r["wafer_id"] for r in results],
-    }
-
-
-# ---------------------------------------------------------------- 답변 생성 노드 (LLM)
-def answer_node(state: dict) -> dict:
-    context = _serialize(state["tool_result"])
-    return {"answer": _llm.generate_answer(state["question"], context)}
+def _summarize_lots(lots: list[dict]) -> str:
+    if not lots:
+        return "수율 임계 미만인 lot 없음."
+    lines = []
+    for lot in lots:
+        w = lot["worst_wafer"]
+        lines.append(
+            f"- {lot['lot_id']}: 평균 수율 {lot['avg_yield']} ({lot['wafer_count']}장), "
+            f"최저 wafer {w['wafer_id']} (수율 {w['yield']}, 불량 {w['defect_type']})"
+        )
+    return "\n".join(lines)
 
 
-def _serialize(tool_result: dict) -> str:
-    """도구 결과(구조화 dict) -> LLM 에 넘길 읽기 좋은 문자열."""
-    kind = tool_result.get("kind")
+# ------------------------------------------------ 자유 루프: 분석 (LLM)
+def analyze_node(state: dict) -> dict:
+    ai = _llm.analyze_step(state["messages"])
+    return {"messages": [ai], "loop_count": state.get("loop_count", 0) + 1}
 
-    if kind == "low_yield_lots":
-        lots = tool_result["lots"]
-        if not lots:
-            return "수율 임계 미만인 lot 은 없습니다."
-        lines = ["수율 임계 미만 lot (낮은 순):"]
-        for lot in lots:
-            w = lot["worst_wafer"]
-            lines.append(
-                f"- {lot['lot_id']}: 평균 수율 {lot['avg_yield']} "
-                f"({lot['wafer_count']}장), 최저 wafer {w['wafer_id']} "
-                f"(수율 {w['yield']}, 불량 {w['defect_type']})"
-            )
-        return "\n".join(lines)
 
-    if kind == "similar":
-        results = tool_result["results"]
-        if not results:
-            return f"{tool_result['wafer_id']} 와 유사한 과거 사례를 찾지 못했습니다."
-        lines = [f"{tool_result['wafer_id']} 와 유사한 과거 wafer (유사도 순):"]
-        for r in results:
-            lines.append(f"- {r['wafer_id']} (유사도 {r['similarity']})")
-        return "\n".join(lines)
+# ------------------------------------------------ 자유 루프: 도구 실행 + 게이트
+def tools_node(state: dict) -> dict:
+    ai = state["messages"][-1]
+    loop = state["loop_count"]
+    out_msgs, findings, update = [], [], {}
 
-    if kind == "no_target":
-        return "유사 검색의 기준이 될 wafer 가 없습니다. 먼저 대상 wafer 를 찾아야 합니다."
+    for call in ai.tool_calls:
+        if call["name"] == "finalize":
+            verdict = _finalize_gate(call["args"], loop, update)
+            out_msgs.append(ToolMessage(verdict, tool_call_id=call["id"], name="finalize"))
+            findings.append({
+                "loop": loop, "tool": "finalize", "args": call["args"],
+                "result": verdict, "thought": ai.content or "",
+            })
+        else:
+            result = TOOLS_BY_NAME[call["name"]].invoke(call["args"])
+            out_msgs.append(ToolMessage(
+                json.dumps(result, ensure_ascii=False),
+                tool_call_id=call["id"], name=call["name"],
+            ))
+            findings.append({
+                "loop": loop, "tool": call["name"], "args": call["args"],
+                "result": result, "thought": ai.content or "",
+            })
 
-    return str(tool_result)
+    return {"messages": out_msgs, "findings": findings, **update}
+
+
+def _finalize_gate(args: dict, loop: int, update: dict) -> str:
+    """LLM 의 종료 제안을 코드가 최종 판정한다 (부품 4b)."""
+    conf = float(args.get("confidence", 0.0))
+    if conf >= config.CONFIDENCE_THRESHOLD or loop >= config.MAX_LOOPS:
+        update["finalize_accepted"] = True
+        update["final_hypothesis"] = args.get("hypothesis", "")
+        update["final_confidence"] = conf
+        reason = "확신도 충족" if conf >= config.CONFIDENCE_THRESHOLD else "최대 횟수 도달"
+        return f"승인 ({reason}): 리포팅으로 진행한다."
+    return (f"반려: 확신도 {conf:.2f} < {config.CONFIDENCE_THRESHOLD}. "
+            f"근거를 좁힐 tool 을 더 호출하라.")
+
+
+# ------------------------------------------------ 고정 골격: 리포팅
+def report_node(state: dict) -> dict:
+    report = _llm.generate_report(
+        question=state["question"],
+        target_wafer=state["target_wafer"],
+        status_summary=state["status_summary"],
+        findings=state["findings"],
+        hypothesis=state.get("final_hypothesis"),
+        confidence=state.get("final_confidence"),
+    )
+    return {"report": report}
