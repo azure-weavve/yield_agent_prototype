@@ -79,3 +79,17 @@ def aggregate_defects(wafer_ids: list[str]) -> list[dict]:
             wafer_ids,
         ).fetchall()
         return [dict(r) for r in rows]
+
+
+def get_process_log(wafer_id: str) -> list[dict]:
+    """wafer 의 공정 단계별 장비·파라미터 로그. in_spec 파생 필드 포함."""
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM process_log WHERE wafer_id = ?", (wafer_id,)
+        ).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["in_spec"] = bool(d["spec_low"] <= d["param_value"] <= d["spec_high"])
+            out.append(d)
+        return out
