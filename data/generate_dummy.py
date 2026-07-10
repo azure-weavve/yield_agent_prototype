@@ -45,6 +45,17 @@ RECENT_DATE = "2024-06-15"
 PAST_DATES = ["2024-01-15", "2024-02-12", "2024-03-18", "2024-04-22", "2024-05-09"]
 NORMAL_LOTS = ["LOT2401", "LOT2402", "LOT2403", "LOT2404", "LOT2405"]
 
+# 공정 로그: wafer 마다 4개 공정 단계 각 1행.
+# 패턴 그룹 wafer 는 자기 그룹의 process_step 에서 "공유 이상 장비(-9)" +
+# 스펙 상한 초과 값을 갖는다 → 루프가 원인을 공정/장비까지 좁히는 근거.
+PROCESS_FLOW = [
+    # (step, param, spec_low, spec_high)
+    ("Photo",     "focus_offset", 0.0,   10.0),
+    ("Etch",      "rf_power",     450.0, 550.0),
+    ("Diffusion", "furnace_temp", 950.0, 1000.0),
+    ("CMP",       "pad_pressure", 3.0,   5.0),
+]
+
 DATA_DIR = Path(__file__).resolve().parent
 DB_PATH = DATA_DIR / "yield.db"
 EMB_DIR = DATA_DIR / "embeddings"
@@ -117,12 +128,37 @@ def generate():
             vectors.append(_make_member(center, rng))
             wafer_ids.append(past_wid)
 
-    _write_sqlite(rows)
+    logs = _make_process_logs(rows, rng)
+    _write_sqlite(rows, logs)
     _write_index(vectors, wafer_ids)
     _report(rows, vectors, wafer_ids)
 
 
-def _write_sqlite(rows):
+def _make_process_logs(rows, rng):
+    """wafer 별 공정 로그. 패턴 wafer 의 원인 공정(r['process_step'])만 이상 처리.
+    정상 wafer 는 process_step='Normal' 이라 어떤 step 과도 일치하지 않는다."""
+    logs = []
+    for r in rows:
+        for step, param, lo, hi in PROCESS_FLOW:
+            if r["process_step"] == step:
+                equip = f"{step.upper()}-9"                # 그룹 공유 이상 장비
+                value = round(hi + (hi - lo) * 0.2, 2)     # 스펙 상한 20% 초과
+            else:
+                equip = f"{step.upper()}-{int(rng.integers(1, 4))}"
+                value = round(float(rng.uniform(lo, hi)), 2)
+            logs.append({
+                "wafer_id": r["wafer_id"],
+                "process_step": step,
+                "equipment_id": equip,
+                "param_name": param,
+                "param_value": value,
+                "spec_low": lo,
+                "spec_high": hi,
+            })
+    return logs
+
+
+def _write_sqlite(rows, logs):
     if DB_PATH.exists():
         DB_PATH.unlink()
     conn = sqlite3.connect(DB_PATH)
@@ -139,6 +175,22 @@ def _write_sqlite(rows):
     conn.executemany(
         "INSERT INTO yield VALUES (:wafer_id, :lot_id, :yield, :defect_type, :process_step, :date)",
         rows,
+    )
+    conn.execute("""
+        CREATE TABLE process_log (
+            wafer_id     TEXT NOT NULL,
+            process_step TEXT NOT NULL,
+            equipment_id TEXT NOT NULL,
+            param_name   TEXT NOT NULL,
+            param_value  REAL NOT NULL,
+            spec_low     REAL NOT NULL,
+            spec_high    REAL NOT NULL
+        )
+    """)
+    conn.executemany(
+        """INSERT INTO process_log VALUES
+           (:wafer_id, :process_step, :equipment_id, :param_name, :param_value, :spec_low, :spec_high)""",
+        logs,
     )
     conn.commit()
     conn.close()
