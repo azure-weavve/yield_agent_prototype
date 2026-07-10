@@ -1,39 +1,49 @@
 # yield_agent — 반도체 수율 분석 AI Agent 프로토타입
 
-LangGraph 기반 AI Agent가 자연어 질문을 받아 **의도 파악 → 도구 실행 → 답변 생성**으로
-이어지는 reasoning loop를 더미 데이터 위에서 End-to-End로 시연하는 프로토타입입니다.
+LangGraph 기반 AI Agent가 자연어 질문을 받아 **현황 파악 → 분석 루프(tool 자율 호출) → 리포트**로
+이어지는 하이브리드 reasoning loop를 더미 데이터 위에서 End-to-End로 시연하는 프로토타입입니다.
 
 운영 중인 사내 EDS 유사맵 시스템(Flask `/search`)과 사내 LLM 서빙에 붙는 구조를 설계하고,
 사내망 접근 없이도 동일 그래프가 돌도록 외부 의존성을 **인터페이스 뒤로 추상화**했습니다.
 
 ## 보여주는 것 (세 키워드)
 
-- **Agentic AI** — Agent가 질문 의도를 스스로 분류해 적절한 도구로 라우팅한다.
+- **Agentic AI** — Agent가 스스로 tool 을 골라 호출하며 근거를 좁히고, 확신도가 찰 때까지 루프를 돈다.
 - **Legacy 연계** — 사내 EDS/LLM에 붙는 구조를 단일 인터페이스로 설계 (mock ↔ 사내 교체).
-- **End-to-End** — 두 질문이 같은 `wafer_id`로 이어지며 한 대화 안에서 끊김 없이 흐른다.
+- **End-to-End** — 현황 파악부터 원인 규명 리포트까지, 감사 기록(findings)이 남는 한 흐름으로 이어진다.
 
 ## 데모
 
 ```
-$ python main.py
+$ PYTHONUTF8=1 python main.py
 
-[질문] 이번 배치에서 수율 떨어진 lot 있어?
-[의도] yield_query
-[답변]
-수율 임계 미만 lot (낮은 순):
+[질문] 이번 배치에서 수율 이상 wafer 의 불량 원인을 분석해줘
+
+[현황 파악 — 고정 골격]
 - LOT2406: 평균 수율 84.8 (4장), 최저 wafer W2406_cen0 (수율 84.1, 불량 center_spot)
 
-[질문] 그 wafer 불량 맵 패턴이 과거 어떤 사례랑 비슷해?
-[의도] similar_search
-[답변]
-W2406_cen0 와 유사한 과거 wafer (유사도 순):
-- W2411_cen2 (유사도 0.925)
-- W2412_cen3 (유사도 0.922)
-  ...
+[분석 대상] W2406_cen0
+
+[분석 루프 — 감사 기록]
+  1. search_similar  args={'wafer_id': 'W2406_cen0'}
+     판단: W2406_cen0 의 불량 맵과 유사한 과거 사례부터 확인한다.
+  2. aggregate_defects  args={...}
+     판단: 유사 wafer 들이 같은 불량 유형을 공유하는지 집계한다.
+  3. finalize  args={'confidence': 0.6, ...}
+     게이트: 반려: 확신도 0.60 < 0.8. 근거를 좁힐 tool 을 더 호출하라.
+  4. get_process_log  args={'wafer_id': 'W2406_cen0'}
+     판단: 종료 제안이 반려됐다. 원인 공정을 좁히기 위해 공정 로그를 확인한다.
+  5. finalize  args={'confidence': 0.9, ...}
+     게이트: 승인 (확신도 충족): 리포팅으로 진행한다.
+
+[리포트 — 고정 골격]
+...
+[결론] Etch 공정 ETCH-9 장비의 rf_power 스펙 이탈(570.0, 스펙 450.0~550.0)이 원인 (확신도 0.9)
 ```
 
-1번 답변의 worst wafer(`W2406_cen0`)가 상태에 저장되어, 2번 질문의 "그 wafer"로 자동 이어집니다.
-이 멀티턴 연결이 End-to-End의 핵심입니다.
+현황 파악이 지목한 wafer(`W2406_cen0`)를 대상으로 Agent 가 tool 을 자율적으로 호출하며 근거를
+쌓다가, 확신도 낮은 finalize 시도는 게이트가 반려하고 더 조사하게 만듭니다. 근거가 충분해지면
+게이트가 승인해 리포트로 넘어갑니다. 이 반려→재시도→승인 순환이 End-to-End의 핵심입니다.
 
 ## 빠른 시작
 
@@ -42,14 +52,17 @@ W2406_cen0 와 유사한 과거 wafer (유사도 순):
 ```bash
 pip install -r requirements.txt
 
-# 더미 데이터 생성 (yield.db + 512차원 임베딩 인덱스) — 최초 1회
+# 더미 데이터 생성 (yield.db + 512차원 임베딩 인덱스 + 공정 로그) — 최초 1회
 python data/generate_dummy.py
 
-# 데모 대화 실행 (시나리오 1 → 2)
-python main.py
+# 테스트 전체 실행
+pytest
+
+# 데모 실행 (분석 루프 End-to-End)
+PYTHONUTF8=1 python main.py
 
 # 단일 질문도 가능
-python main.py "이번 배치에서 수율 떨어진 lot 있어?"
+python main.py "이번 배치에서 수율 이상 wafer 의 불량 원인을 분석해줘"
 ```
 
 > Windows 콘솔에서 한글이 깨지면 `set PYTHONUTF8=1` 후 실행하세요.
@@ -57,30 +70,36 @@ python main.py "이번 배치에서 수율 떨어진 lot 있어?"
 ## 아키텍처
 
 ```
-[ 자연어 질문 ]
-       │
-   intent (LLM)  ── 의도 분류 → 라우팅 레이블
-       │
-   ┌───┴─────────────┐  (conditional edge)
-   ▼                 ▼
-yield_tool      similar_tool      ← 결정론적 도구 (정확한 수치)
- (SQLite)        (hnswlib HNSW)
-   └───┬─────────────┘
-       ▼
-   answer (LLM)  ── 도구 결과 → 자연어 답변
-       │
-      END
+status ──▶ analyze ──(tool call)──▶ tools ──(반려/계속)──▶ analyze   ← 순환
+ (고정)        │                      │
+               └─(호출 없음/한계)      └─(finalize 승인)
+                      ▼                      ▼
+                    report ◀────────────────┘
+                     (고정)
 ```
 
-- **수치 계산은 결정론적 함수**(SQLite 쿼리 / HNSW 검색)가 전담합니다.
-- **LLM은 의도 해석과 표현만** 담당합니다 → 환각으로 인한 수치 오류를 구조적으로 차단.
+- **status → report 골격은 고정 엣지**입니다: 반드시 현황 파악으로 시작해 리포팅으로 끝납니다.
+- **analyze ⇄ tools 만 LLM 자율 순환**입니다: 어떤 tool 을 언제 호출할지는 Agent(LLM)가 결정합니다.
+- **수치 계산은 결정론적 tool**(SQLite 쿼리 / HNSW 검색 / 공정 로그 조회)이 전담합니다.
+- **LLM은 판단과 표현만** 담당합니다 → 환각으로 인한 수치 오류를 구조적으로 차단.
+
+## 분석 루프
+
+`analyze` 노드에서 Agent 는 `search_similar`, `aggregate_defects`, `get_process_log`,
+`finalize` 등의 tool 을 자율적으로 호출합니다. 매 호출은 `findings` 에 감사 기록
+(`loop`, `tool`, `args`, `result`, `thought`)으로 남습니다.
+
+- **finalize 게이트**: Agent 가 결론을 제안(`finalize`)하면, 확신도(`confidence`)가 임계값
+  (기본 0.8) 이상이어야 승인됩니다. 미달이면 반려되어 `analyze` 로 되돌아가 근거를 더 쌓습니다.
+- **가드레일(MAX_LOOPS)**: 루프가 한계(기본 6회)에 도달하면 확신도와 무관하게 강제로 리포팅으로
+  진행합니다 — 무한 루프를 원천 차단합니다.
 
 ## 디렉토리 구조
 
 ```
 prototype/
 ├── config.py              설정 (데이터 경로, EDS/LLM 모드 토글, 임계값)
-├── main.py                실행 진입점 (시나리오 1→2 연속 대화)
+├── main.py                실행 진입점 (하이브리드 분석 루프 데모)
 ├── data/
 │   ├── generate_dummy.py  더미 생성 (yield + 임베딩, 유사 그룹 심기)
 │   ├── yield.db           (생성물) SQLite — gitignore
@@ -91,9 +110,9 @@ prototype/
 ├── llm/
 │   └── client.py          LLM 클라이언트 (인터페이스 + mock/사내 OpenAI 구현)
 └── graph/
-    ├── state.py           LangGraph 상태 (멀티턴 last_wafer_id)
-    ├── nodes.py           의도 파악 / 도구 실행 / 답변 생성 노드
-    └── build.py           그래프 조립 + 체크포인터(MemorySaver)
+    ├── state.py           LangGraph 상태 (findings 감사 기록, loop_count 등 누적형)
+    ├── nodes.py           현황 파악 / 분석(tool-calling) / tool 실행+게이트 / 리포트 노드
+    └── build.py           그래프 조립 (status → analyze ⇄ tools → report)
 ```
 
 ## 인터페이스 ↔ 구현 교체 (mock ↔ 사내)
@@ -123,4 +142,5 @@ LLM은 데이터를 만들지 않고 도구 결과를 표현만 하므로, 식�
 
 - 사내 EDS는 자체 발급 인증서라 프로토타입은 `verify=False`로 우회합니다.
   운영 전환 시 사내 루트 인증서(`.pem`)를 확보해 `verify="인증서경로"`로 바꿉니다.
-- 시나리오 3(유사 사례 원인 추정)은 상태·도구(`aggregate_defects`)가 준비되어 있으며 확장 예정입니다.
+- 분석 루프의 tool 목록(`search_similar`, `aggregate_defects`, `get_process_log`)은 데모 시나리오
+  기준이며, 실제 원인 계열이 늘어나면 tool 도 함께 확장될 여지가 있습니다.

@@ -1,7 +1,8 @@
 """실행 진입점.
 
-기본: 시나리오 1→2 대화를 같은 thread 로 연속 실행 (End-to-End 시연).
+기본: 데모 질문 1건으로 하이브리드 분석 루프 End-to-End 시연.
 단일 질문: python main.py "질문"
+(Windows 콘솔 한글 깨짐 방지: PYTHONUTF8=1 python main.py)
 """
 
 import sys
@@ -11,28 +12,29 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from graph.build import build_graph  # noqa: E402
 
-DEMO_CONVERSATION = [
-    "이번 배치에서 수율 떨어진 lot 있어?",
-    "그 wafer 불량 맵 패턴이 과거 어떤 사례랑 비슷해?",
-]
+DEMO_QUESTION = "이번 배치에서 수율 이상 wafer 의 불량 원인을 분석해줘"
 
 
-def _print_turn(question: str, state: dict) -> None:
-    print(f"[질문] {question}")
-    print(f"[의도] {state.get('intent')}")
-    print(f"[답변]\n{state.get('answer')}\n")
-
-
-def run_conversation(questions: list[str], thread_id: str = "demo") -> None:
+def run(question: str) -> None:
     app = build_graph()
-    cfg = {"configurable": {"thread_id": thread_id}}  # 같은 thread = 멀티턴 상태 유지
-    for q in questions:
-        state = app.invoke({"question": q}, cfg)
-        _print_turn(q, state)
+    state = app.invoke({"question": question})
+
+    print(f"[질문] {question}\n")
+    print(f"[현황 파악 — 고정 골격]\n{state['status_summary']}\n")
+    print(f"[분석 대상] {state['target_wafer']}\n")
+
+    print("[분석 루프 — 감사 기록]")
+    for f in state["findings"]:
+        if f["loop"] == 0:
+            continue  # 현황파악은 위에서 출력
+        print(f"  {f['loop']}. {f['tool']}  args={f['args']}")
+        if f.get("thought"):
+            print(f"     판단: {f['thought']}")
+        if f["tool"] == "finalize":
+            print(f"     게이트: {f['result']}")
+    print()
+    print(f"[리포트 — 고정 골격]\n{state['report']}")
 
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1:
-        run_conversation([" ".join(sys.argv[1:])])
-    else:
-        run_conversation(DEMO_CONVERSATION)
+    run(" ".join(sys.argv[1:]) if len(sys.argv) > 1 else DEMO_QUESTION)
