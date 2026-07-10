@@ -7,7 +7,7 @@ findings 는 감사(audit) 기록 — 매 tool 실행의 {loop, tool, args, resu
 """
 
 import operator
-from typing import Annotated, Any, TypedDict
+from typing import Annotated, TypedDict
 
 from langgraph.graph.message import add_messages
 
