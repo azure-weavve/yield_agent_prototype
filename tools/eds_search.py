@@ -71,16 +71,25 @@ class HttpEDSSearcher(EDSSearcher):
 
         resp = requests.post(
             config.EDS_HTTP_URL,
-            json={"wafer_id": wafer_id, "k": k},
+            json={"wafer_id": wafer_id, "k": k + 1},  # 자기 자신 포함 응답 대비 여유분
             verify=config.EDS_HTTP_VERIFY,  # 운영 전환 시 .pem 경로로
             timeout=10,
         )
         resp.raise_for_status()
         # 사내 응답 스키마에 맞춰 매핑 (실제 필드명 확인 후 조정)
-        return [
-            {"wafer_id": r["wafer_id"], "similarity": r.get("score")}
-            for r in resp.json()["results"]
-        ]
+        # 인터페이스 계약: 자기 자신 제외 + EDS_MIN_SIMILARITY 미만 제외 (Local 과 동일)
+        out = []
+        for r in resp.json()["results"]:
+            cand, score = r["wafer_id"], r.get("score")
+            if cand == wafer_id or score is None:
+                continue
+            sim = round(float(score), 3)
+            if sim < config.EDS_MIN_SIMILARITY:
+                continue
+            out.append({"wafer_id": cand, "similarity": sim})
+            if len(out) == k:
+                break
+        return out
 
 
 def get_searcher() -> EDSSearcher:
