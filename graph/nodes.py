@@ -31,8 +31,15 @@ ANALYZE_SYSTEM_PROMPT = """너는 반도체 수율 분석 전문가다. 대상 w
 # ------------------------------------------------ 고정 골격: 현황 파악
 def status_node(state: dict) -> dict:
     lots = yt.find_low_yield_lots()
-    target = lots[0]["worst_wafer"]["wafer_id"]
     summary = _summarize_lots(lots)
+    finding = {
+        "loop": 0, "tool": "find_low_yield_lots", "args": {},
+        "result": lots, "thought": "현황 파악 (고정 골격)",
+    }
+    if not lots:  # 이상 lot 없음 → 분석 루프 없이 리포팅으로 (build 의 _after_status)
+        return {"target_wafer": "", "status_summary": summary, "findings": [finding]}
+
+    target = lots[0]["worst_wafer"]["wafer_id"]
     seed = [
         SystemMessage(content=ANALYZE_SYSTEM_PROMPT),
         HumanMessage(content=(
@@ -43,10 +50,7 @@ def status_node(state: dict) -> dict:
         "messages": seed,
         "target_wafer": target,
         "status_summary": summary,
-        "findings": [{
-            "loop": 0, "tool": "find_low_yield_lots", "args": {},
-            "result": lots, "thought": "현황 파악 (고정 골격)",
-        }],
+        "findings": [finding],
     }
 
 

@@ -28,3 +28,17 @@ def test_full_loop_reaches_report_with_audit_trail():
 
     # 가드레일 안에서 끝났다
     assert state["loop_count"] <= 6
+
+
+def test_no_low_yield_lots_short_circuits_to_report(monkeypatch):
+    """수율 이상 lot 이 없으면 크래시 없이 '이상 없음' 리포트로 조기 종료한다."""
+    from graph import nodes
+
+    monkeypatch.setattr(nodes.yt, "find_low_yield_lots", lambda: [])
+    state = build_graph().invoke({"question": "이번 배치 수율 이상 분석해줘"})
+
+    assert state["report"]                       # 크래시 없이 리포트 도달
+    assert state["target_wafer"] == ""           # 분석 대상 없음
+    assert "없음" in state["status_summary"]      # "수율 임계 미만인 lot 없음."
+    # 분석 루프는 돌지 않았다 — 감사 기록은 현황 파악뿐
+    assert [f["tool"] for f in state["findings"]] == ["find_low_yield_lots"]

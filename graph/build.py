@@ -18,6 +18,11 @@ from graph import nodes
 from graph.state import AgentState
 
 
+def _after_status(state: dict) -> str:
+    # 이상 lot 이 없으면 분석 루프를 건너뛰고 바로 리포팅 (빈 lots 크래시 방지)
+    return "analyze" if state.get("target_wafer") else "report"
+
+
 def _after_analyze(state: dict) -> str:
     last = state["messages"][-1]
     if getattr(last, "tool_calls", None):
@@ -39,7 +44,7 @@ def build_graph():
     g.add_node("report", nodes.report_node)
 
     g.set_entry_point("status")                    # 고정: 반드시 현황파악 먼저
-    g.add_edge("status", "analyze")
+    g.add_conditional_edges("status", _after_status, ["analyze", "report"])
     g.add_conditional_edges("analyze", _after_analyze, ["tools", "report"])
     g.add_conditional_edges("tools", _after_tools, ["analyze", "report"])
     g.add_edge("report", END)                      # 고정: 반드시 리포팅으로 끝

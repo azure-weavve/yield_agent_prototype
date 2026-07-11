@@ -101,7 +101,7 @@ class ScriptedMockLLMClient(LLMClient):
                 lines.append(f"     - 판단: {f['thought']}")
             if f["tool"] == "finalize":
                 lines.append(f"     - 게이트: {f['result']}")
-        conclusion = hypothesis or "원인 미확정 (최대 분석 횟수 도달)"
+        conclusion = hypothesis or "원인 미확정"
         conf = f" (확신도 {confidence})" if confidence is not None else ""
         lines += ["", f"[결론] {conclusion}{conf}"]
         return "\n".join(lines)
@@ -157,7 +157,7 @@ class OpenAILLMClient(LLMClient):
         user = (
             f"질문: {question}\n대상 wafer: {target_wafer}\n현황: {status_summary}\n\n"
             f"분석 기록(JSON):\n{json.dumps(findings, ensure_ascii=False, default=str)}\n\n"
-            f"결론 가설: {hypothesis or '미확정 (최대 분석 횟수 도달)'} / 확신도: {confidence}"
+            f"결론 가설: {hypothesis or '미확정'} / 확신도: {confidence}"
         )
         resp = self.llm.invoke([SystemMessage(content=sys), HumanMessage(content=user)])
         return resp.content.strip()
