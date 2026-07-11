@@ -72,7 +72,7 @@ python main.py "이번 배치에서 수율 이상 wafer 의 불량 원인을 분
 ```
 status ──▶ analyze ──(tool call)──▶ tools ──(반려/계속)──▶ analyze   ← 순환
  (고정)        │                      │
-               └─(호출 없음/한계)      └─(finalize 승인)
+               └─(호출 없음)           └─(finalize 승인/한계 도달)
                       ▼                      ▼
                     report ◀────────────────┘
                      (고정)

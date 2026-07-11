@@ -1,14 +1,14 @@
 """그래프 조립 — 하이브리드 분석 루프.
 
-  status ──▶ analyze ──(tool call)──▶ tools ──(반려/계속)──▶ analyze   ← 순환
-   (고정)        │                      │
-                 └─(호출 없음/한계)      └─(finalize 승인)
-                        ▼                      ▼
-                      report ◀────────────────┘
-                       (고정)
+  status ──(대상 있음)──▶ analyze ──(tool call)──▶ tools ──(반려/계속)──▶ analyze   ← 순환
+   (고정)      │              │                      │
+               │              └─(호출 없음)          └─(finalize 승인/한계)
+               └─(대상 없음)         ▼                      ▼
+                      ▼            report ◀────────────────┘
+                      └─────────────▶ (고정)
 
 골격(status→…→report)은 고정 엣지, analyze ⇄ tools 만 LLM 자율 순환.
-종료는 tools 노드의 finalize 게이트(확신도)와 MAX_LOOPS 가드레일이 통제한다.
+종료는 tools 노드의 finalize 게이트(확신도)와 _after_tools 의 MAX_LOOPS 가드레일이 통제한다.
 """
 
 from langgraph.graph import END, StateGraph
@@ -26,14 +26,16 @@ def _after_status(state: dict) -> str:
 def _after_analyze(state: dict) -> str:
     last = state["messages"][-1]
     if getattr(last, "tool_calls", None):
-        if state["loop_count"] > config.MAX_LOOPS:  # 가드레일: 무한루프 차단
-            return "report"
         return "tools"
     return "report"  # tool 호출 없이 텍스트만 = 이탈 케이스 → 리포팅 (안전망)
 
 
 def _after_tools(state: dict) -> str:
-    return "report" if state.get("finalize_accepted") else "analyze"
+    if state.get("finalize_accepted"):
+        return "report"
+    if state["loop_count"] >= config.MAX_LOOPS:  # 가드레일: 무한루프 차단 (정확히 MAX_LOOPS 회)
+        return "report"
+    return "analyze"
 
 
 def build_graph():
