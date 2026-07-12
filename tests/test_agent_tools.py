@@ -16,12 +16,12 @@ def test_docstrings_exist():
 
 
 def test_get_process_log_tool_invokes():
-    rows = at.TOOLS_BY_NAME["get_process_log"].invoke({"wafer_id": "W2406_cen0"})
+    rows = at.TOOLS_BY_NAME["get_process_log"].invoke({"wafer_id": "W2406_02"})
     assert len(rows) == 4
 
 
 def test_aggregate_defects_tool_invokes():
     rows = at.TOOLS_BY_NAME["aggregate_defects"].invoke(
-        {"wafer_ids": ["W2406_cen0"]}
+        {"wafer_ids": ["W2406_02"]}
     )
     assert rows[0]["defect_type"] == "center_spot"

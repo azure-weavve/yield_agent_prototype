@@ -12,6 +12,8 @@
     (다) date 가 과거~최근에 분포 (그룹당 최근 1장 + 과거 4~5장).
   최근 1장은 시나리오 1에서 수율 낮게 잡힐 wafer,
   나머지 과거 장들은 시나리오 2의 유사 검색 결과가 된다.
+  추가로 RECENT_LOT 은 그룹 대조 시나리오 무대다: 짝수 번호 3장이 같은
+  defect(center_spot)·같은 이상 장비(ETCH-9)를 공유하고, 홀수 번호 3장은 정상.
 """
 
 import json
@@ -32,7 +34,16 @@ N_NORMAL = 80  # 정상 wafer 수
 # 0.30 -> 그룹 내 코사인 유사도 약 0.95.
 GROUP_NOISE = 0.30
 
-# 패턴 그룹: 그룹당 (최근 1 + 과거 n_past) 장, 같은 defect_type 공유
+# 그룹 대조 시나리오 (RECENT_LOT): 짝수 번호 3장이 같은 불량(불량 그룹),
+# 홀수 번호 3장은 정상(대조 그룹) — "유사 불량을 묶어 정상과 대조"의 데모 무대.
+# 수율 범위는 lot 평균 < YIELD_THRESHOLD(90) 를 난수와 무관하게 보장한다: (82+97)/2 = 89.5.
+FEATURED_DEFECT = "center_spot"
+FEATURED_PROCESS = "Etch"
+GROUP_WAFERS = ["W2406_02", "W2406_04", "W2406_06"]    # 불량 그룹 (수율 낮음)
+CONTROL_WAFERS = ["W2406_01", "W2406_03", "W2406_05"]  # 대조 그룹 (정상)
+
+# 패턴 그룹: 전부 과거 wafer — search_similar 의 유사 사례 풀.
+# center_spot 그룹은 GROUP_WAFERS 와 같은 임베딩 중심을 공유한다.
 PATTERN_GROUPS = [
     {"defect": "edge_ring", "process": "Diffusion", "n_past": 5},
     {"defect": "center_spot", "process": "Etch", "n_past": 4},
@@ -94,27 +105,37 @@ def generate():
         vectors.append(_unit(rng.standard_normal(DIM)))
         wafer_ids.append(wid)
 
-    # ---------------- 패턴 그룹: 그룹 중심 + noise, 같은 defect, 최근 1 + 과거 n
-    for g_idx, grp in enumerate(PATTERN_GROUPS):
-        center = _unit(rng.standard_normal(DIM))  # 그룹 중심 벡터
-        tag = grp["defect"][:3]                   # wafer_id 가독성용 접두
+    # ---------------- 그룹 대조 시나리오: 불량 그룹 3장 + 대조 그룹 3장 (RECENT_LOT)
+    centers = {g["defect"]: _unit(rng.standard_normal(DIM)) for g in PATTERN_GROUPS}
 
-        # (최근) 시나리오 1에서 잡힐 wafer — 수율 낮음, RECENT_LOT 소속
-        recent_wid = f"W2406_{tag}0"
+    for wid in GROUP_WAFERS:
         rows.append({
-            "wafer_id": recent_wid,
+            "wafer_id": wid,
             "lot_id": RECENT_LOT,
-            "yield": round(float(rng.uniform(82.0, 88.0)), 1),
-            "defect_type": grp["defect"],
-            "process_step": grp["process"],
+            "yield": round(float(rng.uniform(76.0, 82.0)), 1),
+            "defect_type": FEATURED_DEFECT,
+            "process_step": FEATURED_PROCESS,
             "date": RECENT_DATE,
         })
-        vectors.append(_make_member(center, rng))
-        wafer_ids.append(recent_wid)
+        vectors.append(_make_member(centers[FEATURED_DEFECT], rng))
+        wafer_ids.append(wid)
 
-        # (과거) 시나리오 2의 유사 검색 결과가 될 wafer 들.
-        # 정상 lot 에 섞어 넣어 lot 평균은 높게 유지(>임계) → 시나리오 1을 어지럽히지 않음.
-        # (유사 검색은 wafer 단위라 lot 배치와 무관.)
+    for wid in CONTROL_WAFERS:
+        rows.append({
+            "wafer_id": wid,
+            "lot_id": RECENT_LOT,
+            "yield": round(float(rng.uniform(93.0, 97.0)), 1),
+            "defect_type": "none",
+            "process_step": "Normal",
+            "date": RECENT_DATE,
+        })
+        vectors.append(_unit(rng.standard_normal(DIM)))
+        wafer_ids.append(wid)
+
+    # ---------------- 패턴 그룹 (과거 유사 사례): 그룹 중심 + noise, 같은 defect 공유
+    for g_idx, grp in enumerate(PATTERN_GROUPS):
+        center = centers[grp["defect"]]
+        tag = grp["defect"][:3]                   # wafer_id 가독성용 접두
         for p in range(grp["n_past"]):
             past_wid = f"W24{g_idx}{p}_{tag}{p + 1}"
             rows.append({
@@ -225,7 +246,7 @@ def _report(rows, vectors, wafer_ids):
     avg = sorted(((sum(v) / len(v), lot, len(v)) for lot, v in by_lot.items()))
     for a, lot, c in avg[:3]:
         print(f"  {lot}: 평균 {a:.1f}  (wafer {c}장)")
-    print("\n[최근 패턴 wafer (시나리오 1 검출 대상)]")
+    print(f"\n[{RECENT_LOT} 그룹 대조 시나리오]")
     for r in rows:
         if r["lot_id"] == RECENT_LOT:
             print(f"  {r['wafer_id']}  yield={r['yield']}  defect={r['defect_type']}")

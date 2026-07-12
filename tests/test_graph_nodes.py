@@ -26,7 +26,7 @@ def test_tools_node_executes_and_records_finding():
     ai = AIMessage(
         content="유사 사례 확인",
         tool_calls=[{"name": "get_process_log",
-                     "args": {"wafer_id": "W2406_cen0"}, "id": "call_1"}],
+                     "args": {"wafer_id": "W2406_02"}, "id": "call_1"}],
     )
     out = nodes.tools_node({"messages": [ai], "loop_count": 1})
     tm = out["messages"][0]
@@ -59,7 +59,7 @@ def test_finalize_gate_accepts_at_max_loops_even_if_low():
 
 def test_report_node_produces_report():
     out = nodes.report_node({
-        "question": "q", "target_wafer": "W2406_cen0", "status_summary": "요약",
+        "question": "q", "target_wafer": "W2406_02", "status_summary": "요약",
         "findings": [], "final_hypothesis": "Etch ETCH-9 원인", "final_confidence": 0.9,
     })
     assert "ETCH-9" in out["report"]
