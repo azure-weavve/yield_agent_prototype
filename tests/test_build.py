@@ -2,7 +2,7 @@
 
 from langchain_core.messages import AIMessage
 
-from graph.build import _after_analyze, _after_tools
+from graph.build import _after_analyze, _after_status, _after_tools
 
 import config
 
@@ -32,3 +32,12 @@ def test_tools_not_accepted_loops_back():
 def test_tools_at_max_loops_forced_to_report():
     # 가드레일: finalize 없이 MAX_LOOPS 를 채우면 강제로 리포팅 (정확히 6회에서 멈춘다)
     assert _after_tools({"loop_count": config.MAX_LOOPS}) == "report"
+
+
+def test_status_with_group_goes_analyze():
+    assert _after_status({"target_group": ["W2406_02"]}) == "analyze"
+
+
+def test_status_without_group_goes_report():
+    # 이상 lot 이 없거나 defect 그룹을 못 묶으면 분석 루프를 건너뛴다
+    assert _after_status({"target_group": []}) == "report"

@@ -26,7 +26,7 @@ class LLMClient(ABC):
     def generate_report(
         self,
         question: str,
-        target_wafer: str,
+        target_group: list[str],
         status_summary: str,
         findings: list[dict],
         hypothesis: str | None,
@@ -37,11 +37,11 @@ class LLMClient(ABC):
 
 
 class ScriptedMockLLMClient(LLMClient):
-    """사내망 밖 데모용. 시나리오를 따라가는 결정론적 스크립트.
+    """사내망 밖 데모용. 그룹 대조 시나리오를 따라가는 결정론적 스크립트.
 
-    search_similar → aggregate_defects → finalize(0.6, 게이트가 반려)
-    → get_process_log → finalize(0.9, 승인) 순서로 진행하며,
-    각 단계 인자는 직전 ToolMessage(json) 를 파싱해 이어받는다.
+    aggregate_defects(불량 그룹) → finalize(0.6, 게이트가 반려)
+    → compare_process_logs(불량 vs 대조) → finalize(0.9, 승인) 순서로 진행하며,
+    각 단계 인자는 seed 메시지의 그룹 라인과 직전 ToolMessage(json) 를 파싱해 이어받는다.
     """
 
     def __init__(self):
@@ -49,48 +49,42 @@ class ScriptedMockLLMClient(LLMClient):
 
     # -------------------------------------------------- analyze
     def analyze_step(self, messages: list) -> AIMessage:
-        target = self._target(messages)
+        target, control = self._groups(messages)
         tool_msgs = [m for m in messages if isinstance(m, ToolMessage)]
         done = [m.name for m in tool_msgs]
 
-        if "search_similar" not in done:
-            return self._call(
-                "search_similar", {"wafer_id": target},
-                f"{target} 의 불량 맵과 유사한 과거 사례부터 확인한다.")
-
         if "aggregate_defects" not in done:
-            sims = [r["wafer_id"] for r in self._result(tool_msgs, "search_similar")]
             return self._call(
-                "aggregate_defects", {"wafer_ids": [target] + sims},
-                "유사 wafer 들이 같은 불량 유형을 공유하는지 집계한다.")
+                "aggregate_defects", {"wafer_ids": target},
+                "불량 그룹이 같은 불량 유형을 공유하는지 먼저 집계한다.")
 
         if "finalize" not in done:
             top = self._result(tool_msgs, "aggregate_defects")[0]["defect_type"]
             return self._call(
                 "finalize",
-                {"hypothesis": f"유사 사례가 모두 {top} — 공통 원인 존재 추정",
+                {"hypothesis": f"불량 그룹 {len(target)}장이 모두 {top} — 공통 원인 존재 추정",
                  "confidence": 0.6},
                 "불량 유형은 좁혔지만 공정 근거가 아직 없다. 이 정도로 종료를 제안해 본다.")
 
-        if "get_process_log" not in done:
+        if "compare_process_logs" not in done:
             return self._call(
-                "get_process_log", {"wafer_id": target},
-                "종료 제안이 반려됐다. 원인 공정을 좁히기 위해 공정 로그를 확인한다.")
+                "compare_process_logs", {"group_ids": target, "control_ids": control},
+                "종료 제안이 반려됐다. 그룹 대조로 원인 공정/장비를 좁힌다.")
 
-        logs = self._result(tool_msgs, "get_process_log")
-        bad = next(r for r in logs if not r["in_spec"])
+        cmp = self._result(tool_msgs, "compare_process_logs")
+        bad = cmp["group_spec_violations"][0]
         hyp = (f"{bad['process_step']} 공정 {bad['equipment_id']} 장비의 "
-               f"{bad['param_name']} 스펙 이탈({bad['param_value']}, "
-               f"스펙 {bad['spec_low']}~{bad['spec_high']})이 원인")
+               f"{bad['param_name']} 스펙 이탈(불량 그룹 {len(cmp['group_spec_violations'])}장 공통, "
+               f"스펙 {bad['spec_low']}~{bad['spec_high']}, 측정 {bad['param_value']})이 원인")
         return self._call(
             "finalize", {"hypothesis": hyp, "confidence": 0.9},
-            "공정 로그에서 스펙 이탈 장비를 특정했다. 근거가 충분하다.")
+            "그룹 대조에서 불량 그룹만 공유하는 스펙 이탈 장비를 특정했다. 근거가 충분하다.")
 
     # -------------------------------------------------- report
-    def generate_report(self, question, target_wafer, status_summary,
+    def generate_report(self, question, target_group, status_summary,
                         findings, hypothesis, confidence) -> str:
         lines = [
-            f"[분석 대상] {target_wafer}",
+            f"[분석 대상] 불량 그룹: {', '.join(target_group) or '없음'}",
             f"[현황] {status_summary}",
             "",
             "[분석 과정]",
@@ -108,12 +102,15 @@ class ScriptedMockLLMClient(LLMClient):
 
     # -------------------------------------------------- 내부
     @staticmethod
-    def _target(messages) -> str:
-        for m in messages:
-            found = re.search(r"대상 wafer: (\S+)", getattr(m, "content", "") or "")
-            if found:
-                return found.group(1)
-        raise ValueError("messages 에서 '대상 wafer:' 라인을 찾지 못했다")
+    def _groups(messages) -> tuple[list[str], list[str]]:
+        text = "\n".join(getattr(m, "content", "") or "" for m in messages
+                         if isinstance(m, HumanMessage))
+        t = re.search(r"불량 그룹 \([^)]*\): (.+)", text)
+        c = re.search(r"대조 그룹 \(정상\): (.+)", text)
+        if not (t and c):
+            raise ValueError("messages 에서 불량/대조 그룹 라인을 찾지 못했다")
+        return ([w.strip() for w in t.group(1).split(",")],
+                [w.strip() for w in c.group(1).split(",")])
 
     @staticmethod
     def _result(tool_msgs, name):
@@ -147,7 +144,7 @@ class OpenAILLMClient(LLMClient):
     def analyze_step(self, messages: list) -> AIMessage:
         return self.analyzer.invoke(messages)
 
-    def generate_report(self, question, target_wafer, status_summary,
+    def generate_report(self, question, target_group, status_summary,
                         findings, hypothesis, confidence) -> str:
         sys = (
             "현장 반도체 엔지니어에게 한국어 높임말로 원인 분석 리포트를 쓴다. "
@@ -155,7 +152,7 @@ class OpenAILLMClient(LLMClient):
             "구성: 분석 대상/현황 → 분석 과정 요약 → 결론(원인 가설과 근거)."
         )
         user = (
-            f"질문: {question}\n대상 wafer: {target_wafer}\n현황: {status_summary}\n\n"
+            f"질문: {question}\n불량 그룹: {', '.join(target_group)}\n현황: {status_summary}\n\n"
             f"분석 기록(JSON):\n{json.dumps(findings, ensure_ascii=False, default=str)}\n\n"
             f"결론 가설: {hypothesis or '미확정'} / 확신도: {confidence}"
         )

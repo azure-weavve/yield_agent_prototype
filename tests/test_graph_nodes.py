@@ -14,12 +14,15 @@ def _ai_finalize(confidence):
     )
 
 
-def test_status_node_sets_target_and_seed_messages():
+def test_status_node_sets_groups_and_seed_messages():
     out = nodes.status_node({"question": "원인 분석해줘"})
-    assert out["target_wafer"].startswith("W2406_")          # 최근 배치의 worst wafer
-    assert f"대상 wafer: {out['target_wafer']}" in out["messages"][-1].content
+    assert out["target_group"] == ["W2406_02", "W2406_04", "W2406_06"]
+    assert out["control_group"] == ["W2406_01", "W2406_03", "W2406_05"]
+    assert "불량 그룹 (center_spot)" in out["messages"][-1].content
+    assert "대조 그룹 (정상)" in out["messages"][-1].content
     assert out["findings"][0]["loop"] == 0                   # 현황파악도 감사 기록에 남는다
     assert out["findings"][0]["tool"] == "find_low_yield_lots"
+    assert out["findings"][1]["tool"] == "find_defect_group"  # 그룹 묶기도 감사 기록에
 
 
 def test_tools_node_executes_and_records_finding():
@@ -59,7 +62,7 @@ def test_finalize_gate_accepts_at_max_loops_even_if_low():
 
 def test_report_node_produces_report():
     out = nodes.report_node({
-        "question": "q", "target_wafer": "W2406_02", "status_summary": "요약",
+        "question": "q", "target_group": ["W2406_02", "W2406_04", "W2406_06"], "status_summary": "요약",
         "findings": [], "final_hypothesis": "Etch ETCH-9 원인", "final_confidence": 0.9,
     })
     assert "ETCH-9" in out["report"]

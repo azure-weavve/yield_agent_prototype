@@ -21,7 +21,11 @@ def run(question: str) -> None:
 
     print(f"[질문] {question}\n")
     print(f"[현황 파악 — 고정 골격]\n{state['status_summary']}\n")
-    print(f"[분석 대상] {state['target_wafer'] or '없음 (수율 이상 lot 없음)'}\n")
+    tg = state["target_group"]
+    if tg:
+        print(f"[분석 대상] 불량 그룹 {', '.join(tg)}  /  대조 그룹 {', '.join(state['control_group'])}\n")
+    else:
+        print("[분석 대상] 없음 (수율 이상 lot 없음)\n")
 
     print("[분석 루프 — 감사 기록]")
     for f in state["findings"]:

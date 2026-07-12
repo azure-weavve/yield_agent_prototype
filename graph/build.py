@@ -19,8 +19,8 @@ from graph.state import AgentState
 
 
 def _after_status(state: dict) -> str:
-    # 이상 lot 이 없으면 분석 루프를 건너뛰고 바로 리포팅 (빈 lots 크래시 방지)
-    return "analyze" if state.get("target_wafer") else "report"
+    # 불량 그룹을 못 묶으면 분석 루프를 건너뛰고 바로 리포팅 (빈 lots/빈 그룹 크래시 방지)
+    return "analyze" if state.get("target_group") else "report"
 
 
 def _after_analyze(state: dict) -> str:

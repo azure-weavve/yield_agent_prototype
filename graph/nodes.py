@@ -19,11 +19,11 @@ from tools.agent_tools import TOOLS_BY_NAME
 
 _llm = get_llm()
 
-ANALYZE_SYSTEM_PROMPT = """너는 반도체 수율 분석 전문가다. 대상 wafer 의 불량 원인을 특정 공정 단계(가능하면 장비)까지 좁혀라.
+ANALYZE_SYSTEM_PROMPT = """너는 반도체 수율 분석 전문가다. 불량 그룹(유사 불량 wafer 들)과 대조 그룹(같은 lot 의 정상 wafer 들)을 비교해, 불량 그룹만의 공통 원인을 특정 공정 단계(가능하면 장비)까지 좁혀라.
 
 규칙:
 - 매 단계, 지금까지의 tool 결과로 원인을 확신할 수 있는지 스스로 평가하라.
-- 확신이 부족하면 근거를 좁힐 tool 을 하나 더 호출하라. tool 호출 시 현재 가설과 이 tool 을 부르는 이유를 한두 문장으로 함께 서술하라 (분석 기록으로 남는다).
+- 확신이 부족하면 근거를 좁힐 tool 을 하나 더 호출하라. 그룹 간 차이(장비·파라미터)가 핵심 근거다 — compare_process_logs 로 두 그룹을 대조하라. tool 호출 시 현재 가설과 이 tool 을 부르는 이유를 한두 문장으로 함께 서술하라 (분석 기록으로 남는다).
 - 원인을 좁혔고 근거가 충분하면 finalize(hypothesis, confidence) 로 종료를 제안하라. 확신도가 낮으면 반려된다.
 - 수치는 tool 결과를 그대로 인용하고 절대 임의로 만들지 마라."""
 
@@ -32,25 +32,38 @@ ANALYZE_SYSTEM_PROMPT = """너는 반도체 수율 분석 전문가다. 대상 w
 def status_node(state: dict) -> dict:
     lots = yt.find_low_yield_lots()
     summary = _summarize_lots(lots)
-    finding = {
+    findings = [{
         "loop": 0, "tool": "find_low_yield_lots", "args": {},
         "result": lots, "thought": "현황 파악 (고정 골격)",
-    }
+    }]
     if not lots:  # 이상 lot 없음 → 분석 루프 없이 리포팅으로 (build 의 _after_status)
-        return {"target_wafer": "", "status_summary": summary, "findings": [finding]}
+        return {"target_group": [], "control_group": [],
+                "status_summary": summary, "findings": findings}
 
-    target = lots[0]["worst_wafer"]["wafer_id"]
+    grp = yt.find_defect_group(lots[0]["lot_id"])
+    findings.append({
+        "loop": 0, "tool": "find_defect_group", "args": {"lot_id": lots[0]["lot_id"]},
+        "result": grp, "thought": "그룹 대조 대상 묶기 (고정 골격)",
+    })
+    if not grp["target_group"]:  # 임계 미만 defect wafer 를 못 묶음 → 분석 루프 생략
+        return {"target_group": [], "control_group": grp["control_group"],
+                "status_summary": summary, "findings": findings}
+
     seed = [
         SystemMessage(content=ANALYZE_SYSTEM_PROMPT),
         HumanMessage(content=(
-            f"현황:\n{summary}\n\n대상 wafer: {target}\n질문: {state['question']}"
+            f"현황:\n{summary}\n\n"
+            f"불량 그룹 ({grp['defect_type']}): {', '.join(grp['target_group'])}\n"
+            f"대조 그룹 (정상): {', '.join(grp['control_group'])}\n"
+            f"질문: {state['question']}"
         )),
     ]
     return {
         "messages": seed,
-        "target_wafer": target,
+        "target_group": grp["target_group"],
+        "control_group": grp["control_group"],
         "status_summary": summary,
-        "findings": [finding],
+        "findings": findings,
     }
 
 
@@ -118,7 +131,7 @@ def _finalize_gate(args: dict, loop: int, update: dict) -> str:
 def report_node(state: dict) -> dict:
     report = _llm.generate_report(
         question=state["question"],
-        target_wafer=state["target_wafer"],
+        target_group=state["target_group"],
         status_summary=state["status_summary"],
         findings=state["findings"],
         hypothesis=state.get("final_hypothesis"),

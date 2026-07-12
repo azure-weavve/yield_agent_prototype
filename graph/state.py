@@ -16,7 +16,8 @@ class AgentState(TypedDict, total=False):
     question: str                                   # 사용자 질문
     messages: Annotated[list, add_messages]         # LLM 대화 누적 (루프의 문맥)
     findings: Annotated[list[dict], operator.add]   # 감사 기록 누적 (분석 근거)
-    target_wafer: str                               # 현황파악이 지목한 분석 대상
+    target_group: list[str]                         # 현황파악이 묶은 불량 그룹 (유사 불량 wafer)
+    control_group: list[str]                        # 같은 lot 의 정상 wafer (대조 그룹)
     status_summary: str                             # 현황파악 요약 (리포트 재료)
     loop_count: int                                 # 순환 횟수 (가드레일)
     finalize_accepted: bool                         # 게이트 승인 여부
