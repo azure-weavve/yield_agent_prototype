@@ -20,30 +20,31 @@ $ PYTHONUTF8=1 python main.py
 [질문] 이번 배치에서 수율 이상 wafer 의 불량 원인을 분석해줘
 
 [현황 파악 — 고정 골격]
-- LOT2406: 평균 수율 84.8 (4장), 최저 wafer W2406_cen0 (수율 84.1, 불량 center_spot)
+- LOT2406: 평균 수율 87.2 (6장), 최저 wafer W2406_06 (수율 78.0, 불량 center_spot)
 
-[분석 대상] W2406_cen0
+[분석 대상] 불량 그룹 W2406_02, W2406_04, W2406_06  /  대조 그룹 W2406_01, W2406_03, W2406_05
 
 [분석 루프 — 감사 기록]
-  1. search_similar  args={'wafer_id': 'W2406_cen0'}
-     판단: W2406_cen0 의 불량 맵과 유사한 과거 사례부터 확인한다.
-  2. aggregate_defects  args={...}
-     판단: 유사 wafer 들이 같은 불량 유형을 공유하는지 집계한다.
-  3. finalize  args={'confidence': 0.6, ...}
+  1. aggregate_defects  args={'wafer_ids': ['W2406_02', 'W2406_04', 'W2406_06']}
+     판단: 불량 그룹이 같은 불량 유형을 공유하는지 먼저 집계한다.
+  2. finalize  args={'hypothesis': '불량 그룹 3장이 모두 center_spot — 공통 원인 존재 추정', 'confidence': 0.6}
+     판단: 불량 유형은 좁혔지만 공정 근거가 아직 없다. 이 정도로 종료를 제안해 본다.
      게이트: 반려: 확신도 0.60 < 0.8. 근거를 좁힐 tool 을 더 호출하라.
-  4. get_process_log  args={'wafer_id': 'W2406_cen0'}
-     판단: 종료 제안이 반려됐다. 원인 공정을 좁히기 위해 공정 로그를 확인한다.
-  5. finalize  args={'confidence': 0.9, ...}
+  3. compare_process_logs  args={'group_ids': ['W2406_02', 'W2406_04', 'W2406_06'], 'control_ids': ['W2406_01', 'W2406_03', 'W2406_05']}
+     판단: 종료 제안이 반려됐다. 그룹 대조로 원인 공정/장비를 좁힌다.
+  4. finalize  args={'hypothesis': 'Etch 공정 ETCH-9 장비의 rf_power 스펙 이탈(불량 그룹 3장 공통, 스펙 450.0~550.0, 측정 570.0)이 원인', 'confidence': 0.9}
+     판단: 그룹 대조에서 불량 그룹만 공유하는 스펙 이탈 장비를 특정했다. 근거가 충분하다.
      게이트: 승인 (확신도 충족): 리포팅으로 진행한다.
 
 [리포트 — 고정 골격]
 ...
-[결론] Etch 공정 ETCH-9 장비의 rf_power 스펙 이탈(570.0, 스펙 450.0~550.0)이 원인 (확신도 0.9)
+[결론] Etch 공정 ETCH-9 장비의 rf_power 스펙 이탈(불량 그룹 3장 공통, 스펙 450.0~550.0, 측정 570.0)이 원인 (확신도 0.9)
 ```
 
-현황 파악이 지목한 wafer(`W2406_cen0`)를 대상으로 Agent 가 tool 을 자율적으로 호출하며 근거를
-쌓다가, 확신도 낮은 finalize 시도는 게이트가 반려하고 더 조사하게 만듭니다. 근거가 충분해지면
-게이트가 승인해 리포트로 넘어갑니다. 이 반려→재시도→승인 순환이 End-to-End의 핵심입니다.
+현황 파악이 지목한 불량 그룹(`W2406_02, W2406_04, W2406_06`)과 대조 그룹(`W2406_01, W2406_03,
+W2406_05`)을 대상으로 Agent 가 tool 을 자율적으로 호출하며 근거를 쌓다가, 확신도 낮은 finalize
+시도는 게이트가 반려하고 더 조사하게 만듭니다. 근거가 충분해지면 게이트가 승인해 리포트로
+넘어갑니다. 이 반려→재시도→승인 순환이 End-to-End의 핵심입니다.
 
 ## 빠른 시작
 
@@ -87,9 +88,12 @@ status ──▶ analyze ──(tool call)──▶ tools ──(반려/계속)�
 
 ## 분석 루프
 
-`analyze` 노드에서 Agent 는 `search_similar`, `aggregate_defects`, `get_process_log`,
-`finalize` 등의 tool 을 자율적으로 호출합니다. 매 호출은 `findings` 에 감사 기록
-(`loop`, `tool`, `args`, `result`, `thought`)으로 남습니다.
+`analyze` 노드에서 Agent 는 `get_wafer`, `search_similar`, `aggregate_defects`,
+`get_process_log`, `compare_process_logs`, `finalize` 등의 tool 을 자율적으로 호출합니다.
+매 호출은 `findings` 에 감사 기록(`loop`, `tool`, `args`, `result`, `thought`)으로 남습니다.
+
+- **compare_process_logs**: 불량 그룹과 대조 그룹의 공정 로그를 대조해, 불량 그룹에서만
+  공유되는 suspect 장비·스펙 이탈을 집계합니다.
 
 - **finalize 게이트**: Agent 가 결론을 제안(`finalize`)하면, 확신도(`confidence`)가 임계값
   (기본 0.8) 이상이어야 승인됩니다. 미달이면 반려되어 `analyze` 로 되돌아가 근거를 더 쌓습니다.
@@ -134,10 +138,11 @@ LLM은 데이터를 만들지 않고 도구 결과를 표현만 하므로, 식�
 
 ## 더미 데이터 설계
 
-`generate_dummy.py`는 "정상 다수 + 패턴 그룹 몇 개"를 생성합니다. 각 패턴 그룹은
-임베딩 공간에서 서로 가깝고(중심 벡터 + 작은 noise), 같은 `defect_type`을 공유하며,
-최근 1장 + 과거 4~5장으로 날짜가 분포합니다. 최근 1장이 현황 파악에서 검출되고,
-그 wafer로 유사 검색하면 같은 그룹의 과거 wafer들이 반환됩니다.
+`generate_dummy.py`는 LOT2406에 불량 3장(W2406_02/04/06, 수율 76~82, center_spot, ETCH-9)과
+대조 3장(W2406_01/03/05, 수율 93~97, 정상)을 심습니다. 이와 별도로 4개의 패턴 그룹은 전부
+과거 wafer로 구성되어, `search_similar`가 참조하는 유사 사례 풀 역할을 합니다(각 그룹은
+임베딩 공간에서 서로 가깝고 같은 `defect_type`을 공유). 불량 그룹은 `center_spot` 패턴 그룹과
+임베딩 중심을 공유해, 유사 검색 시 관련 과거 사례가 반환됩니다.
 
 > 512차원에서는 noise를 `1/√DIM`로 스케일해야 그룹 응집(코사인 유사도 ~0.92)이 성립합니다.
 > 안 그러면 noise 노름이 중심 벡터를 압도해 그룹이 흩어집니다.
@@ -146,7 +151,8 @@ LLM은 데이터를 만들지 않고 도구 결과를 표현만 하므로, 식�
 
 - 사내 EDS는 자체 발급 인증서라 프로토타입은 `verify=False`로 우회합니다.
   운영 전환 시 사내 루트 인증서(`.pem`)를 확보해 `verify="인증서경로"`로 바꿉니다.
-- 분석 루프의 tool 목록(`search_similar`, `aggregate_defects`, `get_process_log`)은 데모 흐름
-  기준이며, 실제 원인 계열이 늘어나면 tool 도 함께 확장될 여지가 있습니다.
+- 분석 루프의 tool 목록(`get_wafer`, `search_similar`, `aggregate_defects`, `get_process_log`,
+  `compare_process_logs`)은 데모 흐름 기준이며, 실제 원인 계열이 늘어나면 tool 도 함께
+  확장될 여지가 있습니다.
 - 사내 연동 시점으로 미룬 항목(오류 복구, 게이트 증거 조건, TLS 검증 등)은
   [docs/deferred-internal-integration.md](docs/deferred-internal-integration.md) 참고.
