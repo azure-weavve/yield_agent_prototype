@@ -52,6 +52,14 @@ def get_process_log(wafer_id: str) -> list[dict]:
 
 
 @tool
+def compare_process_logs(group_ids: list[str], control_ids: list[str]) -> dict:
+    """불량 그룹과 대조 그룹(정상 wafer)의 공정 로그를 대조해, 불량 그룹만
+    공통으로 거친 장비(suspect_equipment)와 불량 그룹의 스펙 이탈
+    (group_spec_violations)을 찾는다. 그룹 간 차이로 원인 공정/장비를 좁힐 때 사용."""
+    return yt.compare_process_logs(group_ids, control_ids)
+
+
+@tool
 def finalize(hypothesis: str, confidence: float) -> str:
     """원인을 특정 공정/장비까지 좁혔고 근거가 충분하다고 판단될 때만 호출해
     분석 종료를 제안한다. hypothesis=원인 가설(공정·장비·파라미터 명시),
@@ -59,6 +67,7 @@ def finalize(hypothesis: str, confidence: float) -> str:
     return "finalize 는 게이트가 처리한다"  # 직접 실행되지 않음
 
 
-ANALYSIS_TOOLS = [get_wafer, search_similar, aggregate_defects, get_process_log]
+ANALYSIS_TOOLS = [get_wafer, search_similar, aggregate_defects, get_process_log,
+                  compare_process_logs]
 ALL_TOOLS = ANALYSIS_TOOLS + [finalize]
 TOOLS_BY_NAME = {t.name: t for t in ANALYSIS_TOOLS}

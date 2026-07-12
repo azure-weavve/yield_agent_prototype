@@ -5,7 +5,8 @@ from tools import agent_tools as at
 
 def test_tool_names():
     assert {t.name for t in at.ALL_TOOLS} == {
-        "get_wafer", "search_similar", "aggregate_defects", "get_process_log", "finalize",
+        "get_wafer", "search_similar", "aggregate_defects", "get_process_log",
+        "compare_process_logs", "finalize",
     }
     assert "finalize" not in at.TOOLS_BY_NAME  # finalize 는 게이트가 처리
 
@@ -25,3 +26,11 @@ def test_aggregate_defects_tool_invokes():
         {"wafer_ids": ["W2406_02"]}
     )
     assert rows[0]["defect_type"] == "center_spot"
+
+
+def test_compare_process_logs_tool_invokes():
+    res = at.TOOLS_BY_NAME["compare_process_logs"].invoke({
+        "group_ids": ["W2406_02", "W2406_04", "W2406_06"],
+        "control_ids": ["W2406_01", "W2406_03", "W2406_05"],
+    })
+    assert any(r["equipment_id"] == "ETCH-9" for r in res["suspect_equipment"])
