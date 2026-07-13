@@ -119,3 +119,42 @@ def test_validate_completeness_empty_input_blocked():
     res = yt.validate_data_completeness([])
     assert res["status"] == "blocked"
     assert res["checked_wafers"] == 0
+
+
+# ------------------------------------------------ compare_parameter_distribution
+
+
+def test_compare_parameter_distribution_ranks_rf_power_first():
+    rows = yt.compare_parameter_distribution(
+        ["W2406_02", "W2406_04", "W2406_06"],
+        ["W2406_01", "W2406_03", "W2406_05"],
+    )
+    assert len(rows) == 4                        # 4개 (공정, 파라미터) 전부
+    top = rows[0]                                # |effect_size| 1위 = rf_power (d=3.6)
+    assert (top["process_step"], top["param_name"]) == ("Etch", "rf_power")
+    assert top["group"]["n"] == 3 and top["control"]["n"] == 3
+    assert top["group"]["mean"] == 570.0         # 스펙 상한 20% 초과 고정값
+    assert top["group"]["std"] == 0.0            # 3장 전부 동일값
+    assert top["mean_diff"] > 0 and top["effect_size"] > 2.0
+    assert top["spec_violation_rate_group"] == 1.0
+    assert top["spec_violation_rate_control"] == 0.0
+
+
+def test_compare_parameter_distribution_filters_by_step():
+    rows = yt.compare_parameter_distribution(
+        ["W2406_02", "W2406_04", "W2406_06"],
+        ["W2406_01", "W2406_03", "W2406_05"],
+        process_step="Etch",
+    )
+    assert [(r["process_step"], r["param_name"]) for r in rows] == [("Etch", "rf_power")]
+
+
+def test_compare_parameter_distribution_one_sided_group():
+    # 대조 그룹이 비어도 죽지 않는다 — 통계는 그룹 쪽만, 비교치는 None
+    rows = yt.compare_parameter_distribution(["W2406_02"], [])
+    assert all(r["control"]["n"] == 0 for r in rows)
+    assert all(r["mean_diff"] is None and r["effect_size"] is None for r in rows)
+
+
+def test_compare_parameter_distribution_empty_inputs():
+    assert yt.compare_parameter_distribution([], []) == []

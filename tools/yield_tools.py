@@ -4,6 +4,7 @@
 """
 
 import sqlite3
+import statistics
 from contextlib import contextmanager
 
 import config
@@ -254,3 +255,89 @@ def validate_data_completeness(wafer_ids: list[str]) -> dict:
         result["status"] = "warning"
         result["warnings"].append("중복 로그 존재 — 집계 수치가 부풀 수 있다.")
     return result
+
+
+def compare_parameter_distribution(group_ids: list[str], control_ids: list[str],
+                                   process_step: str | None = None,
+                                   param_name: str | None = None) -> list[dict]:
+    """두 그룹의 공정 파라미터 분포 비교 (효과 크기 포함 — 결정론적).
+
+    (process_step, param_name) 단위로 기술통계·평균차·Cohen's d·스펙 이탈률을
+    계산해 |effect_size| 내림차순으로 반환한다. 스펙 안이어도 그룹 간 체계적
+    차이를 잡는 것이 목적. 표본이 작으므로 p-value 는 계산하지 않는다
+    (효과 크기·이탈률·표본 수를 함께 제시 — 로드맵 원칙).
+    """
+    def _rows(conn, ids):
+        if not ids:
+            return []
+        placeholders = ",".join("?" * len(ids))
+        sql = (f"SELECT process_step, param_name, param_value, spec_low, spec_high "
+               f"FROM process_log WHERE wafer_id IN ({placeholders})")
+        args = list(ids)
+        if process_step:
+            sql += " AND process_step = ?"
+            args.append(process_step)
+        if param_name:
+            sql += " AND param_name = ?"
+            args.append(param_name)
+        return conn.execute(sql, args).fetchall()
+
+    def _bucket(rows):
+        by_key = {}
+        for r in rows:
+            by_key.setdefault((r["process_step"], r["param_name"]), []).append(r)
+        return by_key
+
+    def _stats(rows):
+        values = [r["param_value"] for r in rows]
+        if not values:
+            return ({"n": 0, "mean": None, "median": None, "std": None,
+                     "min": None, "max": None}, 0.0)
+        violations = sum(
+            1 for r in rows
+            if not (r["spec_low"] <= r["param_value"] <= r["spec_high"]))
+        return ({
+            "n": len(values),
+            "mean": round(statistics.fmean(values), 3),
+            "median": round(statistics.median(values), 3),
+            "std": round(statistics.stdev(values), 3) if len(values) >= 2 else 0.0,
+            "min": min(values),
+            "max": max(values),
+        }, round(violations / len(values), 3))
+
+    def _cohens_d(g_vals, c_vals):
+        n1, n2 = len(g_vals), len(c_vals)
+        if n1 + n2 < 3:  # 자유도(n1+n2-2) 확보 불가
+            return None
+        var1 = statistics.variance(g_vals) if n1 >= 2 else 0.0
+        var2 = statistics.variance(c_vals) if n2 >= 2 else 0.0
+        pooled = (((n1 - 1) * var1 + (n2 - 1) * var2) / (n1 + n2 - 2)) ** 0.5
+        if pooled == 0:
+            return None
+        return round((statistics.fmean(g_vals) - statistics.fmean(c_vals)) / pooled, 3)
+
+    with _conn() as conn:
+        g_by_key = _bucket(_rows(conn, group_ids))
+        c_by_key = _bucket(_rows(conn, control_ids))
+
+    out = []
+    for key in sorted(set(g_by_key) | set(c_by_key)):
+        g_rows, c_rows = g_by_key.get(key, []), c_by_key.get(key, [])
+        g_stats, g_viol = _stats(g_rows)
+        c_stats, c_viol = _stats(c_rows)
+        mean_diff = effect = None
+        if g_stats["n"] and c_stats["n"]:
+            g_vals = [r["param_value"] for r in g_rows]
+            c_vals = [r["param_value"] for r in c_rows]
+            mean_diff = round(statistics.fmean(g_vals) - statistics.fmean(c_vals), 3)
+            effect = _cohens_d(g_vals, c_vals)
+        out.append({
+            "process_step": key[0], "param_name": key[1],
+            "group": g_stats, "control": c_stats,
+            "mean_diff": mean_diff, "effect_size": effect,
+            "spec_violation_rate_group": g_viol,
+            "spec_violation_rate_control": c_viol,
+        })
+    out.sort(key=lambda r: (r["effect_size"] is None,
+                            -abs(r["effect_size"] or 0.0)))
+    return out

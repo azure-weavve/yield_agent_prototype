@@ -68,6 +68,18 @@ def validate_data_completeness(wafer_ids: list[str]) -> dict:
 
 
 @tool
+def compare_parameter_distribution(group_ids: list[str], control_ids: list[str],
+                                   process_step: str | None = None,
+                                   param_name: str | None = None) -> list[dict]:
+    """불량 그룹과 대조 그룹의 공정 파라미터 분포(표본 수·평균·표준편차·효과 크기·
+    스펙 이탈률)를 (공정, 파라미터) 단위로 비교한다. compare_process_logs 가 지목한
+    후보의 정량 검증, 또는 스펙 이탈이 없어도 그룹 간 차이를 찾을 때 사용.
+    process_step/param_name 으로 범위를 좁힐 수 있다."""
+    return yt.compare_parameter_distribution(group_ids, control_ids,
+                                             process_step, param_name)
+
+
+@tool
 def finalize(hypothesis: str, confidence: float) -> str:
     """원인을 특정 공정/장비까지 좁혔고 근거가 충분하다고 판단될 때만 호출해
     분석 종료를 제안한다. hypothesis=원인 가설(공정·장비·파라미터 명시),
@@ -76,6 +88,7 @@ def finalize(hypothesis: str, confidence: float) -> str:
 
 
 ANALYSIS_TOOLS = [get_wafer, search_similar, aggregate_defects, get_process_log,
-                  compare_process_logs, validate_data_completeness]
+                  compare_process_logs, validate_data_completeness,
+                  compare_parameter_distribution]
 ALL_TOOLS = ANALYSIS_TOOLS + [finalize]
 TOOLS_BY_NAME = {t.name: t for t in ANALYSIS_TOOLS}
