@@ -300,7 +300,7 @@ def compare_parameter_distribution(group_ids: list[str], control_ids: list[str],
             "n": len(values),
             "mean": round(statistics.fmean(values), 3),
             "median": round(statistics.median(values), 3),
-            "std": round(statistics.stdev(values), 3) if len(values) >= 2 else 0.0,
+            "std": round(statistics.stdev(values), 3) if len(values) >= 2 else None,
             "min": min(values),
             "max": max(values),
         }, round(violations / len(values), 3))
@@ -353,6 +353,7 @@ def find_counterexamples(equipment_id: str, process_step: str,
     두 목록이 모두 비면 가설의 특이성이 전수 데이터에서 확인된 것이다.
     """
     with _conn() as conn:
+        # 가정: (wafer, step) 당 로그 1행 — 다중 파라미터 스키마가 되면 wafer 수가 중복 집계된다
         users = conn.execute(
             """
             SELECT y.wafer_id, y.yield, y.defect_type,
