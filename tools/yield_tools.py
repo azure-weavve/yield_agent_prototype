@@ -341,3 +341,51 @@ def compare_parameter_distribution(group_ids: list[str], control_ids: list[str],
     out.sort(key=lambda r: (r["effect_size"] is None,
                             -abs(r["effect_size"] or 0.0)))
     return out
+
+
+def find_counterexamples(equipment_id: str, process_step: str,
+                         defect_type: str) -> dict:
+    """가설 '(process_step, equipment_id) 가 defect_type 의 원인'의 반례 탐색.
+
+    전수 데이터에서 명시적으로 찾는다 (확증 편향 방지 — 결정론적):
+    - passed_but_normal: 해당 장비를 거쳤지만 정상(defect 'none')인 wafer
+    - defect_without_equipment: 해당 장비 없이 같은 defect 가 난 wafer
+    두 목록이 모두 비면 가설의 특이성이 전수 데이터에서 확인된 것이다.
+    """
+    with _conn() as conn:
+        users = conn.execute(
+            """
+            SELECT y.wafer_id, y.yield, y.defect_type,
+                   p.param_value, p.spec_low, p.spec_high
+            FROM process_log p JOIN yield y ON y.wafer_id = p.wafer_id
+            WHERE p.process_step = ? AND p.equipment_id = ?
+            ORDER BY y.wafer_id
+            """,
+            (process_step, equipment_id),
+        ).fetchall()
+        defects = [dict(r) for r in conn.execute(
+            "SELECT wafer_id, yield FROM yield WHERE defect_type = ? ORDER BY wafer_id",
+            (defect_type,),
+        ).fetchall()]
+
+    user_ids = {u["wafer_id"] for u in users}
+    passed_but_normal = [
+        {"wafer_id": u["wafer_id"], "yield": u["yield"],
+         "in_spec": bool(u["spec_low"] <= u["param_value"] <= u["spec_high"])}
+        for u in users if u["defect_type"] == "none"
+    ]
+    defect_without_equipment = [d for d in defects if d["wafer_id"] not in user_ids]
+
+    return {
+        "equipment_id": equipment_id,
+        "process_step": process_step,
+        "defect_type": defect_type,
+        "equipment_wafers": len(users),
+        "passed_but_normal": passed_but_normal,
+        "passed_but_normal_rate":
+            round(len(passed_but_normal) / len(users), 3) if users else 0.0,
+        "defect_wafers": len(defects),
+        "defect_without_equipment": defect_without_equipment,
+        "defect_without_equipment_rate":
+            round(len(defect_without_equipment) / len(defects), 3) if defects else 0.0,
+    }

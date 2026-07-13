@@ -80,6 +80,15 @@ def compare_parameter_distribution(group_ids: list[str], control_ids: list[str],
 
 
 @tool
+def find_counterexamples(equipment_id: str, process_step: str,
+                         defect_type: str) -> dict:
+    """가설 '(공정, 장비)가 defect 의 원인'에 반하는 사례를 전수 데이터에서 찾는다:
+    해당 장비를 거쳤지만 정상인 wafer, 장비 없이 같은 defect 가 난 wafer.
+    finalize 전에 호출해 가설의 특이성(반례 유무)을 확인하고 리포트에 인용."""
+    return yt.find_counterexamples(equipment_id, process_step, defect_type)
+
+
+@tool
 def finalize(hypothesis: str, confidence: float) -> str:
     """원인을 특정 공정/장비까지 좁혔고 근거가 충분하다고 판단될 때만 호출해
     분석 종료를 제안한다. hypothesis=원인 가설(공정·장비·파라미터 명시),
@@ -89,6 +98,6 @@ def finalize(hypothesis: str, confidence: float) -> str:
 
 ANALYSIS_TOOLS = [get_wafer, search_similar, aggregate_defects, get_process_log,
                   compare_process_logs, validate_data_completeness,
-                  compare_parameter_distribution]
+                  compare_parameter_distribution, find_counterexamples]
 ALL_TOOLS = ANALYSIS_TOOLS + [finalize]
 TOOLS_BY_NAME = {t.name: t for t in ANALYSIS_TOOLS}

@@ -158,3 +158,34 @@ def test_compare_parameter_distribution_one_sided_group():
 
 def test_compare_parameter_distribution_empty_inputs():
     assert yt.compare_parameter_distribution([], []) == []
+
+
+# ------------------------------------------------ find_counterexamples
+
+
+def test_find_counterexamples_zero_for_etch9_hypothesis():
+    # 더미 DB 사실: ETCH-9 통과 7장 전부 center_spot, center_spot 7장 전부 ETCH-9
+    res = yt.find_counterexamples("ETCH-9", "Etch", "center_spot")
+    assert res["equipment_wafers"] == 7
+    assert res["passed_but_normal"] == []
+    assert res["passed_but_normal_rate"] == 0.0
+    assert res["defect_wafers"] == 7
+    assert res["defect_without_equipment"] == []
+    assert res["defect_without_equipment_rate"] == 0.0
+
+
+def test_find_counterexamples_found_for_normal_equipment():
+    # ETCH-1 통과자는 대부분 정상 → 'ETCH-1 이 원인' 가설이면 반례가 다수 잡힌다
+    res = yt.find_counterexamples("ETCH-1", "Etch", "center_spot")
+    assert res["passed_but_normal"]
+    assert 0.0 < res["passed_but_normal_rate"] <= 1.0
+    assert all(r["in_spec"] for r in res["passed_but_normal"])
+    # center_spot 은 전부 ETCH-9 를 거쳤으므로 'ETCH-1 없이 발생' 비율 100%
+    assert res["defect_without_equipment_rate"] == 1.0
+
+
+def test_find_counterexamples_unknown_equipment():
+    res = yt.find_counterexamples("ETCH-99", "Etch", "center_spot")
+    assert res["equipment_wafers"] == 0
+    assert res["passed_but_normal_rate"] == 0.0
+    assert res["defect_without_equipment_rate"] == 1.0
