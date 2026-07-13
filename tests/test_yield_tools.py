@@ -1,5 +1,8 @@
-"""get_process_log: 공정 로그 조회 + in_spec 파생 필드."""
+"""tools/yield_tools.py 결정론적 함수 검증 (더미 DB 는 seed 42 고정)."""
 
+import sqlite3
+
+import config
 from tools import yield_tools as yt
 
 
@@ -55,3 +58,64 @@ def test_compare_process_logs_finds_suspect_equipment_and_violations():
 def test_compare_process_logs_empty_inputs():
     res = yt.compare_process_logs([], [])
     assert res == {"suspect_equipment": [], "equipment_usage": [], "group_spec_violations": []}
+
+
+# ------------------------------------------------ validate_data_completeness
+
+
+def _make_db(tmp_path, monkeypatch, rows, logs):
+    """검사 시나리오용 임시 DB (실제 스키마와 동일). config.DB_PATH 를 바꿔치기한다."""
+    db = tmp_path / "test.db"
+    conn = sqlite3.connect(db)
+    conn.execute("""CREATE TABLE yield (
+        wafer_id TEXT PRIMARY KEY, lot_id TEXT NOT NULL, yield REAL NOT NULL,
+        defect_type TEXT NOT NULL, process_step TEXT, date TEXT NOT NULL)""")
+    conn.executemany("INSERT INTO yield VALUES (?,?,?,?,?,?)", rows)
+    conn.execute("""CREATE TABLE process_log (
+        wafer_id TEXT NOT NULL, process_step TEXT NOT NULL, equipment_id TEXT NOT NULL,
+        param_name TEXT NOT NULL, param_value REAL NOT NULL,
+        spec_low REAL NOT NULL, spec_high REAL NOT NULL)""")
+    conn.executemany("INSERT INTO process_log VALUES (?,?,?,?,?,?,?)", logs)
+    conn.commit()
+    conn.close()
+    monkeypatch.setattr(config, "DB_PATH", db)
+
+
+def test_validate_completeness_good_on_dummy_wafers():
+    res = yt.validate_data_completeness(["W2406_02", "W2406_01"])
+    assert res["status"] == "good"
+    assert res["checked_wafers"] == 2
+    assert res["missing_yield_rows"] == []
+    assert res["missing_log_steps"] == []
+    assert res["duplicate_logs"] == []
+
+
+def test_validate_completeness_flags_missing_wafer_as_blocked():
+    res = yt.validate_data_completeness(["W2406_02", "W_NOPE"])
+    assert res["status"] == "blocked"
+    assert res["missing_yield_rows"] == ["W_NOPE"]
+    # 전체 process_log 에 존재하는 4개 단계가 전부 누락으로 잡힌다
+    assert res["missing_log_steps"] == [
+        {"wafer_id": "W_NOPE", "missing_steps": ["CMP", "Diffusion", "Etch", "Photo"]}
+    ]
+    assert res["warnings"]
+
+
+def test_validate_completeness_flags_duplicates_as_warning(tmp_path, monkeypatch):
+    _make_db(
+        tmp_path, monkeypatch,
+        rows=[("W1", "L1", 95.0, "none", "Normal", "2024-06-01")],
+        logs=[("W1", "Etch", "ETCH-1", "rf_power", 500.0, 450.0, 550.0),
+              ("W1", "Etch", "ETCH-1", "rf_power", 501.0, 450.0, 550.0)],
+    )
+    res = yt.validate_data_completeness(["W1"])
+    assert res["status"] == "warning"
+    assert res["duplicate_logs"] == [
+        {"wafer_id": "W1", "process_step": "Etch", "param_name": "rf_power", "count": 2}
+    ]
+
+
+def test_validate_completeness_empty_input_blocked():
+    res = yt.validate_data_completeness([])
+    assert res["status"] == "blocked"
+    assert res["checked_wafers"] == 0

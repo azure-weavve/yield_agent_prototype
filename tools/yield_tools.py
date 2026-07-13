@@ -186,3 +186,71 @@ def compare_process_logs(group_ids: list[str], control_ids: list[str]) -> dict:
     return {"suspect_equipment": suspects,
             "equipment_usage": usage,
             "group_spec_violations": violations}
+
+
+def validate_data_completeness(wafer_ids: list[str]) -> dict:
+    """분석 대상 wafer 들의 데이터 완전성 검사 (분석 전제 확인 — 결정론적).
+
+    대조 그룹 로그가 결측이면 compare_process_logs 의 suspect 판정
+    (control_count == 0)이 허위 양성이 되므로, 그룹 대조 전에 이 검사로 막는다.
+    - blocked: 수율 행 누락 또는 공정 로그 단계 누락 (비교 결과 신뢰 불가)
+    - warning: 중복 로그만 존재 (집계가 부풀 수 있음)
+    - good: 문제 없음
+    """
+    result = {
+        "checked_wafers": len(wafer_ids),
+        "missing_yield_rows": [],
+        "missing_log_steps": [],
+        "duplicate_logs": [],
+        "status": "good",
+        "warnings": [],
+    }
+    if not wafer_ids:
+        result["status"] = "blocked"
+        result["warnings"].append("검사할 wafer 가 없다.")
+        return result
+
+    placeholders = ",".join("?" * len(wafer_ids))
+    with _conn() as conn:
+        have_yield = {r["wafer_id"] for r in conn.execute(
+            f"SELECT wafer_id FROM yield WHERE wafer_id IN ({placeholders})",
+            wafer_ids,
+        ).fetchall()}
+        # 기대 단계 = 전체 process_log 에 존재하는 단계 집합 (스키마가 아닌 데이터 기준)
+        expected_steps = {r["process_step"] for r in conn.execute(
+            "SELECT DISTINCT process_step FROM process_log"
+        ).fetchall()}
+        step_rows = conn.execute(
+            f"""
+            SELECT wafer_id, process_step, param_name, COUNT(*) AS n
+            FROM process_log WHERE wafer_id IN ({placeholders})
+            GROUP BY wafer_id, process_step, param_name
+            ORDER BY wafer_id, process_step
+            """,
+            wafer_ids,
+        ).fetchall()
+
+    result["missing_yield_rows"] = sorted(set(wafer_ids) - have_yield)
+
+    steps_by_wafer: dict[str, set] = {}
+    for r in step_rows:
+        steps_by_wafer.setdefault(r["wafer_id"], set()).add(r["process_step"])
+        if r["n"] > 1:
+            result["duplicate_logs"].append({
+                "wafer_id": r["wafer_id"], "process_step": r["process_step"],
+                "param_name": r["param_name"], "count": r["n"],
+            })
+    for wid in wafer_ids:
+        missing = sorted(expected_steps - steps_by_wafer.get(wid, set()))
+        if missing:
+            result["missing_log_steps"].append(
+                {"wafer_id": wid, "missing_steps": missing})
+
+    if result["missing_yield_rows"] or result["missing_log_steps"]:
+        result["status"] = "blocked"
+        result["warnings"].append(
+            "수율 행 또는 공정 로그 누락 — 그룹 대조 결과를 신뢰할 수 없다.")
+    elif result["duplicate_logs"]:
+        result["status"] = "warning"
+        result["warnings"].append("중복 로그 존재 — 집계 수치가 부풀 수 있다.")
+    return result

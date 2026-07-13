@@ -6,7 +6,7 @@ from tools import agent_tools as at
 def test_tool_names():
     assert {t.name for t in at.ALL_TOOLS} == {
         "get_wafer", "search_similar", "aggregate_defects", "get_process_log",
-        "compare_process_logs", "finalize",
+        "compare_process_logs", "validate_data_completeness", "finalize",
     }
     assert "finalize" not in at.TOOLS_BY_NAME  # finalize 는 게이트가 처리
 
@@ -34,3 +34,10 @@ def test_compare_process_logs_tool_invokes():
         "control_ids": ["W2406_01", "W2406_03", "W2406_05"],
     })
     assert any(r["equipment_id"] == "ETCH-9" for r in res["suspect_equipment"])
+
+
+def test_validate_data_completeness_tool_invokes():
+    res = at.TOOLS_BY_NAME["validate_data_completeness"].invoke(
+        {"wafer_ids": ["W2406_02"]}
+    )
+    assert res["status"] == "good"

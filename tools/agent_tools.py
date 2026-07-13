@@ -60,6 +60,14 @@ def compare_process_logs(group_ids: list[str], control_ids: list[str]) -> dict:
 
 
 @tool
+def validate_data_completeness(wafer_ids: list[str]) -> dict:
+    """분석 대상 wafer 들의 수율 행 누락·공정 로그 단계 누락·중복 로그를 검사한다.
+    그룹 대조(compare_process_logs) 전에 호출해 데이터가 결론에 쓸 만큼 완전한지 확인.
+    status=blocked 면 비교 결과를 신뢰하지 말고 리포트에 품질 경고를 남겨야 한다."""
+    return yt.validate_data_completeness(wafer_ids)
+
+
+@tool
 def finalize(hypothesis: str, confidence: float) -> str:
     """원인을 특정 공정/장비까지 좁혔고 근거가 충분하다고 판단될 때만 호출해
     분석 종료를 제안한다. hypothesis=원인 가설(공정·장비·파라미터 명시),
@@ -68,6 +76,6 @@ def finalize(hypothesis: str, confidence: float) -> str:
 
 
 ANALYSIS_TOOLS = [get_wafer, search_similar, aggregate_defects, get_process_log,
-                  compare_process_logs]
+                  compare_process_logs, validate_data_completeness]
 ALL_TOOLS = ANALYSIS_TOOLS + [finalize]
 TOOLS_BY_NAME = {t.name: t for t in ANALYSIS_TOOLS}
