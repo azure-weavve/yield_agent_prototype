@@ -21,6 +21,7 @@ class AgentState(TypedDict, total=False):
     status_summary: str                             # 현황파악 요약 (리포트 재료)
     loop_count: int                                 # 순환 횟수 (가드레일)
     finalize_accepted: bool                         # 게이트 승인 여부
+    finalize_status: str                            # 종료 판정 구분: confirmed | inconclusive
     final_hypothesis: str                           # 승인된 원인 가설
     final_confidence: float                         # 승인 시 확신도
     report: str                                     # 최종 리포트

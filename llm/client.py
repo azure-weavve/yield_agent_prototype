@@ -31,8 +31,13 @@ class LLMClient(ABC):
         findings: list[dict],
         hypothesis: str | None,
         confidence: float | None,
+        finalize_status: str | None = None,
     ) -> str:
-        """감사 기록을 근거로 원인 리포트 생성."""
+        """감사 기록을 근거로 원인 리포트 생성.
+
+        finalize_status 가 "inconclusive"(루프 한계 도달)면 결론을 확정 톤이 아니라
+        "미확정 + 유력 가설(후보)" 톤으로 서술해야 한다.
+        """
         ...
 
 
@@ -82,7 +87,7 @@ class ScriptedMockLLMClient(LLMClient):
 
     # -------------------------------------------------- report
     def generate_report(self, question, target_group, status_summary,
-                        findings, hypothesis, confidence) -> str:
+                        findings, hypothesis, confidence, finalize_status=None) -> str:
         lines = [
             f"[분석 대상] 불량 그룹: {', '.join(target_group) or '없음'}",
             f"[현황] {status_summary}",
@@ -95,7 +100,10 @@ class ScriptedMockLLMClient(LLMClient):
                 lines.append(f"     - 판단: {f['thought']}")
             if f["tool"] == "finalize":
                 lines.append(f"     - 게이트: {f['result']}")
-        conclusion = hypothesis or "원인 미확정"
+        if finalize_status == "inconclusive":
+            conclusion = f"미확정 (루프 한계 도달) — 유력 가설: {hypothesis or '없음'}"
+        else:
+            conclusion = hypothesis or "원인 미확정"
         conf = f" (확신도 {confidence})" if confidence is not None else ""
         lines += ["", f"[결론] {conclusion}{conf}"]
         return "\n".join(lines)
@@ -145,16 +153,19 @@ class OpenAILLMClient(LLMClient):
         return self.analyzer.invoke(messages)
 
     def generate_report(self, question, target_group, status_summary,
-                        findings, hypothesis, confidence) -> str:
+                        findings, hypothesis, confidence, finalize_status=None) -> str:
         sys = (
             "현장 반도체 엔지니어에게 한국어 높임말로 원인 분석 리포트를 쓴다. "
             "분석 과정(findings)의 수치는 절대 임의로 바꾸지 말고 그대로 인용하라. "
-            "구성: 분석 대상/현황 → 분석 과정 요약 → 결론(원인 가설과 근거)."
+            "구성: 분석 대상/현황 → 분석 과정 요약 → 결론(원인 가설과 근거). "
+            "판정이 inconclusive 면 결론을 확정하지 말고 '미확정(루프 한계 도달)'과 "
+            "유력 후보·추가 조사 필요 항목으로 서술하라."
         )
         user = (
             f"질문: {question}\n불량 그룹: {', '.join(target_group)}\n현황: {status_summary}\n\n"
             f"분석 기록(JSON):\n{json.dumps(findings, ensure_ascii=False, default=str)}\n\n"
-            f"결론 가설: {hypothesis or '미확정'} / 확신도: {confidence}"
+            f"결론 가설: {hypothesis or '미확정'} / 확신도: {confidence} / "
+            f"판정: {finalize_status or '미상'}"
         )
         resp = self.llm.invoke([SystemMessage(content=sys), HumanMessage(content=user)])
         return resp.content.strip()

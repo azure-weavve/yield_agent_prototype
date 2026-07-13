@@ -94,7 +94,9 @@ def tools_node(state: dict) -> dict:
 
     for call in ai.tool_calls:
         if call["name"] == "finalize":
-            verdict = _finalize_gate(call["args"], loop, update)
+            # 증거는 누적 findings + 이번 메시지에서 방금 실행된 tool 결과(findings)까지 포함
+            verdict = _finalize_gate(call["args"], loop, update,
+                                     state.get("findings", []) + findings)
             out_msgs.append(ToolMessage(verdict, tool_call_id=call["id"], name="finalize"))
             findings.append({
                 "loop": loop, "tool": "finalize", "args": call["args"],
@@ -114,17 +116,50 @@ def tools_node(state: dict) -> dict:
     return {"messages": out_msgs, "findings": findings, **update}
 
 
-def _finalize_gate(args: dict, loop: int, update: dict) -> str:
-    """LLM 의 종료 제안을 코드가 최종 판정한다 (부품 4b)."""
+def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) -> str:
+    """LLM 의 종료 제안을 코드가 최종 판정한다 (부품 4b).
+
+    승인 실권은 confidence 자기 신고가 아니라 findings 의 결정론적 증거에 있다:
+    (a) 그룹 대조 근거가 존재하고 (b) 가설의 장비가 그 근거의 suspect 와 일치해야 승인.
+    (c) 루프 한계 도달 강제 종료는 승인이 아니라 '미확정' 으로 구분 기록한다.
+    """
     conf = float(args.get("confidence", 0.0))
-    if conf >= config.CONFIDENCE_THRESHOLD or loop >= config.MAX_LOOPS:
+    hypothesis = args.get("hypothesis", "")
+    suspects = _collect_suspects(findings)
+
+    if conf >= config.CONFIDENCE_THRESHOLD and any(eq in hypothesis for eq in suspects):
         update["finalize_accepted"] = True
-        update["final_hypothesis"] = args.get("hypothesis", "")
+        update["finalize_status"] = "confirmed"
+        update["final_hypothesis"] = hypothesis
         update["final_confidence"] = conf
-        reason = "확신도 충족" if conf >= config.CONFIDENCE_THRESHOLD else "최대 횟수 도달"
-        return f"승인 ({reason}): 리포팅으로 진행한다."
-    return (f"반려: 확신도 {conf:.2f} < {config.CONFIDENCE_THRESHOLD}. "
-            f"근거를 좁힐 tool 을 더 호출하라.")
+        return "승인 (확신도·증거 충족): 리포팅으로 진행한다."
+
+    if loop >= config.MAX_LOOPS:
+        update["finalize_accepted"] = True
+        update["finalize_status"] = "inconclusive"
+        update["final_hypothesis"] = hypothesis
+        update["final_confidence"] = conf
+        return "미확정 (루프 한계 도달): 확정 근거 없이 리포팅으로 진행한다."
+
+    if conf < config.CONFIDENCE_THRESHOLD:
+        return (f"반려: 확신도 {conf:.2f} < {config.CONFIDENCE_THRESHOLD}. "
+                f"근거를 좁힐 tool 을 더 호출하라.")
+    if not suspects:
+        return "반려: 그룹 대조 근거가 없다. compare_process_logs 로 두 그룹을 먼저 대조하라."
+    return (f"반려: 가설의 장비가 tool 결과의 suspect 목록({', '.join(sorted(suspects))})에 없다. "
+            f"근거가 지목한 장비로 가설을 세우라.")
+
+
+def _collect_suspects(findings: list[dict]) -> set[str]:
+    """findings 에서 결정론적 tool 이 지목한 장비 ID 를 모은다 (LLM 이 만들 수 없는 근거)."""
+    suspects = set()
+    for f in findings:
+        if f["tool"] != "compare_process_logs":
+            continue
+        result = f["result"]
+        for row in result.get("suspect_equipment", []) + result.get("group_spec_violations", []):
+            suspects.add(row["equipment_id"])
+    return suspects
 
 
 # ------------------------------------------------ 고정 골격: 리포팅
@@ -136,5 +171,6 @@ def report_node(state: dict) -> dict:
         findings=state["findings"],
         hypothesis=state.get("final_hypothesis"),
         confidence=state.get("final_confidence"),
+        finalize_status=state.get("finalize_status"),
     )
     return {"report": report}

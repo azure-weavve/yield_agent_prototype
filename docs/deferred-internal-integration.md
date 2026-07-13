@@ -16,12 +16,12 @@
 - 문제: LLM 이 `"high"` 같은 비숫자를 주면 ValueError 크래시
 - 처방: 변환 실패 시 0.0 취급 + 반려 메시지에 "confidence 는 0~1 숫자" 명시
 
-## 3. 게이트에 결정론적 증거 조건 추가 (codex 3번, 설계 개선)
+## 3. ~~게이트에 결정론적 증거 조건 추가~~ (2026-07-13 구현 완료)
 
-- 위치: `graph/nodes.py` `_finalize_gate`
-- 문제: 승인 기준이 LLM 자기 신고 confidence 뿐 — MAX_LOOPS 도달 시엔 근거 품질 무관 승인
-- 처방: findings 에서 결정론적 증거(공정 로그 in_spec=False 행 존재, 유사 사례 수 등)를 게이트 조건에 포함. "수치는 결정론, LLM 은 판단" 철학과 일치
-- 참고: MAX_LOOPS 강제 종료 시 "승인"이 아니라 "미확정(한계 도달)"으로 구분 기록하는 것도 함께 검토
+- 구현: `_finalize_gate` 가 findings 의 `compare_process_logs` 결과(suspect_equipment,
+  group_spec_violations)에서 장비를 수집해, 가설의 장비와 일치해야 승인.
+  MAX_LOOPS 강제 종료는 `finalize_status="inconclusive"` 로 구분 기록되고
+  리포트 결론도 "미확정(루프 한계 도달)" 톤으로 분기. 테스트: `tests/test_graph_nodes.py`
 
 ## 4. TLS 검증 기본값을 켜짐으로 (codex 4번)
 

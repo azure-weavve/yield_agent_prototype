@@ -87,3 +87,16 @@ def test_generate_report_handles_no_hypothesis():
         findings=[], hypothesis=None, confidence=None,
     )
     assert "미확정" in report
+
+
+def test_generate_report_renders_inconclusive_status():
+    # 한계 도달(inconclusive) 종료: 결론을 "미확정 + 유력 가설(후보)" 톤으로 표기
+    llm = ScriptedMockLLMClient()
+    report = llm.generate_report(
+        question="q", target_group=TARGET, status_summary="s",
+        findings=[], hypothesis="ETCH-9 rf_power 이상 추정", confidence=0.5,
+        finalize_status="inconclusive",
+    )
+    assert "미확정" in report
+    assert "한계" in report          # 왜 미확정인지 (루프 한계 도달)
+    assert "ETCH-9" in report        # 유력 가설은 후보로 남긴다
