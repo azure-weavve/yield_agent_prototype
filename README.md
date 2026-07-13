@@ -94,6 +94,12 @@ status ──▶ analyze ──(tool call)──▶ tools ──(반려/계속)�
 
 - **compare_process_logs**: 불량 그룹과 대조 그룹의 공정 로그를 대조해, 불량 그룹에서만
   공유되는 suspect 장비·스펙 이탈을 집계합니다.
+- **validate_data_completeness**: 그룹 대조 전에 수율 행·공정 로그의 누락과 중복을
+  검사합니다. blocked 면 비교 결과를 신뢰하지 않습니다 (허위 suspect 방지).
+- **compare_parameter_distribution**: 두 그룹의 파라미터 분포(평균·표준편차·효과 크기·
+  스펙 이탈률)를 비교합니다 — 스펙 안이어도 그룹 간 체계적 차이를 잡습니다.
+- **find_counterexamples**: 가설에 반하는 사례(장비를 거친 정상 wafer, 장비 없이 난
+  동일 불량)를 전수 데이터에서 찾아 가설의 특이성을 확인합니다.
 
 - **finalize 게이트**: Agent 가 결론을 제안(`finalize`)하면, 확신도(`confidence`)가 임계값
   (기본 0.8) 이상이고 **가설의 장비가 그룹 대조 결과가 지목한 suspect 와 일치**해야 승인됩니다.

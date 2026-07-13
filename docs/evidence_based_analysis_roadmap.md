@@ -314,9 +314,9 @@ Tool이나 프롬프트를 추가할 때는 과거 사례 또는 합성 시나�
 
 가장 높은 효과 대비 구현 난이도를 기준으로 아래 순서를 권장한다.
 
-1. `validate_data_completeness`
-2. `compare_parameter_distribution`
-3. `find_counterexamples`
+1. ~~`validate_data_completeness`~~ (2026-07-13 구현 완료)
+2. ~~`compare_parameter_distribution`~~ (2026-07-13 구현 완료)
+3. ~~`find_counterexamples`~~ (2026-07-13 구현 완료)
 4. EvidenceBundle 및 evidence score 기반 `finalize` 게이트
 5. `get_equipment_history`
 6. `analyze_yield_trend`
