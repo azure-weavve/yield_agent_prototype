@@ -102,6 +102,11 @@ class ScriptedMockLLMClient(LLMClient):
                 lines.append(f"     - 게이트: {f['result']}")
         if finalize_status == "inconclusive":
             conclusion = f"미확정 (루프 한계 도달) — 유력 가설: {hypothesis or '없음'}"
+        elif finalize_status == "no_anomaly":
+            conclusion = "이상 없음 — 수율 임계 미만 lot 이 없다."
+        elif finalize_status == "ungrouped":
+            conclusion = ("분석 미수행 — 수율 이상은 실재하나 불량 패턴으로 그룹을 "
+                          "묶지 못했다. defect 라벨 없는 저수율 wafer 를 별도 확인하라.")
         else:
             conclusion = hypothesis or "원인 미확정"
         conf = f" (확신도 {confidence})" if confidence is not None else ""
@@ -159,7 +164,9 @@ class OpenAILLMClient(LLMClient):
             "분석 과정(findings)의 수치는 절대 임의로 바꾸지 말고 그대로 인용하라. "
             "구성: 분석 대상/현황 → 분석 과정 요약 → 결론(원인 가설과 근거). "
             "판정이 inconclusive 면 결론을 확정하지 말고 '미확정(루프 한계 도달)'과 "
-            "유력 후보·추가 조사 필요 항목으로 서술하라."
+            "유력 후보·추가 조사 필요 항목으로 서술하라. "
+            "판정이 no_anomaly 면 '이상 없음', ungrouped 면 '수율 이상은 있으나 "
+            "그룹을 묶지 못해 분석 미수행'으로 서술하라 — 이 둘을 혼동하지 마라."
         )
         user = (
             f"질문: {question}\n불량 그룹: {', '.join(target_group)}\n현황: {status_summary}\n\n"

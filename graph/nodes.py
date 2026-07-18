@@ -37,18 +37,21 @@ def status_node(state: dict) -> dict:
         "loop": 0, "tool": "find_low_yield_lots", "args": {},
         "result": lots, "thought": "현황 파악 (고정 골격)",
     }]
-    if not lots:  # 이상 lot 없음 → 분석 루프 없이 리포팅으로 (build 의 _after_status)
+    if not lots:  # 출구 A: 이상 lot 없음 → 분석 루프 없이 리포팅으로 (build 의 _after_status)
         return {"target_group": [], "control_group": [],
-                "status_summary": summary, "findings": findings}
+                "status_summary": summary, "findings": findings,
+                "finalize_status": "no_anomaly"}
 
     grp = yt.find_defect_group(lots[0]["lot_id"])
     findings.append({
         "loop": 0, "tool": "find_defect_group", "args": {"lot_id": lots[0]["lot_id"]},
         "result": grp, "thought": "그룹 대조 대상 묶기 (고정 골격)",
     })
-    if not grp["target_group"]:  # 임계 미만 defect wafer 를 못 묶음 → 분석 루프 생략
+    if not grp["target_group"]:  # 출구 B: 수율 이상은 있으나 defect 패턴으로 못 묶음
+        # '이상 없음'(출구 A)과 다른 신호다 — 리포트가 구분하도록 별도 상태로 기록
         return {"target_group": [], "control_group": grp["control_group"],
-                "status_summary": summary, "findings": findings}
+                "status_summary": summary, "findings": findings,
+                "finalize_status": "ungrouped"}
 
     seed = [
         SystemMessage(content=ANALYZE_SYSTEM_PROMPT),

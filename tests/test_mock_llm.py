@@ -89,6 +89,22 @@ def test_generate_report_handles_no_hypothesis():
     assert "미확정" in report
 
 
+def test_generate_report_distinguishes_ungrouped_from_no_anomaly():
+    # 문제 3 (2026-07-18 리뷰): "그룹 못 묶음"(분석 미수행)과 "이상 없음"은 다른 결론이다
+    llm = ScriptedMockLLMClient()
+    ungrouped = llm.generate_report(
+        question="q", target_group=[], status_summary="LOT2407 평균 89.8",
+        findings=[], hypothesis=None, confidence=None, finalize_status="ungrouped",
+    )
+    no_anomaly = llm.generate_report(
+        question="q", target_group=[], status_summary="수율 임계 미만인 lot 없음.",
+        findings=[], hypothesis=None, confidence=None, finalize_status="no_anomaly",
+    )
+    assert "묶지 못" in ungrouped        # 수율 이상은 실재 — 분석 미수행임을 밝힌다
+    assert "이상 없음" in no_anomaly
+    assert "이상 없음" not in ungrouped  # 두 결론이 서로 뭉개지지 않는다
+
+
 def test_generate_report_renders_inconclusive_status():
     # 한계 도달(inconclusive) 종료: 결론을 "미확정 + 유력 가설(후보)" 톤으로 표기
     llm = ScriptedMockLLMClient()
