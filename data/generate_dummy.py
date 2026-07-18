@@ -42,6 +42,19 @@ FEATURED_PROCESS = "Etch"
 GROUP_WAFERS = ["W2406_02", "W2406_04", "W2406_06"]    # 불량 그룹 (수율 낮음)
 CONTROL_WAFERS = ["W2406_01", "W2406_03", "W2406_05"]  # 대조 그룹 (정상)
 
+# 구멍 케이스: 더미가 너무 착해서 안 드러나던 설계 구멍을 데이터로 드러낸다
+# (docs/2026-07-18-status-node-review-and-redesign.md 2절·4절).
+# (가) UNLABELED_LOW_WAFER: 저수율인데 defect 라벨이 'none' — 대조군 선정에 수율
+#     조건이 없으면 대조군에 섞인다. ETCH-9 를 '스펙 안으로' 통과시켜, 오염 시
+#     suspect_equipment(대조군 0명 조건)가 조용히 희석되는 것까지 재현한다.
+# (나) UNGROUPED_LOT: 저수율 lot 2개째 — 전 wafer 가 'none' 이라 defect 패턴으로
+#     그룹을 못 묶는 출구 B 의 무대. 평균 89.83 은 임계(90) 미만이되
+#     LOT2406 평균의 최대치(89.4)보다 높아 lots[0] 자리는 LOT2406 이 유지한다.
+UNLABELED_LOW_WAFER = "W2406_07"
+UNLABELED_LOW_YIELD = 88.5
+UNGROUPED_LOT = "LOT2407"
+UNGROUPED_WAFERS = [("W2407_01", 87.5), ("W2407_02", 89.5), ("W2407_03", 92.5)]
+
 # 패턴 그룹: 전부 과거 wafer — search_similar 의 유사 사례 풀.
 # center_spot 그룹은 GROUP_WAFERS 와 같은 임베딩 중심을 공유한다.
 PATTERN_GROUPS = [
@@ -149,6 +162,30 @@ def generate():
             vectors.append(_make_member(center, rng))
             wafer_ids.append(past_wid)
 
+    # ---------------- 구멍 케이스 (기존 난수열 보존을 위해 끝에 추가)
+    rows.append({
+        "wafer_id": UNLABELED_LOW_WAFER,
+        "lot_id": RECENT_LOT,
+        "yield": UNLABELED_LOW_YIELD,
+        "defect_type": "none",
+        "process_step": "Normal",
+        "date": RECENT_DATE,
+    })
+    vectors.append(_unit(rng.standard_normal(DIM)))
+    wafer_ids.append(UNLABELED_LOW_WAFER)
+
+    for wid, y in UNGROUPED_WAFERS:
+        rows.append({
+            "wafer_id": wid,
+            "lot_id": UNGROUPED_LOT,
+            "yield": y,
+            "defect_type": "none",
+            "process_step": "Normal",
+            "date": RECENT_DATE,
+        })
+        vectors.append(_unit(rng.standard_normal(DIM)))
+        wafer_ids.append(wid)
+
     logs = _make_process_logs(rows, rng)
     _write_sqlite(rows, logs)
     _write_index(vectors, wafer_ids)
@@ -164,6 +201,10 @@ def _make_process_logs(rows, rng):
             if r["process_step"] == step:
                 equip = f"{step.upper()}-9"                # 그룹 공유 이상 장비
                 value = round(hi + (hi - lo) * 0.2, 2)     # 스펙 상한 20% 초과
+            elif r["wafer_id"] == UNLABELED_LOW_WAFER and step == "Etch":
+                # 구멍 (가): 이상 장비를 거쳤지만 측정값은 스펙 내 — 라벨 없는 피해 wafer
+                equip = "ETCH-9"
+                value = round(hi - (hi - lo) * 0.02, 2)    # 상한 근처, 스펙 내
             else:
                 equip = f"{step.upper()}-{int(rng.integers(1, 4))}"
                 value = round(float(rng.uniform(lo, hi)), 2)

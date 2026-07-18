@@ -101,7 +101,9 @@ def find_defect_group(lot_id: str, threshold: float = config.YIELD_THRESHOLD) ->
 
     불량 그룹 = 수율 임계 미만이면서 같은 defect_type 을 공유하는 wafer 들
     (여러 유형이면 최대 그룹, 동수면 평균 수율 낮은 쪽).
-    대조 그룹 = 같은 lot 의 defect_type='none' wafer 들.
+    대조 그룹 = 같은 lot 의 defect_type='none' 이면서 수율 임계 이상인 wafer 들
+    — target 과 대칭인 수율 조건. 저수율 무라벨 wafer 가 대조군에 섞이면
+    compare_process_logs 의 suspect 판정(대조군 0명)이 조용히 희석되기 때문.
     """
     with _conn() as conn:
         top = conn.execute(
@@ -127,8 +129,12 @@ def find_defect_group(lot_id: str, threshold: float = config.YIELD_THRESHOLD) ->
         ]
         control = [
             r["wafer_id"] for r in conn.execute(
-                "SELECT wafer_id FROM yield WHERE lot_id = ? AND defect_type = 'none' ORDER BY wafer_id",
-                (lot_id,),
+                """
+                SELECT wafer_id FROM yield
+                WHERE lot_id = ? AND defect_type = 'none' AND yield >= ?
+                ORDER BY wafer_id
+                """,
+                (lot_id, threshold),
             ).fetchall()
         ]
         return {"lot_id": lot_id, "defect_type": defect,

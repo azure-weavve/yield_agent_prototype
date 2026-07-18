@@ -57,7 +57,8 @@ def test_find_counterexamples_tool_invokes():
         "equipment_id": "ETCH-9", "process_step": "Etch",
         "defect_type": "center_spot",
     })
-    assert res["passed_but_normal"] == []
+    # 구멍 (가) W2406_07: ETCH-9 를 스펙 안으로 통과한 무라벨 정상 — 유일한 반례
+    assert [r["wafer_id"] for r in res["passed_but_normal"]] == ["W2406_07"]
 
 def test_reason_is_optional_and_ignored():
     # reason 은 감사 기록용 — 있어도 없어도 결과는 같다

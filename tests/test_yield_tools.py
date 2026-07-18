@@ -31,6 +31,14 @@ def test_find_defect_group_splits_target_and_control():
     assert grp["control_group"] == ["W2406_01", "W2406_03", "W2406_05"]
 
 
+def test_find_defect_group_control_requires_yield_threshold():
+    # 문제 2 (2026-07-18 리뷰): 대조군도 target 과 대칭으로 수율 조건을 만족해야 한다.
+    # LOT2407 은 전 wafer 'none' — target 못 묶고(출구 B 입력), 대조군 자격은 92.5 뿐.
+    grp = yt.find_defect_group("LOT2407")
+    assert grp["target_group"] == []
+    assert grp["control_group"] == ["W2407_03"]      # 87.5, 89.5 는 저수율 → 오염원 제외
+
+
 def test_find_defect_group_unknown_lot_returns_empty():
     grp = yt.find_defect_group("LOT_NOPE")
     assert grp["defect_type"] == ""
@@ -163,12 +171,14 @@ def test_compare_parameter_distribution_empty_inputs():
 # ------------------------------------------------ find_counterexamples
 
 
-def test_find_counterexamples_zero_for_etch9_hypothesis():
-    # 더미 DB 사실: ETCH-9 통과 7장 전부 center_spot, center_spot 7장 전부 ETCH-9
+def test_find_counterexamples_one_for_etch9_hypothesis():
+    # 더미 DB 사실: ETCH-9 통과 8장 중 7장 center_spot + 구멍 (가) W2406_07 은
+    # 스펙 안으로 통과한 무라벨 정상 — 반례 1건. center_spot 7장은 전부 ETCH-9.
     res = yt.find_counterexamples("ETCH-9", "Etch", "center_spot")
-    assert res["equipment_wafers"] == 7
-    assert res["passed_but_normal"] == []
-    assert res["passed_but_normal_rate"] == 0.0
+    assert res["equipment_wafers"] == 8
+    assert [r["wafer_id"] for r in res["passed_but_normal"]] == ["W2406_07"]
+    assert res["passed_but_normal"][0]["in_spec"] is True
+    assert res["passed_but_normal_rate"] == 0.125
     assert res["defect_wafers"] == 7
     assert res["defect_without_equipment"] == []
     assert res["defect_without_equipment_rate"] == 0.0
