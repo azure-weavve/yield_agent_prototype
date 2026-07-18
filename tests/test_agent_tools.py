@@ -58,3 +58,9 @@ def test_find_counterexamples_tool_invokes():
         "defect_type": "center_spot",
     })
     assert res["passed_but_normal"] == []
+
+def test_reason_is_optional_and_ignored():
+    # reason 은 감사 기록용 — 있어도 없어도 결과는 같다
+    args = {"wafer_ids": ["W2406_02"]}
+    assert (at.TOOLS_BY_NAME["aggregate_defects"].invoke(args)
+            == at.TOOLS_BY_NAME["aggregate_defects"].invoke({**args, "reason": "테스트"}))

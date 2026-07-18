@@ -23,7 +23,8 @@ ANALYZE_SYSTEM_PROMPT = """너는 반도체 수율 분석 전문가다. 불량 �
 
 규칙:
 - 매 단계, 지금까지의 tool 결과로 원인을 확신할 수 있는지 스스로 평가하라.
-- 확신이 부족하면 근거를 좁힐 tool 을 하나 더 호출하라. 그룹 간 차이(장비·파라미터)가 핵심 근거다 — compare_process_logs 로 두 그룹을 대조하라. tool 호출 시 현재 가설과 이 tool 을 부르는 이유를 한두 문장으로 함께 서술하라 (분석 기록으로 남는다).
+- 확신이 부족하면 근거를 좁힐 tool 을 하나 더 호출하라. 그룹 간 차이(장비·파라미터)가 핵심 근거다 — compare_process_logs 로 두 그룹을 대조하라.
+- tool 을 호출할 때는 reason 인자에 현재 가설과 그 tool 을 고른 이유를 한 문장으로 반드시 담아라 — 이 서술이 그대로 분석 감사 기록에 남는다.
 - 원인을 좁혔고 근거가 충분하면 finalize(hypothesis, confidence) 로 종료를 제안하라. 확신도가 낮으면 반려된다.
 - 수치는 tool 결과를 그대로 인용하고 절대 임의로 만들지 마라."""
 
@@ -103,14 +104,24 @@ def tools_node(state: dict) -> dict:
                 "result": verdict, "thought": ai.content or "",
             })
         else:
-            result = TOOLS_BY_NAME[call["name"]].invoke(call["args"])
+            tool = TOOLS_BY_NAME.get(call["name"])
+            if tool is None:
+                result = (f"오류: '{call['name']}' 는 존재하지 않는 tool 이다. "
+                          f"사용 가능한 tool: {', '.join(TOOLS_BY_NAME)}. "
+                          f"이 중에서 다시 선택해 호출하라.")
+            else:
+                try:
+                    result = tool.invoke(call["args"])
+                except Exception as e:  # 인자 스키마 위반·조회 실패 등
+                    result = (f"오류: {call['name']} 실행 실패 "
+                              f"({type(e).__name__}: {e}). 인자를 확인하고 다시 호출하라.")
             out_msgs.append(ToolMessage(
                 json.dumps(result, ensure_ascii=False),
                 tool_call_id=call["id"], name=call["name"],
             ))
             findings.append({
                 "loop": loop, "tool": call["name"], "args": call["args"],
-                "result": result, "thought": ai.content or "",
+                "result": result, "thought": ai.content or call["args"].get("reason", ""),
             })
 
     return {"messages": out_msgs, "findings": findings, **update}
@@ -123,7 +134,16 @@ def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) ->
     (a) 그룹 대조 근거가 존재하고 (b) 가설의 장비가 그 근거의 suspect 와 일치해야 승인.
     (c) 루프 한계 도달 강제 종료는 승인이 아니라 '미확정' 으로 구분 기록한다.
     """
-    conf = float(args.get("confidence", 0.0))
+    raw = args.get("confidence", 0.0)
+    try:
+        conf = float(raw)
+    except (TypeError, ValueError):
+        conf = 0.0
+        conf_note = (f" (confidence 로 받은 '{raw}' 은 숫자가 아니다 — "
+                     f"0~1 사이 숫자로 다시 제출하라)")
+    else:
+        conf_note = ""
+
     hypothesis = args.get("hypothesis", "")
     suspects = _collect_suspects(findings)
 
@@ -142,8 +162,8 @@ def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) ->
         return "미확정 (루프 한계 도달): 확정 근거 없이 리포팅으로 진행한다."
 
     if conf < config.CONFIDENCE_THRESHOLD:
-        return (f"반려: 확신도 {conf:.2f} < {config.CONFIDENCE_THRESHOLD}. "
-                f"근거를 좁힐 tool 을 더 호출하라.")
+        return (f"반려: 확신도 {conf:.2f} < {config.CONFIDENCE_THRESHOLD}."
+                f"{conf_note} 근거를 좁힐 tool 을 더 호출하라.")
     if not suspects:
         return "반려: 그룹 대조 근거가 없다. compare_process_logs 로 두 그룹을 먼저 대조하라."
     return (f"반려: 가설의 장비가 tool 결과의 suspect 목록({', '.join(sorted(suspects))})에 없다. "

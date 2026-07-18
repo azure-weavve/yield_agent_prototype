@@ -141,3 +141,35 @@ def test_report_node_marks_inconclusive_conclusion():
     })
     assert "미확정" in out["report"]
     assert "ETCH-9" in out["report"]  # 유력 가설은 후보로는 남긴다
+
+def test_tools_node_recovers_from_unknown_tool_name():
+    ai = AIMessage(content="", tool_calls=[
+        {"name": "functions.get_wafer", "args": {"wafer_id": "W2406_02"}, "id": "c1"}])
+    out = nodes.tools_node({"messages": [ai], "loop_count": 1})
+    assert "오류" in out["messages"][0].content
+    assert "get_wafer" in out["messages"][0].content
+
+
+def test_tools_node_recovers_from_bad_args():
+    ai = AIMessage(content="", tool_calls=[
+        {"name": "aggregate_defects", "args": {"wafer_ids": "W2406_02"}, "id": "c1"}])
+    out = nodes.tools_node({"messages": [ai], "loop_count": 1})
+    assert "오류" in out["messages"][0].content
+
+
+def test_finalize_gate_handles_non_numeric_confidence():
+    ai = AIMessage(content="종료 제안", tool_calls=[
+        {"name": "finalize", "args": {"hypothesis": "Etch ETCH-9 원인",
+                                      "confidence": "high"}, "id": "cf"}])
+    out = nodes.tools_node({"messages": [ai], "loop_count": 3, "findings": []})
+    assert "finalize_accepted" not in out
+    assert "숫자" in out["messages"][0].content
+
+
+def test_tools_node_falls_back_to_reason_when_content_empty():
+    # 실제 LLM 은 tool call 시 content 를 비우므로 reason 인자가 감사 기록을 채운다
+    ai = AIMessage(content="", tool_calls=[
+        {"name": "get_process_log",
+         "args": {"wafer_id": "W2406_02", "reason": "스펙 이탈 확인"}, "id": "c1"}])
+    out = nodes.tools_node({"messages": [ai], "loop_count": 1})
+    assert out["findings"][0]["thought"] == "스펙 이탈 확인"
