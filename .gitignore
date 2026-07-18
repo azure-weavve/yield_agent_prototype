@@ -10,3 +10,5 @@ data/embeddings/
 
 # 내부 설계 문서 (repo 비공개)
 yield_agent_design_plan_v2.md
+
+.env

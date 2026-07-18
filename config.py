@@ -1,9 +1,14 @@
 """프로토타입 설정. 데이터 경로 + 외부 연동(EDS/LLM) 모드 토글.
 
 핵심: EDS·LLM 은 mode 로 데모(local/mock) ↔ 운영(http/사내) 구현을 바꿔 끼운다.
+  - 정확한건 사내 코드가 정확. 여기는 이런식이다라고만
 """
 
+import os
 from pathlib import Path
+from dotenv import load_dotenv
+
+load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = BASE_DIR / "data" / "yield.db"
@@ -19,10 +24,10 @@ EDS_HTTP_URL = "https://<사내-eds-호스트>/search"  # 운영 시 교체
 EDS_HTTP_VERIFY = False  # 사내 자체 인증서 → 프로토타입은 우회, 운영은 .pem 경로로 전환
 
 # LLM: "mock" = 규칙 기반(사내망 밖 데모), "openai" = 사내 OpenAI 호환 서빙
-LLM_MODE = "mock"
-LLM_BASE_URL = "https://<사내-llm-호스트>/v1"  # 운영 시 교체
-LLM_API_KEY = "dummy"  # 사내 서빙이 키 불요면 임의값
-LLM_MODEL = "<사내-모델명>"
+LLM_MODE = os.getenv("LLM_MODE", "mock")
+LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://<사내-llm-호스트>/v1")
+LLM_API_KEY = os.getenv("LLM_API_KEY", "dummy")
+LLM_MODEL = os.getenv("LLM_MODEL", "<사내-모델명>")
 
 # 분석 루프 통제 (analysis_loop_design.md 부품 4b)
 MAX_LOOPS = 6              # 가드레일: 최대 순환 횟수 (무한루프 차단)

@@ -147,7 +147,7 @@ class OpenAILLMClient(LLMClient):
             model=config.LLM_MODEL,
             temperature=0,
         )
-        self.analyzer = self.llm.bind_tools(ALL_TOOLS)
+        self.analyzer = self.llm.bind_tools(ALL_TOOLS, parallel_tool_calls=False)
 
     def analyze_step(self, messages: list) -> AIMessage:
         return self.analyzer.invoke(messages)
