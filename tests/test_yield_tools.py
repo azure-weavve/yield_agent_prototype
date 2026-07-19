@@ -82,7 +82,7 @@ def _make_db(tmp_path, monkeypatch, rows, logs):
     conn.execute("""CREATE TABLE process_log (
         wafer_id TEXT NOT NULL, process_step TEXT NOT NULL, equipment_id TEXT NOT NULL,
         param_name TEXT NOT NULL, param_value REAL NOT NULL,
-        spec_low REAL NOT NULL, spec_high REAL NOT NULL)""")
+        spec_low REAL, spec_high REAL)""")
     conn.executemany("INSERT INTO process_log VALUES (?,?,?,?,?,?,?)", logs)
     conn.commit()
     conn.close()
@@ -199,3 +199,66 @@ def test_find_counterexamples_unknown_equipment():
     assert res["equipment_wafers"] == 0
     assert res["passed_but_normal_rate"] == 0.0
     assert res["defect_without_equipment_rate"] == 1.0
+
+
+# ------------------------------------------------ spec NULL 처리 (사내 실데이터: 편측/미정 spec)
+
+
+def test_compare_parameter_distribution_null_spec_no_crash(tmp_path, monkeypatch):
+    # 같은 (step, param) 3행 중 spec 있는 행 2개, 그중 1개 이탈 → 이탈률 0.5.
+    # 다른 (step, param) 은 전 행 spec 없음 → 이탈률 None.
+    _make_db(
+        tmp_path, monkeypatch,
+        rows=[("W1", "L1", 95.0, "none", "Normal", "2024-06-01"),
+              ("W2", "L1", 95.0, "none", "Normal", "2024-06-01"),
+              ("W3", "L1", 95.0, "none", "Normal", "2024-06-01")],
+        logs=[("W1", "Etch", "ETCH-1", "rf_power", 500.0, 450.0, 550.0),   # spec 있음, 이탈 아님
+              ("W2", "Etch", "ETCH-1", "rf_power", 600.0, 450.0, 550.0),   # spec 있음, 이탈
+              ("W3", "Etch", "ETCH-1", "rf_power", 700.0, None, None),     # spec 없음
+              ("W1", "CMP", "CMP-1", "pressure", 10.0, None, None)],      # 전 행 spec 없음
+    )
+    rows = yt.compare_parameter_distribution(["W1", "W2", "W3"], [])
+    etch = next(r for r in rows if (r["process_step"], r["param_name"]) == ("Etch", "rf_power"))
+    assert etch["group"]["n"] == 3                       # 기술통계는 전체 행 기준 유지
+    assert etch["spec_violation_rate_group"] == 0.5       # 분모 = spec 있는 행 수(2)
+    cmp_row = next(r for r in rows if (r["process_step"], r["param_name"]) == ("CMP", "pressure"))
+    assert cmp_row["spec_violation_rate_group"] is None    # spec 있는 행 0개 → 판정 불가
+
+
+def test_compare_parameter_distribution_one_sided_spec_high_violation(tmp_path, monkeypatch):
+    # spec_low 만 NULL(편측), param_value 가 spec_high 초과 → 이탈로 잡혀야 한다.
+    _make_db(
+        tmp_path, monkeypatch,
+        rows=[("W1", "L1", 95.0, "none", "Normal", "2024-06-01")],
+        logs=[("W1", "Etch", "ETCH-1", "rf_power", 600.0, None, 550.0)],
+    )
+    rows = yt.compare_parameter_distribution(["W1"], [])
+    etch = rows[0]
+    assert etch["spec_violation_rate_group"] == 1.0
+
+
+def test_find_counterexamples_null_spec_in_spec_none(tmp_path, monkeypatch):
+    _make_db(
+        tmp_path, monkeypatch,
+        rows=[("W1", "L1", 95.0, "none", "Normal", "2024-06-01"),
+              ("W2", "L1", 95.0, "none", "Normal", "2024-06-01")],
+        logs=[("W1", "Etch", "ETCH-1", "rf_power", 500.0, None, None),     # 양쪽 spec 없음
+              ("W2", "Etch", "ETCH-1", "rf_power", 500.0, None, 550.0)],   # 편측, spec 이내
+    )
+    res = yt.find_counterexamples("ETCH-1", "Etch", "none_placeholder")
+    by_id = {r["wafer_id"]: r for r in res["passed_but_normal"]}
+    assert by_id["W1"]["in_spec"] is None
+    assert by_id["W2"]["in_spec"] is True
+
+
+def test_compare_process_logs_one_sided_spec_violation_and_both_null_excluded(tmp_path, monkeypatch):
+    _make_db(
+        tmp_path, monkeypatch,
+        rows=[("W1", "L1", 80.0, "center_spot", "Normal", "2024-06-01")],
+        logs=[("W1", "Etch", "ETCH-9", "rf_power", 600.0, None, 550.0),    # 편측, 상한 초과 → 이탈
+              ("W1", "CMP", "CMP-1", "pressure", 10.0, None, None)],      # 양쪽 NULL → 안 잡힘
+    )
+    res = yt.compare_process_logs(["W1"], [])
+    steps = {(v["process_step"], v["param_name"]) for v in res["group_spec_violations"]}
+    assert ("Etch", "rf_power") in steps
+    assert ("CMP", "pressure") not in steps

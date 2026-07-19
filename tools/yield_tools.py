@@ -182,7 +182,8 @@ def compare_process_logs(group_ids: list[str], control_ids: list[str]) -> dict:
                        param_value, spec_low, spec_high
                 FROM process_log
                 WHERE wafer_id IN ({placeholders})
-                  AND NOT (spec_low <= param_value AND param_value <= spec_high)
+                  AND ((spec_low IS NOT NULL AND param_value < spec_low)
+                       OR (spec_high IS NOT NULL AND param_value > spec_high))
                 ORDER BY wafer_id
                 """,
                 group_ids,
@@ -299,9 +300,12 @@ def compare_parameter_distribution(group_ids: list[str], control_ids: list[str],
         if not values:
             return ({"n": 0, "mean": None, "median": None, "std": None,
                      "min": None, "max": None}, 0.0)
+        spec_rows = [r for r in rows if r["spec_low"] is not None or r["spec_high"] is not None]
         violations = sum(
-            1 for r in rows
-            if not (r["spec_low"] <= r["param_value"] <= r["spec_high"]))
+            1 for r in spec_rows
+            if (r["spec_low"] is not None and r["param_value"] < r["spec_low"])
+            or (r["spec_high"] is not None and r["param_value"] > r["spec_high"]))
+        violation_rate = round(violations / len(spec_rows), 3) if spec_rows else None
         return ({
             "n": len(values),
             "mean": round(statistics.fmean(values), 3),
@@ -309,7 +313,7 @@ def compare_parameter_distribution(group_ids: list[str], control_ids: list[str],
             "std": round(statistics.stdev(values), 3) if len(values) >= 2 else None,
             "min": min(values),
             "max": max(values),
-        }, round(violations / len(values), 3))
+        }, violation_rate)
 
     def _cohens_d(g_vals, c_vals):
         n1, n2 = len(g_vals), len(c_vals)
@@ -375,10 +379,16 @@ def find_counterexamples(equipment_id: str, process_step: str,
             (defect_type,),
         ).fetchall()]
 
+    def _in_spec(u):
+        if u["spec_low"] is None and u["spec_high"] is None:
+            return None
+        low_ok = u["spec_low"] is None or u["spec_low"] <= u["param_value"]
+        high_ok = u["spec_high"] is None or u["param_value"] <= u["spec_high"]
+        return bool(low_ok and high_ok)
+
     user_ids = {u["wafer_id"] for u in users}
     passed_but_normal = [
-        {"wafer_id": u["wafer_id"], "yield": u["yield"],
-         "in_spec": bool(u["spec_low"] <= u["param_value"] <= u["spec_high"])}
+        {"wafer_id": u["wafer_id"], "yield": u["yield"], "in_spec": _in_spec(u)}
         for u in users if u["defect_type"] == "none"
     ]
     defect_without_equipment = [d for d in defects if d["wafer_id"] not in user_ids]
