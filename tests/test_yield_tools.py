@@ -41,28 +41,6 @@ def test_find_low_yield_lots_threshold_binds_at_runtime(monkeypatch):
     assert yt.find_low_yield_lots() == []
 
 
-def test_find_defect_group_splits_target_and_control():
-    grp = yt.find_defect_group("LOT2406")
-    assert grp["defect_type"] == "center_spot"
-    assert grp["target_group"] == ["W2406_02", "W2406_04", "W2406_06"]
-    assert grp["control_group"] == ["W2406_01", "W2406_03", "W2406_05"]
-
-
-def test_find_defect_group_control_requires_yield_threshold():
-    # 문제 2 (2026-07-18 리뷰): 대조군도 target 과 대칭으로 수율 조건을 만족해야 한다.
-    # LOT2407 은 전 wafer 'none' — target 못 묶고(출구 B 입력), 대조군 자격은 92.5 뿐.
-    grp = yt.find_defect_group("LOT2407")
-    assert grp["target_group"] == []
-    assert grp["control_group"] == ["W2407_03"]      # 87.5, 89.5 는 저수율 → 오염원 제외
-
-
-def test_find_defect_group_unknown_lot_returns_empty():
-    grp = yt.find_defect_group("LOT_NOPE")
-    assert grp["defect_type"] == ""
-    assert grp["target_group"] == []
-    assert grp["control_group"] == []
-
-
 def test_compare_process_logs_finds_suspect_equipment_and_violations():
     res = yt.compare_process_logs(
         ["W2406_02", "W2406_04", "W2406_06"],

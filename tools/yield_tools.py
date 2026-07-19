@@ -124,51 +124,6 @@ def get_process_log(wafer_id: str) -> list[dict]:
         return out
 
 
-def find_defect_group(lot_id: str, threshold: float = config.YIELD_THRESHOLD) -> dict:
-    """lot 내 그룹 대조 분석 입력 (그룹 판정은 코드가 한다 — 결정론적).
-
-    불량 그룹 = 수율 임계 미만이면서 같은 defect_type 을 공유하는 wafer 들
-    (여러 유형이면 최대 그룹, 동수면 평균 수율 낮은 쪽).
-    대조 그룹 = 같은 lot 의 defect_type='none' 이면서 수율 임계 이상인 wafer 들
-    — target 과 대칭인 수율 조건. 저수율 무라벨 wafer 가 대조군에 섞이면
-    compare_process_logs 의 suspect 판정(대조군 0명)이 조용히 희석되기 때문.
-    """
-    with _conn() as conn:
-        top = conn.execute(
-            """
-            SELECT defect_type FROM yield
-            WHERE lot_id = ? AND yield < ? AND defect_type != 'none'
-            GROUP BY defect_type
-            ORDER BY COUNT(*) DESC, AVG(yield) ASC
-            LIMIT 1
-            """,
-            (lot_id, threshold),
-        ).fetchone()
-        defect = top["defect_type"] if top else ""
-        target = [] if not defect else [
-            r["wafer_id"] for r in conn.execute(
-                """
-                SELECT wafer_id FROM yield
-                WHERE lot_id = ? AND yield < ? AND defect_type = ?
-                ORDER BY wafer_id
-                """,
-                (lot_id, threshold, defect),
-            ).fetchall()
-        ]
-        control = [
-            r["wafer_id"] for r in conn.execute(
-                """
-                SELECT wafer_id FROM yield
-                WHERE lot_id = ? AND defect_type = 'none' AND yield >= ?
-                ORDER BY wafer_id
-                """,
-                (lot_id, threshold),
-            ).fetchall()
-        ]
-        return {"lot_id": lot_id, "defect_type": defect,
-                "target_group": target, "control_group": control}
-
-
 def compare_process_logs(group_ids: list[str], control_ids: list[str]) -> dict:
     """불량 그룹 vs 대조 그룹 공정 로그 대조 (그룹 대조의 수치 계산은 전부 여기서).
 
