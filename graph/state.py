@@ -13,15 +13,16 @@ from langgraph.graph.message import add_messages
 
 
 class AgentState(TypedDict, total=False):
-    question: str                                   # 사용자 질문
+    target_wafers: list[str]                        # 분석 대상 입력 (lot_wafer 결합 형태)
+    target_source: str                              # 입력 출처: manual | auto
     messages: Annotated[list, add_messages]         # LLM 대화 누적 (루프의 문맥)
     findings: Annotated[list[dict], operator.add]   # 감사 기록 누적 (분석 근거)
-    target_group: list[str]                         # 현황파악이 묶은 불량 그룹 (유사 불량 wafer)
-    control_group: list[str]                        # 같은 lot 의 정상 wafer (대조 그룹)
+    target_group: list[str]                         # 정규화 계층이 확정한 불량 그룹
+    control_group: list[str]                        # 형제 lot 합집합 대조 그룹
     status_summary: str                             # 현황파악 요약 (리포트 재료)
     loop_count: int                                 # 순환 횟수 (가드레일)
     finalize_accepted: bool                         # 게이트 승인 여부
-    finalize_status: str                            # 종료 판정 구분: confirmed | inconclusive | no_anomaly | ungrouped
+    finalize_status: str    # confirmed | inconclusive | no_anomaly | unknown_target | isolated | control_insufficient
     final_hypothesis: str                           # 승인된 원인 가설
     final_confidence: float                         # 승인 시 확신도
     report: str                                     # 최종 리포트

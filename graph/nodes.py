@@ -14,6 +14,7 @@ from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 
 import config
 from llm.client import get_llm
+from tools import grouping
 from tools import yield_tools as yt
 from tools.agent_tools import TOOLS_BY_NAME
 
@@ -31,56 +32,78 @@ ANALYZE_SYSTEM_PROMPT = """너는 반도체 수율 분석 전문가다. 불량 �
 
 # ------------------------------------------------ 고정 골격: 현황 파악
 def status_node(state: dict) -> dict:
-    lots = yt.find_low_yield_lots()
-    summary = _summarize_lots(lots)
-    findings = [{
-        "loop": 0, "tool": "find_low_yield_lots", "args": {},
-        "result": lots, "thought": "현황 파악 (고정 골격)",
-    }]
-    if not lots:  # 출구 A: 이상 lot 없음 → 분석 루프 없이 리포팅으로 (build 의 _after_status)
+    targets = state.get("target_wafers") or []
+    source = state.get("target_source", "manual")
+    if not targets:   # 자동 선정이 빈손 = 이상 없음 (수동 모드 빈 입력은 main 이 차단)
         return {"target_group": [], "control_group": [],
-                "status_summary": summary, "findings": findings,
-                "finalize_status": "no_anomaly"}
+                "status_summary": "수율 임계 미만인 lot 없음 (자동 선정 결과 없음).",
+                "findings": [], "finalize_status": "no_anomaly"}
 
-    grp = yt.find_defect_group(lots[0]["lot_id"])
-    findings.append({
-        "loop": 0, "tool": "find_defect_group", "args": {"lot_id": lots[0]["lot_id"]},
-        "result": grp, "thought": "그룹 대조 대상 묶기 (고정 골격)",
-    })
-    if not grp["target_group"]:  # 출구 B: 수율 이상은 있으나 defect 패턴으로 못 묶음
-        # '이상 없음'(출구 A)과 다른 신호다 — 리포트가 구분하도록 별도 상태로 기록
-        return {"target_group": [], "control_group": grp["control_group"],
+    norm = grouping.normalize_target(targets)
+    findings = [{"loop": 0, "tool": "normalize_target", "args": {"wafers": targets},
+                 "result": norm, "thought": "대상 정규화 (고정 골격)"}]
+    if norm["unknown_wafers"]:
+        summary = f"입력 wafer 미존재: {', '.join(norm['unknown_wafers'])}"
+        return {"target_group": [], "control_group": [], "status_summary": summary,
+                "findings": findings, "finalize_status": "unknown_target"}
+    if norm["isolated"]:
+        summary = (f"분석 대상 입력 ({source}): {', '.join(targets)}\n"
+                   f"형제 묶기 (EDS, 컷오프 {config.SIBLING_MIN_SIMILARITY}): 형제 없음 — "
+                   f"고립 패턴, 자동 분석 범위 밖.")
+        return {"target_group": norm["target_group"], "control_group": [],
                 "status_summary": summary, "findings": findings,
-                "finalize_status": "ungrouped"}
+                "finalize_status": "isolated"}
 
+    ctrl = grouping.select_control(norm["target_group"])
+    findings.append({"loop": 0, "tool": "select_control",
+                     "args": {"target_group": norm["target_group"]},
+                     "result": ctrl, "thought": "대조군 선정 (고정 골격)"})
+    summary = _summarize_target(source, targets, norm, ctrl)
+    if ctrl["insufficient"]:
+        return {"target_group": norm["target_group"],
+                "control_group": ctrl["control_group"],
+                "status_summary": summary, "findings": findings,
+                "finalize_status": "control_insufficient"}
+
+    label = norm["label_counts"][0]["defect_type"] if norm["label_counts"] else "미상"
+    groups_json = json.dumps(
+        {"target": norm["target_group"], "control": ctrl["control_group"]},
+        ensure_ascii=False)
     seed = [
         SystemMessage(content=ANALYZE_SYSTEM_PROMPT),
         HumanMessage(content=(
             f"현황:\n{summary}\n\n"
-            f"불량 그룹 ({grp['defect_type']}): {', '.join(grp['target_group'])}\n"
-            f"대조 그룹 (정상): {', '.join(grp['control_group'])}\n"
-            f"질문: {state['question']}"
+            f"불량 그룹 ({label}): {', '.join(norm['target_group'])}\n"
+            f"대조 그룹 (정상): {', '.join(ctrl['control_group'])}\n"
+            f"분석 대상: {', '.join(targets)} 의 불량 원인 분석\n"
+            f"GROUPS_JSON={groups_json}"
         )),
     ]
     return {
         "messages": seed,
-        "target_group": grp["target_group"],
-        "control_group": grp["control_group"],
+        "target_group": norm["target_group"],
+        "control_group": ctrl["control_group"],
         "status_summary": summary,
         "findings": findings,
     }
 
 
-def _summarize_lots(lots: list[dict]) -> str:
-    if not lots:
-        return "수율 임계 미만인 lot 없음."
-    lines = []
-    for lot in lots:
-        w = lot["worst_wafer"]
-        lines.append(
-            f"- {lot['lot_id']}: 평균 수율 {lot['avg_yield']} ({lot['wafer_count']}장), "
-            f"최저 wafer {w['wafer_id']} (수율 {w['yield']}, 불량 {w['defect_type']})"
-        )
+def _summarize_target(source: str, targets: list[str], norm: dict, ctrl: dict) -> str:
+    lines = [f"분석 대상 입력 ({source}): {', '.join(targets)}"]
+    if norm["mode"] == "single":
+        sib = ", ".join(f"{s['wafer_id']}({s['similarity']})" for s in norm["siblings"])
+        lines.append(f"형제 묶기 (EDS, 컷오프 {config.SIBLING_MIN_SIMILARITY}): "
+                     f"{len(norm['target_group'])}장 — 입력 + {sib}")
+    else:
+        lines.append(f"그룹 입력: {len(norm['target_group'])}장 그대로 사용 (묶기 생략)")
+    labels = ", ".join(f"{c['defect_type']} {c['count']}장" for c in norm["label_counts"])
+    lines.append(f"defect 라벨 (참고): {labels}")
+    src = ", ".join(f"{lot} {len(ws)}장" for lot, ws in sorted(ctrl["sources"].items()))
+    lines.append(f"대조군 ({ctrl['stage']}단계: 형제 lot 내 합집합): "
+                 f"{len(ctrl['control_group'])}장 — {src}")
+    if ctrl["insufficient"]:
+        lines.append(f"대조군 부족: {len(ctrl['control_group'])}장 < "
+                     f"{config.CONTROL_MIN_SIZE} (lot 내 대조 한계 — 추후 분석 필요)")
     return "\n".join(lines)
 
 
@@ -188,7 +211,8 @@ def _collect_suspects(findings: list[dict]) -> set[str]:
 # ------------------------------------------------ 고정 골격: 리포팅
 def report_node(state: dict) -> dict:
     report = _llm.generate_report(
-        question=state["question"],
+        target_wafers=state.get("target_wafers", []),
+        target_source=state.get("target_source", "manual"),
         target_group=state["target_group"],
         status_summary=state["status_summary"],
         findings=state["findings"],

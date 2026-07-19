@@ -34,10 +34,12 @@ def test_tools_at_max_loops_forced_to_report():
     assert _after_tools({"loop_count": config.MAX_LOOPS}) == "report"
 
 
-def test_status_with_group_goes_analyze():
+def test_status_without_early_exit_goes_analyze():
     assert _after_status({"target_group": ["W2406_02"]}) == "analyze"
 
 
-def test_status_without_group_goes_report():
-    # 이상 lot 이 없거나 defect 그룹을 못 묶으면 분석 루프를 건너뛴다
-    assert _after_status({"target_group": []}) == "report"
+def test_status_with_early_exit_status_goes_report():
+    # 대상 없음/미지 대상/고립/대조군 부족 — finalize_status 가 찍힌 조기 출구는 전부 report
+    assert _after_status({"target_group": [], "finalize_status": "no_anomaly"}) == "report"
+    assert _after_status({"target_group": ["W2407_01", "W2407_02"],
+                          "finalize_status": "control_insufficient"}) == "report"

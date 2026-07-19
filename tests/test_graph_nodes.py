@@ -1,6 +1,5 @@
 """노드 단위 검증 — 특히 tools 노드의 finalize 게이트(승인/반려)와 감사 기록."""
 
-import pytest
 from langchain_core.messages import AIMessage, ToolMessage
 
 from graph import nodes
@@ -35,45 +34,49 @@ EVIDENCE_FINDING = {
 
 
 def test_status_node_sets_groups_and_seed_messages():
-    out = nodes.status_node({"question": "원인 분석해줘"})
-    assert out["target_group"] == ["W2406_02", "W2406_04", "W2406_06"]
-    assert out["control_group"] == ["W2406_01", "W2406_03", "W2406_05"]
-    assert "불량 그룹 (center_spot)" in out["messages"][-1].content
-    assert "대조 그룹 (정상)" in out["messages"][-1].content
-    assert out["findings"][0]["loop"] == 0                   # 현황파악도 감사 기록에 남는다
-    assert out["findings"][0]["tool"] == "find_low_yield_lots"
-    assert out["findings"][1]["tool"] == "find_defect_group"  # 그룹 묶기도 감사 기록에
+    out = nodes.status_node({"target_wafers": ["W2406_02"], "target_source": "manual"})
+    assert out["target_group"][0] == "W2406_02"
+    assert {"W2406_04", "W2406_06"} < set(out["target_group"])   # EDS 형제 (전 lot)
+    assert "W2406_07" not in out["control_group"]                # 수율 조건 (문제 2)
+    seed = out["messages"][-1].content
+    assert "GROUPS_JSON=" in seed                                # mock 파싱 계약 (문제 7)
+    assert [f["tool"] for f in out["findings"]] == ["normalize_target", "select_control"]
+    assert all(f["loop"] == 0 for f in out["findings"])
 
 
-def test_status_exit_no_anomaly_is_distinguishable(monkeypatch):
-    # 문제 3 (2026-07-18 리뷰): 출구 A(이상 lot 없음)는 finalize_status 로 구분한다
-    monkeypatch.setattr(nodes.yt, "find_low_yield_lots", lambda: [])
-    out = nodes.status_node({"question": "수율 이상 분석"})
+def test_status_exit_no_anomaly_when_no_targets():
+    # 자동 선정이 빈손이면(이상 lot 없음) 대상 없음 = no_anomaly
+    out = nodes.status_node({"target_wafers": [], "target_source": "auto"})
     assert out["target_group"] == []
     assert out["finalize_status"] == "no_anomaly"
 
 
-def test_status_exit_ungrouped_is_distinguishable(monkeypatch):
-    # 문제 3: 출구 B(수율 이상은 실재하나 defect 패턴으로 그룹 못 묶음)는
-    # '이상 없음'과 뭉개지면 안 된다 — 별도 finalize_status 로 리포트까지 전달한다
-    monkeypatch.setattr(nodes.yt, "find_low_yield_lots", lambda: [{
-        "lot_id": "LOT2407", "avg_yield": 89.8, "wafer_count": 3,
-        "worst_wafer": {"wafer_id": "W2407_01", "yield": 87.5,
-                        "defect_type": "none", "process_step": "Normal",
-                        "date": "2024-06-15"},
-    }])
-    out = nodes.status_node({"question": "수율 이상 분석"})
-    assert out["target_group"] == []
-    assert out["finalize_status"] == "ungrouped"
+def test_status_exit_unknown_target():
+    out = nodes.status_node({"target_wafers": ["W_NOPE"], "target_source": "manual"})
+    assert out["finalize_status"] == "unknown_target"
+    assert "W_NOPE" in out["status_summary"]
 
 
-@pytest.mark.xfail(
-    reason="문제 1·4 (2026-07-18 리뷰): status 는 지정 대상을 무시하고 lots[0] 만 분석한다. "
-           "입력 재설계(question → root_lot+wafer, 열린 질문 확정 후)로 해소 예정")
+def test_status_exit_isolated_when_no_siblings():
+    # 6절 4번: 형제 없음 = 고립 패턴, 자동 분석 범위 밖 — 별도 상태로 리포트까지
+    out = nodes.status_node({"target_wafers": ["W2407_01"], "target_source": "manual"})
+    assert out["finalize_status"] == "isolated"
+
+
+def test_status_exit_control_insufficient():
+    # 7절 3단계: 대조군 부족은 확장하지 않고 정직 보고
+    out = nodes.status_node({"target_wafers": ["W2407_01", "W2407_02"],
+                             "target_source": "manual"})
+    assert out["finalize_status"] == "control_insufficient"
+    assert out["target_group"] == ["W2407_01", "W2407_02"]
+
+
 def test_status_respects_user_specified_target():
-    out = nodes.status_node({"question": "LOT2407 의 수율 이상 원인을 분석해줘"})
-    grouped = next(f for f in out["findings"] if f["tool"] == "find_defect_group")
-    assert grouped["args"]["lot_id"] == "LOT2407"
+    # (구 xfail 소생 — 문제 1) 지정 대상이 그대로 분석 대상이 된다. lots[0] 하이재킹 없음.
+    out = nodes.status_node({"target_wafers": ["W2407_01", "W2407_02"],
+                             "target_source": "manual"})
+    assert out["target_group"] == ["W2407_01", "W2407_02"]
+    assert not {"W2406_02", "W2406_04", "W2406_06"} & set(out["target_group"])
 
 
 def test_tools_node_executes_and_records_finding():
@@ -158,7 +161,8 @@ def test_finalize_gate_marks_inconclusive_at_max_loops():
 
 def test_report_node_produces_report():
     out = nodes.report_node({
-        "question": "q", "target_group": ["W2406_02", "W2406_04", "W2406_06"], "status_summary": "요약",
+        "target_wafers": ["W2406_02"], "target_source": "manual",
+        "target_group": ["W2406_02", "W2406_04", "W2406_06"], "status_summary": "요약",
         "findings": [], "final_hypothesis": "Etch ETCH-9 원인", "final_confidence": 0.9,
     })
     assert "ETCH-9" in out["report"]
@@ -167,7 +171,8 @@ def test_report_node_produces_report():
 def test_report_node_marks_inconclusive_conclusion():
     # 한계 도달 종료는 리포트 결론도 "미확정" 톤으로 나가야 한다 (확정 결론으로 위장 금지)
     out = nodes.report_node({
-        "question": "q", "target_group": ["W2406_02"], "status_summary": "요약",
+        "target_wafers": ["W2406_02"], "target_source": "manual",
+        "target_group": ["W2406_02"], "status_summary": "요약",
         "findings": [], "final_hypothesis": "ETCH-9 이상 추정", "final_confidence": 0.5,
         "finalize_status": "inconclusive",
     })

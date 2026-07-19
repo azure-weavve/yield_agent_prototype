@@ -25,7 +25,8 @@ class LLMClient(ABC):
     @abstractmethod
     def generate_report(
         self,
-        question: str,
+        target_wafers: list[str],
+        target_source: str,
         target_group: list[str],
         status_summary: str,
         findings: list[dict],
@@ -86,10 +87,11 @@ class ScriptedMockLLMClient(LLMClient):
             "그룹 대조에서 불량 그룹만 공유하는 스펙 이탈 장비를 특정했다. 근거가 충분하다.")
 
     # -------------------------------------------------- report
-    def generate_report(self, question, target_group, status_summary,
+    def generate_report(self, target_wafers, target_source, target_group, status_summary,
                         findings, hypothesis, confidence, finalize_status=None) -> str:
         lines = [
-            f"[분석 대상] 불량 그룹: {', '.join(target_group) or '없음'}",
+            f"[분석 대상 입력] ({target_source}) {', '.join(target_wafers) or '없음'}",
+            f"[불량 그룹] {', '.join(target_group) or '없음'}",
             f"[현황] {status_summary}",
             "",
             "[분석 과정]",
@@ -104,9 +106,14 @@ class ScriptedMockLLMClient(LLMClient):
             conclusion = f"미확정 (루프 한계 도달) — 유력 가설: {hypothesis or '없음'}"
         elif finalize_status == "no_anomaly":
             conclusion = "이상 없음 — 수율 임계 미만 lot 이 없다."
-        elif finalize_status == "ungrouped":
-            conclusion = ("분석 미수행 — 수율 이상은 실재하나 불량 패턴으로 그룹을 "
-                          "묶지 못했다. defect 라벨 없는 저수율 wafer 를 별도 확인하라.")
+        elif finalize_status == "unknown_target":
+            conclusion = "분석 미수행 — 입력 wafer 를 데이터에서 찾을 수 없다. 입력을 확인하라."
+        elif finalize_status == "isolated":
+            conclusion = ("분석 미수행 — 고립 패턴: 유사 형제 wafer 가 없어 그룹 대조가 "
+                          "불가능하다. 추후 분석 필요.")
+        elif finalize_status == "control_insufficient":
+            conclusion = ("분석 미수행 — 대조군 부족 (lot 내 대조 한계). "
+                          "root_lot 확장은 ETL(lot_type) 이후 활성화. 추후 분석 필요.")
         else:
             conclusion = hypothesis or "원인 미확정"
         conf = f" (확신도 {confidence})" if confidence is not None else ""
@@ -118,12 +125,11 @@ class ScriptedMockLLMClient(LLMClient):
     def _groups(messages) -> tuple[list[str], list[str]]:
         text = "\n".join(getattr(m, "content", "") or "" for m in messages
                          if isinstance(m, HumanMessage))
-        t = re.search(r"불량 그룹 \([^)]*\): (.+)", text)
-        c = re.search(r"대조 그룹 \(정상\): (.+)", text)
-        if not (t and c):
-            raise ValueError("messages 에서 불량/대조 그룹 라인을 찾지 못했다")
-        return ([w.strip() for w in t.group(1).split(",")],
-                [w.strip() for w in c.group(1).split(",")])
+        m = re.search(r"GROUPS_JSON=(\{.*\})", text)
+        if not m:
+            raise ValueError("messages 에서 GROUPS_JSON 라인을 찾지 못했다")
+        groups = json.loads(m.group(1))
+        return groups["target"], groups["control"]
 
     @staticmethod
     def _result(tool_msgs, name):
@@ -157,7 +163,7 @@ class OpenAILLMClient(LLMClient):
     def analyze_step(self, messages: list) -> AIMessage:
         return self.analyzer.invoke(messages)
 
-    def generate_report(self, question, target_group, status_summary,
+    def generate_report(self, target_wafers, target_source, target_group, status_summary,
                         findings, hypothesis, confidence, finalize_status=None) -> str:
         sys = (
             "현장 반도체 엔지니어에게 한국어 높임말로 원인 분석 리포트를 쓴다. "
@@ -165,11 +171,13 @@ class OpenAILLMClient(LLMClient):
             "구성: 분석 대상/현황 → 분석 과정 요약 → 결론(원인 가설과 근거). "
             "판정이 inconclusive 면 결론을 확정하지 말고 '미확정(루프 한계 도달)'과 "
             "유력 후보·추가 조사 필요 항목으로 서술하라. "
-            "판정이 no_anomaly 면 '이상 없음', ungrouped 면 '수율 이상은 있으나 "
-            "그룹을 묶지 못해 분석 미수행'으로 서술하라 — 이 둘을 혼동하지 마라."
+            "판정이 no_anomaly 면 '이상 없음'으로 서술하라. "
+            "판정이 isolated/control_insufficient/unknown_target 이면 '분석 미수행'과 그 사유를 "
+            "명시하고 확정 결론을 쓰지 마라."
         )
         user = (
-            f"질문: {question}\n불량 그룹: {', '.join(target_group)}\n현황: {status_summary}\n\n"
+            f"분석 대상 입력 ({target_source}): {', '.join(target_wafers)}\n"
+            f"불량 그룹: {', '.join(target_group)}\n현황: {status_summary}\n\n"
             f"분석 기록(JSON):\n{json.dumps(findings, ensure_ascii=False, default=str)}\n\n"
             f"결론 가설: {hypothesis or '미확정'} / 확신도: {confidence} / "
             f"판정: {finalize_status or '미상'}"

@@ -12,7 +12,10 @@ from llm.client import ScriptedMockLLMClient
 
 HUMAN = HumanMessage(
     "현황: ...\n\n불량 그룹 (center_spot): W2406_02, W2406_04, W2406_06\n"
-    "대조 그룹 (정상): W2406_01, W2406_03, W2406_05\n질문: 원인 분석해줘"
+    "대조 그룹 (정상): W2406_01, W2406_03, W2406_05\n"
+    "분석 대상: W2406_02 의 불량 원인 분석\n"
+    'GROUPS_JSON={"target": ["W2406_02", "W2406_04", "W2406_06"], '
+    '"control": ["W2406_01", "W2406_03", "W2406_05"]}'
 )
 TARGET = ["W2406_02", "W2406_04", "W2406_06"]
 CONTROL = ["W2406_01", "W2406_03", "W2406_05"]
@@ -67,7 +70,7 @@ def test_scripted_sequence():
 def test_generate_report_contains_findings_and_conclusion():
     llm = ScriptedMockLLMClient()
     report = llm.generate_report(
-        question="원인 분석해줘",
+        target_wafers=["W2406_02"], target_source="manual",
         target_group=TARGET,
         status_summary="LOT2406 평균 84.8",
         findings=[{"loop": 1, "tool": "aggregate_defects", "args": {"wafer_ids": TARGET},
@@ -83,33 +86,43 @@ def test_generate_report_contains_findings_and_conclusion():
 def test_generate_report_handles_no_hypothesis():
     llm = ScriptedMockLLMClient()
     report = llm.generate_report(
-        question="q", target_group=["W1"], status_summary="s",
+        target_wafers=["W1"], target_source="manual", target_group=["W1"], status_summary="s",
         findings=[], hypothesis=None, confidence=None,
     )
     assert "미확정" in report
 
 
-def test_generate_report_distinguishes_ungrouped_from_no_anomaly():
-    # 문제 3 (2026-07-18 리뷰): "그룹 못 묶음"(분석 미수행)과 "이상 없음"은 다른 결론이다
+def test_generate_report_distinguishes_early_exits():
+    # 조기 출구 4종이 서로 뭉개지지 않는다 (문제 3 의 일반화)
     llm = ScriptedMockLLMClient()
-    ungrouped = llm.generate_report(
-        question="q", target_group=[], status_summary="LOT2407 평균 89.8",
-        findings=[], hypothesis=None, confidence=None, finalize_status="ungrouped",
-    )
-    no_anomaly = llm.generate_report(
-        question="q", target_group=[], status_summary="수율 임계 미만인 lot 없음.",
-        findings=[], hypothesis=None, confidence=None, finalize_status="no_anomaly",
-    )
-    assert "묶지 못" in ungrouped        # 수율 이상은 실재 — 분석 미수행임을 밝힌다
+    kw = dict(target_wafers=["W2407_01"], target_source="manual",
+              status_summary="s", findings=[], hypothesis=None, confidence=None)
+    isolated = llm.generate_report(target_group=["W2407_01"], finalize_status="isolated", **kw)
+    short = llm.generate_report(target_group=["W2407_01"],
+                                finalize_status="control_insufficient", **kw)
+    unknown = llm.generate_report(target_group=[], finalize_status="unknown_target", **kw)
+    no_anomaly = llm.generate_report(target_group=[], finalize_status="no_anomaly", **kw)
+    assert "고립" in isolated and "추후 분석" in isolated       # 6절 4번 문구
+    assert "대조군 부족" in short                               # 7절 3단계 문구
+    assert "찾을 수 없" in unknown
     assert "이상 없음" in no_anomaly
-    assert "이상 없음" not in ungrouped  # 두 결론이 서로 뭉개지지 않는다
+    assert "이상 없음" not in isolated
+
+
+def test_groups_parsed_from_machine_line_not_prose():
+    # 사람용 문구를 바꿔도 GROUPS_JSON 라인만 있으면 mock 이 안 깨진다 (문제 7)
+    llm = ScriptedMockLLMClient()
+    msg = HumanMessage('아무 문구나 자유롭게.\nGROUPS_JSON={"target": ["A"], "control": ["B"]}')
+    ai = llm.analyze_step([msg])
+    assert ai.tool_calls[0]["args"]["wafer_ids"] == ["A"]
 
 
 def test_generate_report_renders_inconclusive_status():
     # 한계 도달(inconclusive) 종료: 결론을 "미확정 + 유력 가설(후보)" 톤으로 표기
     llm = ScriptedMockLLMClient()
     report = llm.generate_report(
-        question="q", target_group=TARGET, status_summary="s",
+        target_wafers=["W2406_02"], target_source="manual",
+        target_group=TARGET, status_summary="s",
         findings=[], hypothesis="ETCH-9 rf_power 이상 추정", confidence=0.5,
         finalize_status="inconclusive",
     )

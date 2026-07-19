@@ -28,7 +28,7 @@ def test_messages_and_findings_accumulate():
     g.set_entry_point("n1")
     g.add_edge("n1", "n2")
     g.add_edge("n2", END)
-    out = g.compile().invoke({"question": "q"})
+    out = g.compile().invoke({"target_wafers": []})
 
     assert [m.content for m in out["messages"]] == ["a", "b"]   # 누적 (덮어쓰기 아님)
     assert [f["loop"] for f in out["findings"]] == [0, 1]
