@@ -32,3 +32,10 @@ LLM_MODEL = os.getenv("LLM_MODEL", "<사내-모델명>")
 # 분석 루프 통제 (analysis_loop_design.md 부품 4b)
 MAX_LOOPS = 6              # 가드레일: 최대 순환 횟수 (무한루프 차단)
 CONFIDENCE_THRESHOLD = 0.8 # finalize 승인 임계 확신도
+
+# 형제 묶기 (status 입력 재설계): "같은 사건" 판정이라 유사 사례 검색(0.5)보다 높게.
+# 실행 중 불변이므로 결정론 원칙과 충돌 없음 (재설계 문서 6절 2번).
+SIBLING_MIN_SIMILARITY = float(os.getenv("SIBLING_MIN_SIMILARITY", "0.8"))
+SIBLING_SEARCH_K = 50          # 형제 후보 조회 폭 (인덱스 크기 미만이면 됨)
+# 대조군 "부족" 판정 최소 크기 (재설계 문서 7절 — 미만이면 확장 대신 정직 보고)
+CONTROL_MIN_SIZE = int(os.getenv("CONTROL_MIN_SIZE", "3"))

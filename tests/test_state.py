@@ -10,6 +10,9 @@ from graph.state import AgentState
 def test_loop_config_exists():
     assert config.MAX_LOOPS == 6
     assert config.CONFIDENCE_THRESHOLD == 0.8
+    assert config.SIBLING_MIN_SIMILARITY == 0.8
+    assert config.CONTROL_MIN_SIZE == 3
+    assert config.SIBLING_SEARCH_K == 50
 
 
 def test_messages_and_findings_accumulate():
