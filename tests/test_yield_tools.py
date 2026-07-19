@@ -24,6 +24,23 @@ def test_unknown_wafer_returns_empty():
     assert yt.get_process_log("W_NOPE") == []
 
 
+def test_get_wafers_returns_rows_for_known_ids_only():
+    rows = yt.get_wafers(["W2406_02", "W_NOPE", "W2406_01"])
+    assert [r["wafer_id"] for r in rows] == ["W2406_01", "W2406_02"]  # 미존재는 조용히 제외
+    assert rows[1]["lot_id"] == "LOT2406"
+
+
+def test_find_normal_wafers_applies_yield_threshold():
+    # 구멍 (가): W2406_07 은 none 이지만 88.5 < 90 → 대조군 후보에서 제외
+    assert yt.find_normal_wafers("LOT2406") == ["W2406_01", "W2406_03", "W2406_05"]
+
+
+def test_find_low_yield_lots_threshold_binds_at_runtime(monkeypatch):
+    # 문제 9: 기본 인자가 import 시점 값으로 굳으면 런타임 변경이 무시된다
+    monkeypatch.setattr(config, "YIELD_THRESHOLD", 0.0)
+    assert yt.find_low_yield_lots() == []
+
+
 def test_find_defect_group_splits_target_and_control():
     grp = yt.find_defect_group("LOT2406")
     assert grp["defect_type"] == "center_spot"

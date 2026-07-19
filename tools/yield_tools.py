@@ -20,12 +20,13 @@ def _conn():
         conn.close()
 
 
-def find_low_yield_lots(threshold: float = config.YIELD_THRESHOLD) -> list[dict]:
-    """평균 수율이 threshold 미만인 lot 을 낮은 순으로 반환 (시나리오 1).
+def find_low_yield_lots(threshold: float | None = None) -> list[dict]:
+    """평균 수율이 threshold 미만인 lot 을 낮은 순으로 반환.
 
     각 lot 에 대해 가장 수율 낮은 wafer(worst_wafer) 를 함께 담아,
-    시나리오 2(그 wafer 로 유사 검색)로 자연스럽게 이어지게 한다.
+    자동 대상 선정(tools/target_selection.py)의 재료로 쓴다.
     """
+    threshold = config.YIELD_THRESHOLD if threshold is None else threshold
     with _conn() as conn:
         lots = conn.execute(
             """
@@ -63,6 +64,33 @@ def get_wafer(wafer_id: str) -> dict | None:
             "SELECT * FROM yield WHERE wafer_id = ?", (wafer_id,)
         ).fetchone()
         return dict(row) if row else None
+
+
+def get_wafers(wafer_ids: list[str]) -> list[dict]:
+    """여러 wafer 의 yield 행 반환 (존재하는 것만, wafer_id 순 — 입력 검증·소속 lot 조회용)."""
+    if not wafer_ids:
+        return []
+    placeholders = ",".join("?" * len(wafer_ids))
+    with _conn() as conn:
+        rows = conn.execute(
+            f"SELECT * FROM yield WHERE wafer_id IN ({placeholders}) ORDER BY wafer_id",
+            wafer_ids,
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def find_normal_wafers(lot_id: str, threshold: float | None = None) -> list[str]:
+    """lot 의 정상 대조군 후보: defect 'none' 이면서 수율 임계 이상 (target 과 대칭 조건)."""
+    threshold = config.YIELD_THRESHOLD if threshold is None else threshold
+    with _conn() as conn:
+        return [r["wafer_id"] for r in conn.execute(
+            """
+            SELECT wafer_id FROM yield
+            WHERE lot_id = ? AND defect_type = 'none' AND yield >= ?
+            ORDER BY wafer_id
+            """,
+            (lot_id, threshold),
+        ).fetchall()]
 
 
 def aggregate_defects(wafer_ids: list[str]) -> list[dict]:
