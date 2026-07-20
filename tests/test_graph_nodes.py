@@ -61,6 +61,8 @@ def test_status_exit_isolated_when_no_siblings():
     # 6절 4번: 형제 없음 = 고립 패턴, 자동 분석 범위 밖 — 별도 상태로 리포트까지
     out = nodes.status_node({"target_wafers": ["W2407_01"], "target_source": "manual"})
     assert out["finalize_status"] == "isolated"
+    assert out["control_group"] == []                    # 고립 = 대조군 자체가 성립 안 함
+    assert "고립" in out["status_summary"]
 
 
 def test_status_exit_control_insufficient():

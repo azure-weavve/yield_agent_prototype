@@ -15,6 +15,7 @@ def test_single_input_expands_to_eds_siblings_across_lots():
     sims = [s["similarity"] for s in res["siblings"]]
     assert sims == sorted(sims, reverse=True)            # 유사도 내림차순
     assert all(s >= 0.8 for s in sims)
+    assert res["unmatched_siblings"] == []               # 형제 전원 yield DB 실재
     # defect 라벨은 참고 정보로만 (판정 기준 아님 — 6절 3번)
     assert res["label_counts"][0]["defect_type"] == "center_spot"
 
@@ -24,6 +25,23 @@ def test_group_input_passes_through_without_grouping():
     assert res["mode"] == "group"
     assert res["target_group"] == ["W2407_01", "W2407_02"]
     assert res["siblings"] == []
+    assert res["unmatched_siblings"] == []
+
+
+def test_eds_siblings_absent_from_yield_db_go_to_unmatched(monkeypatch):
+    # EDS 인덱스와 yield DB 는 별도 시스템 — 동기화가 어긋나면 EDS 가 DB 에 없는
+    # 형제를 반환할 수 있다. 그런 형제는 분석 대상에서 빼고 unmatched_siblings 로 분리한다.
+    class _Stub:
+        def search(self, wafer_id, k):
+            return [{"wafer_id": "W2406_04", "similarity": 0.95},
+                    {"wafer_id": "W_GHOST", "similarity": 0.90}]
+
+    monkeypatch.setattr(grouping, "_searcher", _Stub())
+    res = grouping.normalize_target(["W2406_02"])
+    assert "W_GHOST" not in res["target_group"]
+    assert res["unmatched_siblings"] == ["W_GHOST"]
+    assert res["target_group"] == ["W2406_02", "W2406_04"]
+    assert [s["wafer_id"] for s in res["siblings"]] == ["W2406_04"]
 
 
 def test_single_input_with_no_siblings_is_isolated():

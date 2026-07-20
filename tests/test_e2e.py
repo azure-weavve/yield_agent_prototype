@@ -27,6 +27,7 @@ def test_full_loop_reaches_report_with_audit_trail():
     for expected in ("aggregate_defects", "compare_process_logs"):
         assert expected in tools_used
     assert state["loop_count"] <= 6
+    assert all("thought" in f for f in state["findings"])   # 모든 실행에 감사용 사고 기록
 
 
 def test_no_targets_short_circuits_to_report():

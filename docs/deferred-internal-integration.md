@@ -55,3 +55,23 @@
 - `README.md` 아키텍처 다이어그램에 status→(대상 없음)→report 분기 미표기 (graph/build.py docstring 다이어그램과 불일치) — 동기화
 - `tools/eds_search.py` k+1 조회 버퍼는 필터로 제외되는 후보가 많으면 유효 후보가 더 있어도 k 미만을 반환할 수 있음 (Local 도 동일, 계약상 허용) — 6번 실측 검증 때 함께 확인
 - 빈 대조 그룹(`control_group=[]`) lot 에서는 `ScriptedMockLLMClient._groups` 정규식이 매칭 실패해 ValueError — 현재 시드 데이터에서는 도달 불가 경로라 미룸. 사내 실데이터 연동 시 seed 라인 파싱/그룹 부재 처리 필요. → 2026-07-19 status 입력 재설계에서 해소 (GROUPS_JSON 라인으로 대체)
+
+## 9. yield DB 에는 있으나 EDS 인덱스에 없는 wafer 입력 시 크래시
+
+- 위치: `tools/grouping.py` `normalize_target` → `_searcher_lazy().search(wafers[0], ...)`
+- 문제: 한 장 입력 wafer 가 yield DB 에는 실재해 unknown 판정을 통과하지만 EDS 인덱스에는 없으면,
+  `LocalEDSSearcher` 는 `KeyError`(eds_search.py:45), `HttpEDSSearcher` 는 requests 예외로 그래프 전체가 예외 종료
+  (역방향은 이미 해소 — EDS 엔 있으나 DB 엔 없는 형제는 `unmatched_siblings` 로 분리)
+- 처방: 검색을 감싸 인덱스 미존재를 잡고 `unknown_target` 계열 조기 출구로 유도 (1번 tool 오류 복구와 같은 방침)
+
+## 10. get_searcher 캐시를 grouping/agent_tools 간 통합
+
+- 위치: `tools/grouping.py` `_searcher_lazy` 와 `tools/agent_tools.py` `_searcher_lazy` — 각자 별도 lazy-singleton
+- 문제: hnswlib 인덱스를 두 번 로드(메모리·기동시간 낭비), 각 전역이 스레드 비안전(Task 3 리뷰 Minor 와 동일 뿌리)
+- 처방: 검색기 획득을 한 모듈(예: `eds_search.get_searcher` 자체 캐시)로 단일화하고 양쪽이 공유
+
+## 11. SIBLING_SEARCH_K=50 이 실제 인덱스 규모에서 형제를 잘라내지 않는지 검증
+
+- 위치: `config.py` `SIBLING_SEARCH_K = 50`, 사용처 `tools/grouping.py` `normalize_target`
+- 문제: 한 사건의 형제 수가 50 을 넘으면 knn 조회 폭에서 잘려 형제 묶기가 불완전해짐 (더미 데이터에선 여유)
+- 처방: 사내 양산 규모 인덱스에서 최대 형제 군집 크기를 실측해 K 를 조정하거나, 컷오프 기반 조회로 전환 검토
