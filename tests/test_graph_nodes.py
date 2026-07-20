@@ -65,6 +65,19 @@ def test_status_exit_isolated_when_no_siblings():
     assert "고립" in out["status_summary"]
 
 
+def test_summary_notes_unmatched_siblings():
+    # EDS/DB 동기화 어긋남으로 대상에서 빠진 형제를 사람용 요약에도 남긴다 (재리뷰 Minor)
+    norm = {"mode": "single", "target_group": ["W2406_02", "W2406_04"],
+            "siblings": [{"wafer_id": "W2406_04", "similarity": 0.95}],
+            "unmatched_siblings": ["W_GHOST"], "unknown_wafers": [], "isolated": False,
+            "label_counts": [{"defect_type": "center_spot", "count": 2}]}
+    ctrl = {"control_group": ["W2406_01", "W2406_03", "W2406_05"],
+            "sources": {"LOT2406": ["W2406_01", "W2406_03", "W2406_05"]},
+            "stage": 1, "insufficient": False}
+    summary = nodes._summarize_target("manual", ["W2406_02"], norm, ctrl)
+    assert "W_GHOST" in summary
+
+
 def test_status_exit_control_insufficient():
     # 7절 3단계: 대조군 부족은 확장하지 않고 정직 보고
     out = nodes.status_node({"target_wafers": ["W2407_01", "W2407_02"],

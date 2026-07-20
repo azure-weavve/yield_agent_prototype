@@ -94,6 +94,10 @@ def _summarize_target(source: str, targets: list[str], norm: dict, ctrl: dict) -
         sib = ", ".join(f"{s['wafer_id']}({s['similarity']})" for s in norm["siblings"])
         lines.append(f"형제 묶기 (EDS, 컷오프 {config.SIBLING_MIN_SIMILARITY}): "
                      f"{len(norm['target_group'])}장 — 입력 + {sib}")
+        if norm.get("unmatched_siblings"):
+            lines.append(f"EDS 형제 중 yield DB 미확인 {len(norm['unmatched_siblings'])}장 "
+                         f"제외: {', '.join(norm['unmatched_siblings'])} "
+                         f"(인덱스/DB 동기화 확인 필요)")
     else:
         lines.append(f"그룹 입력: {len(norm['target_group'])}장 그대로 사용 (묶기 생략)")
     labels = ", ".join(f"{c['defect_type']} {c['count']}장" for c in norm["label_counts"])
