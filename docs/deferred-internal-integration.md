@@ -2,19 +2,19 @@
 
 2026-07-11 리뷰(Claude + codex 교차 검증)에서 확인했으나, 실행 경로가 사내 연동
 (`LLM_MODE=openai` / `EDS_MODE=http`) 전에는 없어 의도적으로 미룬 항목들.
-**사내 연동 착수 시 이 문서를 작업 목록으로 사용한다.** 1~2번은 연동 첫날 필수.
+**사내 연동 착수 시 이 문서를 작업 목록으로 사용한다.** 착수 전 각 항목의 완료 여부를
+git log·코드로 먼저 확인한다 (1·2·3번은 이미 구현 완료 — 아래 참조).
 
-## 1. tool 호출 오류를 복구 가능한 ToolMessage 로 변환 (필수)
+## 1. ~~tool 호출 오류를 복구 가능한 ToolMessage 로 변환~~ (2026-07-18 구현 완료, 커밋 dd27cae)
 
-- 위치: `graph/nodes.py` `tools_node` — `TOOLS_BY_NAME[call["name"]]` 직접 인덱싱, `.invoke()` 무방비
-- 문제: 실제 LLM 이 없는 tool 이름을 내거나 인자 스키마를 벗어나면 KeyError/ValidationError 로 그래프 전체가 예외 종료
-- 처방: 예외를 잡아 오류 내용을 ToolMessage 로 반환 → LLM 이 다음 analyze 에서 스스로 교정 (tool-calling 루프 표준 패턴)
+- 구현: `graph/nodes.py` `tools_node` 가 `TOOLS_BY_NAME.get(name)` 으로 조회해 없는 tool 은
+  안내 메시지를, `.invoke()` 는 try/except 로 감싸 실패 시 오류 내용을 ToolMessage 로 반환한다.
+  LLM 이 다음 analyze 에서 스스로 교정하는 tool-calling 루프 표준 패턴.
 
-## 2. finalize confidence 비숫자 방어 (필수)
+## 2. ~~finalize confidence 비숫자 방어~~ (2026-07-18 구현 완료, 커밋 dd27cae)
 
-- 위치: `graph/nodes.py` `_finalize_gate` — `float(args.get("confidence", 0.0))`
-- 문제: LLM 이 `"high"` 같은 비숫자를 주면 ValueError 크래시
-- 처방: 변환 실패 시 0.0 취급 + 반려 메시지에 "confidence 는 0~1 숫자" 명시
+- 구현: `graph/nodes.py` `_finalize_gate` 가 `float(raw)` 를 try/except 로 감싸 변환 실패 시
+  0.0 으로 취급하고, 반려 메시지에 "confidence 는 0~1 사이 숫자로 다시 제출하라"를 덧붙인다.
 
 ## 3. ~~게이트에 결정론적 증거 조건 추가~~ (2026-07-13 구현 완료)
 

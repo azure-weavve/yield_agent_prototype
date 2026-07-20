@@ -44,17 +44,20 @@ root_lot A45Z5 (물리 묶음, 거의 항상 25매)
 
 ## 3. 코드 수정 항목 (2026-07-14 신규 발견)
 
-### 3-1. spec NULL 크래시 — 실데이터 첫날 필수 (미룸 문서 1~2번과 동급)
+### 3-1. ~~spec NULL 크래시 3건~~ (2026-07-19 구현 완료, 커밋 b45e61b)
 
-지금 더미 데이터에 NULL spec 행을 심은 테스트로 즉시 검증 가능 — 연동 전 수정 권장.
+세 함수 모두 NULL-safe 로 수정됨 + 편측 spec 테스트 5개(`tests/test_yield_tools.py`
+199~258행)로 검증됨. **재작업 불필요.**
 
-- **`compare_parameter_distribution`** (`tools/yield_tools.py` `_stats` 내 이탈 집계):
-  `None <= float` TypeError 크래시. spec None 행은 이탈 집계에서 제외,
-  이탈률 분모도 spec 있는 행 수로.
-- **`find_counterexamples`** (`in_spec` 계산): 동일 TypeError.
-  spec 없으면 `in_spec: None` (판정 불가) 반환.
-- **`compare_process_logs`** (violations SQL): 크래시는 없으나 SQL NULL 전파에
-  암묵 의존 — `IS NOT NULL` 명시 조건으로 전환 (편측 spec 도 의도대로 동작하게).
+- **`compare_parameter_distribution`** (`_stats`): spec None 행은 이탈 집계에서 제외,
+  이탈률 분모는 spec 있는 행 수로. (`is not None` 가드)
+- **`find_counterexamples`** (`_in_spec`): spec 없으면 `in_spec: None` 반환.
+- **`compare_process_logs`** (violations SQL): `spec_low IS NOT NULL` / `spec_high IS NOT NULL`
+  명시 조건으로 편측 spec 도 의도대로 동작.
+
+남은 것: `data/generate_dummy.py` 의 `CREATE TABLE` 은 여전히 `spec_low/high REAL NOT NULL`.
+함수는 NULL 을 받아도 안전하지만, 실제 NULL 값은 ETL 적재 스크립트(2절)가 nullable
+스키마로 넣어야 나온다 — 즉 스키마 완화는 ETL 쪽 작업.
 
 참고: finalize 게이트는 통과 이력 기반 suspect 라 spec 과 무관하게 동작 — 당장 수정 불요.
 spec 없는 파라미터가 원인일 땐 group_spec_violations 가 비므로,
@@ -81,8 +84,8 @@ compare_parameter_distribution 의 효과 크기가 보완 근거.
 
 ## 5. 진행 순서 (크리티컬 패스)
 
-1. **spec NULL 수정 3건 + 테스트** (3-1절 — 지금 가능)
-2. **미룸 문서 1~2번** (tool 오류 복구, confidence 방어 — 연동 첫날 필수)
+1. ~~spec NULL 수정 3건 + 테스트~~ (3-1절) — ✅ 완료 (b45e61b)
+2. ~~미룸 문서 1~2번~~ (tool 오류 복구, confidence 방어) — ✅ 완료 (dd27cae)
 3. **ETL 적재 스크립트** (2절 규칙) → 정합성 검사 (validate_data_completeness 스모크,
    find_low_yield_lots 직접 호출로 상식 검증)
 4. **lot_type 필터** (3-2절)
