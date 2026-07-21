@@ -71,22 +71,25 @@ class HttpEDSSearcher(EDSSearcher):
 
         resp = requests.post(
             config.EDS_HTTP_URL,
-            json={"wafer_id": wafer_id, "k": k + 1},  # 자기 자신 포함 응답 대비 여유분
-            verify=config.EDS_HTTP_VERIFY,  # 운영 전환 시 .pem 경로로
+            json={"wafer_id": wafer_id, "k": k},  # ⚠️ 요청 스키마는 아직 미확정(응답만 확인됨)
+            verify=config.EDS_HTTP_VERIFY,
             timeout=10,
         )
         resp.raise_for_status()
-        # 사내 응답 스키마에 맞춰 매핑 (실제 필드명 확인 후 조정)
-        # 인터페이스 계약: 자기 자신 제외 + EDS_MIN_SIMILARITY 미만 제외 (Local 과 동일)
+        data = resp.json()
+
+        # 응답: {"query_wafer": {...}, "similar_wafers": [{rank, wafer_id, similarity, ...}]}
+        #  - self 는 similar_wafers 에 없음(query_wafer 로 분리) → 자기 자신 필터 불필요
+        #  - similarity 는 "클수록 유사" + 음수 스케일(예 -0.18 ~ -0.23), rank 오름차순 정렬
         out = []
-        for r in resp.json()["results"]:
-            cand, score = r["wafer_id"], r.get("score")
-            if cand == wafer_id or score is None:
+        for r in data.get("similar_wafers", []):
+            cand = r.get("wafer_id")
+            sim = r.get("similarity")
+            if cand is None or sim is None:
                 continue
-            sim = round(float(score), 3)
-            if sim < config.EDS_MIN_SIMILARITY:
-                continue
-            out.append({"wafer_id": cand, "similarity": sim})
+            # ⚠️ 절대 임계(EDS_MIN_SIMILARITY=0.5) 필터는 보류 — 이 음수 스케일과 맞지 않아
+            #    적용 시 전량 제외됨. 실제 분포 확인 전까지는 서버 rank 순 + top-k 로만 컷.
+            out.append({"wafer_id": cand, "similarity": round(float(sim), 4)})
             if len(out) == k:
                 break
         return out
