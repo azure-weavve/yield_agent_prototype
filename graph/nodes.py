@@ -24,7 +24,7 @@ ANALYZE_SYSTEM_PROMPT = """너는 반도체 수율 분석 전문가다. 불량 �
 
 규칙:
 - 매 단계, 지금까지의 tool 결과로 원인을 확신할 수 있는지 스스로 평가하라.
-- 확신이 부족하면 근거를 좁힐 tool 을 하나 더 호출하라. 그룹 간 차이(장비·파라미터)가 핵심 근거다 — compare_process_logs 로 두 그룹을 대조하라.
+- 확신이 부족하면 근거를 좁힐 tool 을 하나 더 호출하라. 그룹 간 차이(장비·파라미터)가 핵심 근거다 — 가설 도구(hyp_*)로 두 그룹을 대조하라.
 - tool 을 호출할 때는 reason 인자에 현재 가설과 그 tool 을 고른 이유를 한 문장으로 반드시 담아라 — 이 서술이 그대로 분석 감사 기록에 남는다.
 - 원인을 좁혔고 근거가 충분하면 finalize(hypothesis, confidence) 로 종료를 제안하라. 확신도가 낮으면 반려된다.
 - 수치는 tool 결과를 그대로 인용하고 절대 임의로 만들지 마라."""
@@ -175,7 +175,7 @@ def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) ->
         conf_note = ""
 
     hypothesis = args.get("hypothesis", "")
-    suspects = _collect_suspects(findings)
+    suspects = _collect_evidence(findings)
 
     if conf >= config.CONFIDENCE_THRESHOLD and any(eq in hypothesis for eq in suspects):
         update["finalize_accepted"] = True
@@ -195,21 +195,27 @@ def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) ->
         return (f"반려: 확신도 {conf:.2f} < {config.CONFIDENCE_THRESHOLD}."
                 f"{conf_note} 근거를 좁힐 tool 을 더 호출하라.")
     if not suspects:
-        return "반려: 그룹 대조 근거가 없다. compare_process_logs 로 두 그룹을 먼저 대조하라."
+        return "반려: 그룹 대조 근거가 없다. 가설 도구(hyp_*)로 두 그룹을 먼저 대조하라."
     return (f"반려: 가설의 장비가 tool 결과의 suspect 목록({', '.join(sorted(suspects))})에 없다. "
             f"근거가 지목한 장비로 가설을 세우라.")
 
 
-def _collect_suspects(findings: list[dict]) -> set[str]:
-    """findings 에서 결정론적 tool 이 지목한 장비 ID 를 모은다 (LLM 이 만들 수 없는 근거)."""
-    suspects = set()
+def _collect_evidence(findings: list[dict]) -> set[str]:
+    """findings 에서 판별 통과 후보의 토큰을 모은다 (LLM 이 만들 수 없는 근거).
+
+    레지스트리 도구 결과(HypothesisResult, candidates 보유)만 훑는다.
+    토큰 = value 의 마지막 요소 (범주형 (공정,값)->값, 수치형 (공정,파라미터)->파라미터).
+    """
+    tokens = set()
     for f in findings:
-        if f["tool"] != "compare_process_logs":
+        result = f.get("result")
+        if not isinstance(result, dict) or "candidates" not in result:
             continue
-        result = f["result"]
-        for row in result.get("suspect_equipment", []) + result.get("group_spec_violations", []):
-            suspects.add(row["equipment_id"])
-    return suspects
+        for c in result["candidates"]:
+            if c.get("passes"):
+                v = c["value"]
+                tokens.add(v[-1] if isinstance(v, (list, tuple)) else str(v))
+    return tokens
 
 
 # ------------------------------------------------ 고정 골격: 리포팅

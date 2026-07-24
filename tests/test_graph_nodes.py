@@ -14,23 +14,50 @@ def _ai_finalize(confidence, hypothesis="Etch ETCH-9 원인"):
     )
 
 
-# 게이트 증거 검사용: compare_process_logs 가 ETCH-9 를 지목한 감사 기록
+# 게이트 증거 검사용(신형): 챔버 가설이 ETCH-9 를 통과 판정한 감사 기록
 EVIDENCE_FINDING = {
-    "loop": 2, "tool": "compare_process_logs",
+    "loop": 2, "tool": "hyp_chamber_concentration",
     "args": {"group_ids": ["W2406_02", "W2406_04", "W2406_06"],
              "control_ids": ["W2406_01", "W2406_03", "W2406_05"]},
-    "result": {
-        "suspect_equipment": [{"process_step": "Etch", "equipment_id": "ETCH-9",
-                               "group_count": 3, "control_count": 0}],
-        "equipment_usage": [],
-        "group_spec_violations": [
-            {"wafer_id": "W2406_02", "process_step": "Etch", "equipment_id": "ETCH-9",
-             "param_name": "rf_power", "param_value": 570.0,
-             "spec_low": 450.0, "spec_high": 550.0},
-        ],
-    },
+    "result": {"hypothesis_id": "chamber_concentration", "comparison": "categorical_concentration",
+               "column": "eq_chamber",
+               "candidates": [
+                   {"value": ["Etch", "ETCH-9"], "specificity": 1.0, "passes": True,
+                    "counterexamples": {}, "effect_size": None, "spec_violation_rate": None,
+                    "n_group": 3, "n_control": 0, "reject_reason": None},
+               ]},
     "thought": "그룹 대조",
 }
+
+# 신형(레지스트리) 증거 finding: 챔버 가설이 ETCH9_B 를 통과 판정
+EVIDENCE_FINDING_NEW = {
+    "loop": 2, "tool": "hyp_chamber_concentration",
+    "args": {"group_ids": ["W2406_02", "W2406_04", "W2406_06"],
+             "control_ids": ["W2406_01", "W2406_03", "W2406_05"]},
+    "result": {"hypothesis_id": "chamber_concentration", "comparison": "categorical_concentration",
+               "column": "eq_chamber",
+               "candidates": [
+                   {"value": ["Etch", "ETCH9_B"], "specificity": 1.0, "passes": True,
+                    "counterexamples": {}, "effect_size": None, "spec_violation_rate": None,
+                    "n_group": 3, "n_control": 0, "reject_reason": None},
+                   {"value": ["Photo", "PHOTO1_A"], "specificity": 0.5, "passes": False,
+                    "counterexamples": {}, "effect_size": None, "spec_violation_rate": None,
+                    "n_group": 3, "n_control": 3, "reject_reason": "편중 특이성 0.5 < 0.9"},
+               ]},
+    "thought": "챔버 편중",
+}
+
+
+def test_collect_evidence_gathers_passing_tokens():
+    tokens = nodes._collect_evidence([EVIDENCE_FINDING_NEW])
+    assert tokens == {"ETCH9_B"}          # 통과 후보만, 미끼(PHOTO1_A) 제외
+
+
+def test_gate_accepts_chamber_hypothesis():
+    ai = _ai_finalize(0.9, hypothesis="Etch 공정 ETCH9_B 챔버 편중이 원인")
+    out = nodes.tools_node({"messages": [ai], "loop_count": 4, "findings": [EVIDENCE_FINDING_NEW]})
+    assert out["finalize_accepted"] is True
+    assert out["finalize_status"] == "confirmed"
 
 
 def test_status_node_sets_groups_and_seed_messages():
@@ -132,7 +159,7 @@ def test_finalize_gate_rejects_high_confidence_without_evidence():
                             "findings": []})
     assert "finalize_accepted" not in out
     assert "반려" in out["messages"][0].content
-    assert "compare_process_logs" in out["messages"][0].content  # 무엇을 하라는지 안내
+    assert "hyp_" in out["messages"][0].content  # 무엇을 하라는지 안내
 
 
 def test_finalize_gate_rejects_hypothesis_not_backed_by_evidence():
@@ -147,16 +174,16 @@ def test_finalize_gate_rejects_hypothesis_not_backed_by_evidence():
 
 
 def test_finalize_gate_sees_evidence_from_same_message():
-    # 한 메시지에 compare_process_logs + finalize 가 같이 오면, 방금 실행된 대조 결과도 증거다
+    # 한 메시지에 hyp_chamber_concentration + finalize 가 같이 오면, 방금 실행된 대조 결과도 증거다
     ai = AIMessage(
         content="그룹 대조 후 바로 종료 제안",
         tool_calls=[
-            {"name": "compare_process_logs",
+            {"name": "hyp_chamber_concentration",
              "args": {"group_ids": ["W2406_02", "W2406_04", "W2406_06"],
                       "control_ids": ["W2406_01", "W2406_03", "W2406_05"]},
              "id": "call_c"},
             {"name": "finalize",
-             "args": {"hypothesis": "Etch ETCH-9 원인", "confidence": 0.9},
+             "args": {"hypothesis": "Etch ETCH9_B 챔버 편중이 원인", "confidence": 0.9},
              "id": "call_f"},
         ],
     )
