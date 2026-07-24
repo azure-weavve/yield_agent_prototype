@@ -92,6 +92,73 @@ def group_only_categorical(group_ids, control_ids, column, spec):
     return cands
 
 
+def _cohens_d(g_vals, c_vals):
+    n1, n2 = len(g_vals), len(c_vals)
+    if n1 + n2 < 3:
+        return None
+    var1 = statistics.variance(g_vals) if n1 >= 2 else 0.0
+    var2 = statistics.variance(c_vals) if n2 >= 2 else 0.0
+    pooled = (((n1 - 1) * var1 + (n2 - 1) * var2) / (n1 + n2 - 2)) ** 0.5
+    if pooled == 0:
+        return None
+    return round((statistics.fmean(g_vals) - statistics.fmean(c_vals)) / pooled, 3)
+
+
+def _numeric_rows(conn, ids, column):
+    _assert_column(conn, column)
+    if not ids:
+        return {}
+    ph = ",".join("?" * len(ids))
+    rows = conn.execute(
+        f"SELECT process_step, param_name, {column} AS val, spec_low, spec_high "
+        f"FROM process_log WHERE wafer_id IN ({ph})", ids).fetchall()
+    by = {}
+    for r in rows:
+        by.setdefault((r["process_step"], r["param_name"]), []).append(r)
+    return by
+
+
+def _spec_violation_rate(rows):
+    spec_rows = [r for r in rows if r["spec_low"] is not None or r["spec_high"] is not None]
+    if not spec_rows:
+        return None
+    v = sum(1 for r in spec_rows
+            if (r["spec_low"] is not None and r["val"] < r["spec_low"])
+            or (r["spec_high"] is not None and r["val"] > r["spec_high"]))
+    return round(v / len(spec_rows), 3)
+
+
+def numeric_distribution_shift(group_ids, control_ids, column, spec):
+    min_eff = spec.get("min_effect_size", DEFAULT_MIN_EFFECT_SIZE)
+    max_ce = spec.get("max_counterexample_rate", DEFAULT_MAX_COUNTEREXAMPLE_RATE)
+    with _conn() as conn:
+        g = _numeric_rows(conn, group_ids, column)
+        c = _numeric_rows(conn, control_ids, column)
+    cands = []
+    for key in sorted(set(g) | set(c)):
+        g_rows, c_rows = g.get(key, []), c.get(key, [])
+        g_vals = [r["val"] for r in g_rows]
+        c_vals = [r["val"] for r in c_rows]
+        effect = _cohens_d(g_vals, c_vals) if g_vals and c_vals else None
+        sv_rate = _spec_violation_rate(g_rows)
+        # 반례: 대조군 중 불량군 범위(min~max)에 드는 비율 = 분포 겹침
+        overlap = 0.0
+        if g_vals and c_vals:
+            lo, hi = min(g_vals), max(g_vals)
+            overlap = round(sum(1 for v in c_vals if lo <= v <= hi) / len(c_vals), 3)
+        passes = effect is not None and abs(effect) >= min_eff and overlap <= max_ce
+        cands.append({
+            "value": [key[0], key[1]], "specificity": None,
+            "counterexamples": {"control_overlap_rate": overlap},
+            "effect_size": effect, "spec_violation_rate": sv_rate,
+            "n_group": len(g_vals), "n_control": len(c_vals),
+            "passes": passes,
+            "reject_reason": None if passes else "효과크기 부족 또는 분포 겹침",
+        })
+    cands.sort(key=lambda x: (x["effect_size"] is None, -abs(x["effect_size"] or 0.0)))
+    return cands
+
+
 def evaluate(spec, group_ids, control_ids):
     fn = COMPARISONS[spec["comparison"]]
     candidates = fn(group_ids, control_ids, spec["column"], spec)
@@ -99,4 +166,5 @@ def evaluate(spec, group_ids, control_ids):
             "column": spec["column"], "candidates": candidates}
 
 
-COMPARISONS = {"group_only_categorical": group_only_categorical}
+COMPARISONS = {"group_only_categorical": group_only_categorical,
+               "numeric_distribution_shift": numeric_distribution_shift}
