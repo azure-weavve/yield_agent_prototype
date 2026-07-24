@@ -10,7 +10,7 @@ from langchain_core.tools import StructuredTool
 
 from domain import engine
 
-REQUIRED_FIELDS = ("id", "name", "description", "comparison", "column")
+REQUIRED_FIELDS = ("id", "name", "description", "legend")
 DEFAULT_PATH = Path(__file__).resolve().parent / "hypotheses.yaml"
 
 
@@ -23,8 +23,14 @@ def load_hypotheses(path=None):
         for f in REQUIRED_FIELDS:
             if f not in s:
                 raise ValueError(f"가설 #{i}: 필수 필드 '{f}' 누락")
-        if s["comparison"] not in engine.COMPARISONS:
-            raise ValueError(f"가설 '{s['id']}': 미지의 비교타입 '{s['comparison']}'")
+        legend = s["legend"]
+        if not isinstance(legend, list) or not legend:
+            raise ValueError(f"가설 '{s['id']}': legend 는 비어있지 않은 리스트여야 한다")
+        for lvl in legend:
+            if not isinstance(lvl, dict) or "level" not in lvl or "columns" not in lvl:
+                raise ValueError(f"가설 '{s['id']}': 각 legend 레벨은 level·columns 를 가져야 한다")
+            if not isinstance(lvl["columns"], list) or not lvl["columns"]:
+                raise ValueError(f"가설 '{s['id']}': legend 레벨 columns 는 비어있지 않은 리스트")
     return specs
 
 

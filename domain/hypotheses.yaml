@@ -1,20 +1,16 @@
-- id: equipment_commonality
-  name: 장비 공통성
+- id: eqp_ch_commonality
+  name: 설비/챔버 공통성
   description: |
-    불량 그룹 전원이 거쳤고 대조군은 안 거친 (공정,장비)를 찾는다.
-    특정 장비가 원인으로 의심될 때 사용.
-  comparison: group_only_categorical
-  column: equipment_id
+    타깃 전원이 거쳤고 대조군은 안 거친 (공정 스텝, 설비/챔버)를 찾는다.
+    1차 legend — 엔지니어가 가장 먼저 돌리는 주 분석. 설비 롤업과 챔버 세부를 함께 낸다.
+  legend:
+    - {level: equipment, columns: [eqp_id]}
+    - {level: chamber, columns: [eqp_id, ch_id]}
 
-- id: chamber_concentration
-  name: 챔버 편중
-  description: 불량 그룹이 특정 설비·챔버 조합(예 ETCH9_B)에 몰려 있는지 확인한다. 챔버 매칭 불량 의심 시 사용.
-  comparison: categorical_concentration
-  column: eq_chamber
-  min_specificity: 0.9
-
-- id: parameter_drift
-  name: 파라미터 드리프트
-  description: 스펙 내라도 불량군의 파라미터 값이 대조군과 체계적으로 다른지 본다.
-  comparison: numeric_distribution_shift
-  column: param_value
+- id: ppid_commonality
+  name: PPID 공통성
+  description: |
+    EQP_CH 로 타깃/대조군이 안 갈릴 때, 타깃만 거친 (공정 스텝, PPID)를 찾는다.
+    2차 legend — 불량 형태에 따라 선택.
+  legend:
+    - {level: ppid, columns: [ppid]}
