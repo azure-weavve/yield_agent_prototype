@@ -81,6 +81,28 @@ def test_numeric_shift_unknown_column_raises_clear_error(fx_db):
                                            "bogus; DROP TABLE yield", {})
 
 
+@pytest.fixture
+def fx_db_chamber(fx_db):
+    """fx_db 에 Depo 공정 공유 챔버(미끼) 추가: 불량군·대조군 모두 DEP1_A 사용."""
+    import sqlite3
+    conn = sqlite3.connect(fx_db)
+    for w in ["G1", "G2", "G3", "C1", "C2", "C3"]:
+        conn.execute("INSERT INTO process_log VALUES (?,?,?,?,?,?,?,?)",
+                     (w, "Depo", "DEP-1", "DEP1_A", "temp", 300.0, 250.0, 350.0))
+    conn.commit(); conn.close()
+    return fx_db
+
+
+def test_concentration_flags_real_chamber_and_rejects_decoy(fx_db_chamber):
+    cands = engine.categorical_concentration(["G1", "G2", "G3"], ["C1", "C2", "C3"], "eq_chamber", {})
+    by_val = {tuple(c["value"]): c for c in cands}
+    real = by_val[("Etch", "ETCH9_B")]
+    decoy = by_val[("Depo", "DEP1_A")]
+    assert real["passes"] and real["specificity"] == 1.0        # 불량군 전용
+    assert not decoy["passes"] and decoy["specificity"] < 0.9   # 공유 → 편중 낮음 → 탈락
+    assert decoy["reject_reason"]
+
+
 def test_group_only_matches_legacy_compare_process_logs():
     """이관 안전망: engine 통과 후보의 장비 == 기존 도구 suspect_equipment."""
     from tools import yield_tools as yt

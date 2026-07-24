@@ -159,6 +159,35 @@ def numeric_distribution_shift(group_ids, control_ids, column, spec):
     return cands
 
 
+def categorical_concentration(group_ids, control_ids, column, spec):
+    min_spec = spec.get("min_specificity", DEFAULT_MIN_SPECIFICITY)
+    max_ce = spec.get("max_counterexample_rate", DEFAULT_MAX_COUNTEREXAMPLE_RATE)
+    with _conn() as conn:
+        g, c = _usage(conn, group_ids, column), _usage(conn, control_ids, column)
+    cands = []
+    for key in sorted(set(g) | set(c)):
+        gc, cc = g.get(key, 0), c.get(key, 0)
+        specificity = round(gc / (gc + cc), 3) if (gc + cc) else 0.0
+        # 주의: defect_type 은 데모 픽스처가 center_spot 고정이라 하드코딩. 실제로는
+        # spec 또는 불량군 최빈 라벨에서 와야 한다 (Task 4 에서 확장).
+        ce = _counterexamples(column, key[1], key[0], "center_spot")
+        pbn = ce["passed_but_normal_rate"]
+        passes = gc > 0 and specificity >= min_spec and pbn <= max_ce
+        reasons = []
+        if specificity < min_spec:
+            reasons.append(f"편중 특이성 {specificity} < {min_spec}")
+        if pbn > max_ce:
+            reasons.append(f"반례율 {pbn} > {max_ce}")
+        cands.append({
+            "value": [key[0], key[1]], "specificity": specificity,
+            "counterexamples": ce, "effect_size": None, "spec_violation_rate": None,
+            "n_group": gc, "n_control": cc, "passes": passes,
+            "reject_reason": None if passes else "; ".join(reasons) or "발화 없음",
+        })
+    cands.sort(key=lambda x: -x["specificity"])
+    return cands
+
+
 def evaluate(spec, group_ids, control_ids):
     fn = COMPARISONS[spec["comparison"]]
     candidates = fn(group_ids, control_ids, spec["column"], spec)
@@ -167,4 +196,5 @@ def evaluate(spec, group_ids, control_ids):
 
 
 COMPARISONS = {"group_only_categorical": group_only_categorical,
-               "numeric_distribution_shift": numeric_distribution_shift}
+               "numeric_distribution_shift": numeric_distribution_shift,
+               "categorical_concentration": categorical_concentration}
