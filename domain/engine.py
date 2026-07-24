@@ -9,8 +9,10 @@ import config
 from tools import commonality as cm
 
 
-def _passes(cand, min_score, min_target):
+def _passes(cand, min_score, min_target, status, ok):
     reasons = []
+    if not ok:
+        reasons.append(f"상태 {status} — ok 아님")
     if cand["score"] < min_score:
         reasons.append(f"분리 점수 {cand['score']} < {min_score}")
     if cand["target_pass"] < min_target:
@@ -23,10 +25,12 @@ def evaluate(spec: dict, group_ids: list[str], control_ids: list[str]) -> dict:
     min_score = spec.get("min_score", config.COMMONALITY_PASS_MIN_SCORE)
     min_target = spec.get("min_target", config.COMMONALITY_PASS_MIN_TARGET)
     res = cm.find_commonality(group_ids, control_ids, legend=spec["legend"])
+    status = res.get("status")
+    ok = status == "ok"
 
     candidates = []
     for cand in res.get("candidates", []):
-        passes, reject = _passes(cand, min_score, min_target)
+        passes, reject = _passes(cand, min_score, min_target, status, ok)
         candidates.append({
             "value": [cand["process_step"], cand["key"]],
             "passes": passes,

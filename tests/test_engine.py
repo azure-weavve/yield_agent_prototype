@@ -76,3 +76,19 @@ def test_evaluate_no_signal_status(fx_db, monkeypatch):
     res = engine.evaluate({"id": "eqp_ch", "legend": EQP_CH}, ["G1", "G2", "G3"], ["C1", "C2", "C3"])
     assert res["status"] == "no_signal"
     assert res["candidates"] == []
+
+
+def test_evaluate_passes_requires_status_ok(fx_db, monkeypatch):
+    # status != "ok" 인데 candidates 가 비어있지 않은 상황(불변식이 깨진 경우)에도
+    # passes 는 status 를 AND 조건으로 봐야 한다 (스펙 §7).
+    monkeypatch.setattr(engine.cm, "find_commonality", lambda *a, **k: {
+        "status": "no_paired_stratum",
+        "candidates": [{"level": "chamber", "process_step": "Etch", "key": "ETCH9_B",
+                        "score": 1.0, "target_pass": 3, "target_total": 3,
+                        "control_pass": 0, "control_total": 3,
+                        "coverage_target": 1.0, "coverage_control": 0.0}],
+        "meta": None, "note": None,
+    })
+    res = engine.evaluate({"id": "eqp_ch", "legend": EQP_CH}, ["G1", "G2", "G3"], ["C1", "C2", "C3"])
+    assert res["candidates"]
+    assert all(c["passes"] is False for c in res["candidates"])
