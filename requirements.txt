@@ -5,3 +5,4 @@ hnswlib==0.8.0
 numpy==1.26.3
 pytest==8.3.4
 python-dotenv==1.0.1
+PyYAML==6.0.2

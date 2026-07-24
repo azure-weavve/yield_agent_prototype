@@ -1,0 +1,20 @@
+- id: equipment_commonality
+  name: 장비 공통성
+  description: |
+    불량 그룹 전원이 거쳤고 대조군은 안 거친 (공정,장비)를 찾는다.
+    특정 장비가 원인으로 의심될 때 사용.
+  comparison: group_only_categorical
+  column: equipment_id
+
+- id: chamber_concentration
+  name: 챔버 편중
+  description: 불량 그룹이 특정 설비·챔버 조합(예 ETCH9_B)에 몰려 있는지 확인한다. 챔버 매칭 불량 의심 시 사용.
+  comparison: categorical_concentration
+  column: eq_chamber
+  min_specificity: 0.9
+
+- id: parameter_drift
+  name: 파라미터 드리프트
+  description: 스펙 내라도 불량군의 파라미터 값이 대조군과 체계적으로 다른지 본다.
+  comparison: numeric_distribution_shift
+  column: param_value
