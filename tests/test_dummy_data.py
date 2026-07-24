@@ -117,3 +117,25 @@ def test_hole_case_ungrouped_low_yield_lot():
         assert all(r["defect_type"] == "none" for r in rows)
         avg = sum(r["yield"] for r in rows) / len(rows)
         assert avg < config.YIELD_THRESHOLD
+
+
+def test_process_log_has_eq_chamber():
+    with _conn() as conn:
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(process_log)")}
+        assert "eq_chamber" in cols
+        # 진짜 원인: 불량군 3장 전부 Etch 에서 ETCH9_B
+        rows = conn.execute(
+            "SELECT eq_chamber FROM process_log "
+            "WHERE process_step='Etch' AND wafer_id IN ('W2406_02','W2406_04','W2406_06')"
+        ).fetchall()
+        assert {r["eq_chamber"] for r in rows} == {"ETCH9_B"}
+
+
+def test_control_shares_equipment_not_chamber():
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT equipment_id, eq_chamber FROM process_log "
+            "WHERE process_step='Etch' AND wafer_id IN ('W2406_01','W2406_03','W2406_05')"
+        ).fetchall()
+        assert all(r["equipment_id"] == "ETCH-9" for r in rows)      # 같은 설비
+        assert all(r["eq_chamber"] != "ETCH9_B" for r in rows)       # 다른 챔버

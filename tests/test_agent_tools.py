@@ -30,11 +30,13 @@ def test_aggregate_defects_tool_invokes():
 
 
 def test_compare_process_logs_tool_invokes():
+    # 대조군도 Etch 에서 같은 설비 ETCH-9 를 쓴다(다른 챔버) — 공유 설비이므로
+    # 더 이상 suspect_equipment 로 잡히지 않는다 (실제 원인은 챔버 단위에만 있다).
     res = at.TOOLS_BY_NAME["compare_process_logs"].invoke({
         "group_ids": ["W2406_02", "W2406_04", "W2406_06"],
         "control_ids": ["W2406_01", "W2406_03", "W2406_05"],
     })
-    assert any(r["equipment_id"] == "ETCH-9" for r in res["suspect_equipment"])
+    assert not any(r["equipment_id"] == "ETCH-9" for r in res["suspect_equipment"])
 
 
 def test_validate_data_completeness_tool_invokes():
@@ -53,12 +55,15 @@ def test_compare_parameter_distribution_tool_invokes():
 
 
 def test_find_counterexamples_tool_invokes():
+    # 대조군 3장도 이제 Etch 에서 ETCH-9 를 쓰므로(다른 챔버) 반례 목록에 추가된다:
+    # 구멍 (가) W2406_07 + 대조군 3장(W2406_01/03/05) = 4건.
     res = at.TOOLS_BY_NAME["find_counterexamples"].invoke({
         "equipment_id": "ETCH-9", "process_step": "Etch",
         "defect_type": "center_spot",
     })
-    # 구멍 (가) W2406_07: ETCH-9 를 스펙 안으로 통과한 무라벨 정상 — 유일한 반례
-    assert [r["wafer_id"] for r in res["passed_but_normal"]] == ["W2406_07"]
+    assert [r["wafer_id"] for r in res["passed_but_normal"]] == [
+        "W2406_01", "W2406_03", "W2406_05", "W2406_07",
+    ]
 
 def test_reason_is_optional_and_ignored():
     # reason 은 감사 기록용 — 있어도 없어도 결과는 같다

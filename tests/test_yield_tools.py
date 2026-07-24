@@ -42,20 +42,24 @@ def test_find_low_yield_lots_threshold_binds_at_runtime(monkeypatch):
 
 
 def test_compare_process_logs_finds_suspect_equipment_and_violations():
+    # 더미 데이터 설계 변경: 대조군도 Etch 에서 같은 설비 ETCH-9 를 쓴다(다른 챔버
+    # ETCH9_C). 설비 단위 신호는 의도적으로 억제되어 ETCH-9 가 더 이상 suspect_equipment
+    # 에 잡히지 않는다 — 실제 원인은 챔버 단위(eq_chamber=ETCH9_B)에만 있고, 그건 이
+    # 구 도구가 아니라 새 chamber_concentration 가설로 찾는다.
     res = yt.compare_process_logs(
         ["W2406_02", "W2406_04", "W2406_06"],
         ["W2406_01", "W2406_03", "W2406_05"],
     )
-    # 불량 그룹 전원이 거쳤고 대조 그룹은 안 거친 장비에 ETCH-9 가 잡힌다
+    # 대조군도 ETCH-9 를 거치므로 더 이상 suspect 로 잡히지 않는다 (공유 설비는 제외 대상)
     suspects = {(r["process_step"], r["equipment_id"]) for r in res["suspect_equipment"]}
-    assert ("Etch", "ETCH-9") in suspects
-    # 스펙 이탈은 불량 그룹 3장 전부, 모두 ETCH-9
+    assert ("Etch", "ETCH-9") not in suspects
+    # 스펙 이탈은 불량 그룹 3장 전부, 모두 ETCH-9 (이 부분은 변경 없음)
     assert len(res["group_spec_violations"]) == 3
     assert all(v["equipment_id"] == "ETCH-9" for v in res["group_spec_violations"])
-    # 대조표에는 두 그룹의 통과 수가 담긴다
+    # 대조표: 대조군 3장도 이제 ETCH-9 를 거치므로 control_count 는 0 -> 3
     etch9 = next(r for r in res["equipment_usage"]
                  if (r["process_step"], r["equipment_id"]) == ("Etch", "ETCH-9"))
-    assert (etch9["group_count"], etch9["control_count"]) == (3, 0)
+    assert (etch9["group_count"], etch9["control_count"]) == (3, 3)
 
 
 def test_compare_process_logs_empty_inputs():
@@ -167,13 +171,17 @@ def test_compare_parameter_distribution_empty_inputs():
 
 
 def test_find_counterexamples_one_for_etch9_hypothesis():
-    # 더미 DB 사실: ETCH-9 통과 8장 중 7장 center_spot + 구멍 (가) W2406_07 은
-    # 스펙 안으로 통과한 무라벨 정상 — 반례 1건. center_spot 7장은 전부 ETCH-9.
+    # 더미 데이터 설계 변경: 대조군 3장도 Etch 에서 ETCH-9 를 쓴다(챔버만 다름=ETCH9_C).
+    # ETCH-9 사용자: 불량군 3 + 과거 center_spot 패턴 4 + 구멍(가) W2406_07 1 + 대조군 3
+    # = 11장 (기존 8장에서 대조군 3장 추가). 대조군은 defect_type='none' 이고 값이
+    # 스펙 내(균등분포)이므로 반례(passed_but_normal)에도 3장이 새로 추가된다.
     res = yt.find_counterexamples("ETCH-9", "Etch", "center_spot")
-    assert res["equipment_wafers"] == 8
-    assert [r["wafer_id"] for r in res["passed_but_normal"]] == ["W2406_07"]
-    assert res["passed_but_normal"][0]["in_spec"] is True
-    assert res["passed_but_normal_rate"] == 0.125
+    assert res["equipment_wafers"] == 11
+    assert [r["wafer_id"] for r in res["passed_but_normal"]] == [
+        "W2406_01", "W2406_03", "W2406_05", "W2406_07",
+    ]
+    assert all(r["in_spec"] is True for r in res["passed_but_normal"])
+    assert res["passed_but_normal_rate"] == round(4 / 11, 3)
     assert res["defect_wafers"] == 7
     assert res["defect_without_equipment"] == []
     assert res["defect_without_equipment_rate"] == 0.0

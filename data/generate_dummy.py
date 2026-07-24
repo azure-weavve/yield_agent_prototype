@@ -80,6 +80,11 @@ PROCESS_FLOW = [
     ("CMP",       "pad_pressure", 3.0,   5.0),
 ]
 
+DECOY_STEP = "Photo"
+DECOY_CHAMBER = "PHOTO1_A"       # 불량군·대조군 공유 (미끼)
+REAL_CHAMBER = "ETCH9_B"         # 진짜 원인 (불량군 전용)
+CONTROL_ETCH_CHAMBER = "ETCH9_C" # 대조군: 같은 ETCH-9, 다른 챔버
+
 DATA_DIR = Path(__file__).resolve().parent
 DB_PATH = DATA_DIR / "yield.db"
 EMB_DIR = DATA_DIR / "embeddings"
@@ -201,17 +206,29 @@ def _make_process_logs(rows, rng):
             if r["process_step"] == step:
                 equip = f"{step.upper()}-9"                # 그룹 공유 이상 장비
                 value = round(hi + (hi - lo) * 0.2, 2)     # 스펙 상한 20% 초과
+                chamber = REAL_CHAMBER if step == "Etch" else f"{equip}_A"
             elif r["wafer_id"] == UNLABELED_LOW_WAFER and step == "Etch":
                 # 구멍 (가): 이상 장비를 거쳤지만 측정값은 스펙 내 — 라벨 없는 피해 wafer
                 equip = "ETCH-9"
                 value = round(hi - (hi - lo) * 0.02, 2)    # 상한 근처, 스펙 내
+                chamber = "ETCH9_D"
+            elif r["wafer_id"] in CONTROL_WAFERS and step == "Etch":
+                # 대조군: 같은 설비(ETCH-9) 다른 챔버 → equipment_commonality 억제
+                equip = "ETCH-9"
+                value = round(float(rng.uniform(lo, hi)), 2)
+                chamber = CONTROL_ETCH_CHAMBER
             else:
                 equip = f"{step.upper()}-{int(rng.integers(1, 4))}"
                 value = round(float(rng.uniform(lo, hi)), 2)
+                chamber = f"{equip}_A"
+            # 미끼: RECENT_LOT 불량군+대조군이 Photo 에서 공유 챔버
+            if step == DECOY_STEP and r["wafer_id"] in (GROUP_WAFERS + CONTROL_WAFERS):
+                chamber = DECOY_CHAMBER
             logs.append({
                 "wafer_id": r["wafer_id"],
                 "process_step": step,
                 "equipment_id": equip,
+                "eq_chamber": chamber,
                 "param_name": param,
                 "param_value": value,
                 "spec_low": lo,
@@ -243,6 +260,7 @@ def _write_sqlite(rows, logs):
             wafer_id     TEXT NOT NULL,
             process_step TEXT NOT NULL,
             equipment_id TEXT NOT NULL,
+            eq_chamber   TEXT,
             param_name   TEXT NOT NULL,
             param_value  REAL NOT NULL,
             spec_low     REAL NOT NULL,
@@ -251,7 +269,7 @@ def _write_sqlite(rows, logs):
     """)
     conn.executemany(
         """INSERT INTO process_log VALUES
-           (:wafer_id, :process_step, :equipment_id, :param_name, :param_value, :spec_low, :spec_high)""",
+           (:wafer_id, :process_step, :equipment_id, :eq_chamber, :param_name, :param_value, :spec_low, :spec_high)""",
         logs,
     )
     conn.commit()
