@@ -7,10 +7,11 @@ def test_tool_names():
     assert {t.name for t in at.ALL_TOOLS} == {
         "get_wafer", "search_similar", "aggregate_defects", "get_process_log",
         "validate_data_completeness", "find_counterexamples",
-        "hyp_equipment_commonality", "hyp_chamber_concentration", "hyp_parameter_drift",
+        "hyp_eqp_ch_commonality", "hyp_ppid_commonality",
         "finalize",
     }
     assert "finalize" not in at.TOOLS_BY_NAME  # finalize 는 게이트가 처리
+    assert "find_commonality" not in at.TOOLS_BY_NAME   # raw 래퍼 제거(legend 로 일원화)
 
 
 def test_docstrings_exist():
@@ -37,12 +38,14 @@ def test_validate_data_completeness_tool_invokes():
     assert res["status"] == "good"
 
 
-def test_hyp_chamber_concentration_tool_invokes():
-    res = at.TOOLS_BY_NAME["hyp_chamber_concentration"].invoke({
+def test_hyp_eqp_ch_commonality_tool_invokes():
+    res = at.TOOLS_BY_NAME["hyp_eqp_ch_commonality"].invoke({
         "group_ids": ["W2406_02", "W2406_04", "W2406_06"],
         "control_ids": ["W2406_01", "W2406_03", "W2406_05"],
     })
-    assert "candidates" in res
+    keys = {c["key"] for c in res["candidates"]}
+    assert "ETCH9_B" in keys
+    assert any(c["passes"] for c in res["candidates"] if c["key"] == "ETCH9_B")
 
 
 def test_find_counterexamples_tool_invokes():
