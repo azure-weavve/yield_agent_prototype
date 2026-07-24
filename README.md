@@ -99,6 +99,9 @@ status ──▶ analyze ──(tool call)──▶ tools ──(반려/계속)�
 `get_process_log`, `compare_process_logs`, `finalize` 등의 tool 을 자율적으로 호출합니다.
 매 호출은 `findings` 에 감사 기록(`loop`, `tool`, `args`, `result`, `thought`)으로 남습니다.
 
+인과 가설(스펙 이탈·챔버 편중 등)은 `domain/hypotheses.yaml` 에 선언되어 engine 이 실행합니다.
+새 인과 가설을 추가할 때 tool 코드를 새로 짤 필요 없이 이 YAML 에 항목을 한 줄 추가하면 됩니다.
+
 - **compare_process_logs**: 불량 그룹과 대조 그룹의 공정 로그를 대조해, 불량 그룹에서만
   공유되는 suspect 장비·스펙 이탈을 집계합니다.
 - **validate_data_completeness**: 그룹 대조 전에 수율 행·공정 로그의 누락과 중복을
