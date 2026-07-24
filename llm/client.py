@@ -46,7 +46,7 @@ class ScriptedMockLLMClient(LLMClient):
     """사내망 밖 데모용. 그룹 대조 시나리오를 따라가는 결정론적 스크립트.
 
     aggregate_defects(불량 그룹) → finalize(0.6, 게이트가 반려)
-    → hyp_chamber_concentration(불량 vs 대조) → finalize(0.9, 승인) 순서로 진행하며,
+    → hyp_eqp_ch_commonality(불량 vs 대조) → finalize(0.9, 승인) 순서로 진행하며,
     각 단계 인자는 seed 메시지의 그룹 라인과 직전 ToolMessage(json) 를 파싱해 이어받는다.
     """
 
@@ -72,17 +72,17 @@ class ScriptedMockLLMClient(LLMClient):
                  "confidence": 0.6},
                 "불량 유형은 좁혔지만 공정 근거가 아직 없다. 이 정도로 종료를 제안해 본다.")
 
-        if "hyp_chamber_concentration" not in done:
+        if "hyp_eqp_ch_commonality" not in done:
             return self._call(
-                "hyp_chamber_concentration", {"group_ids": target, "control_ids": control},
+                "hyp_eqp_ch_commonality", {"group_ids": target, "control_ids": control},
                 "종료 제안이 반려됐다. 챔버 편중 가설로 두 그룹을 대조한다.")
 
-        res = self._result(tool_msgs, "hyp_chamber_concentration")
+        res = self._result(tool_msgs, "hyp_eqp_ch_commonality")
         passing = [c for c in res["candidates"] if c["passes"]]
         top = passing[0]
         val = top["value"][-1]
-        hyp = (f"{top['value'][0]} 공정 {val} 편중(특이성 {top['specificity']}, "
-               f"불량군 {top['n_group']}장 전용)이 원인")
+        hyp = (f"{top['value'][0]} 공정 {val} 편중(분리 점수 {top.get('score')}, "
+               f"불량군 {top['target_pass']}장 전용)이 원인")
         return self._call(
             "finalize", {"hypothesis": hyp, "confidence": 0.9},
             "챔버 편중 가설이 불량군 전용 챔버를 특이적으로 집었다. 근거 충분.")

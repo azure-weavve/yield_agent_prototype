@@ -16,33 +16,35 @@ def _ai_finalize(confidence, hypothesis="Etch ETCH-9 원인"):
 
 # 게이트 증거 검사용(신형): 챔버 가설이 ETCH-9 를 통과 판정한 감사 기록
 EVIDENCE_FINDING = {
-    "loop": 2, "tool": "hyp_chamber_concentration",
+    "loop": 2, "tool": "hyp_eqp_ch_commonality",
     "args": {"group_ids": ["W2406_02", "W2406_04", "W2406_06"],
              "control_ids": ["W2406_01", "W2406_03", "W2406_05"]},
-    "result": {"hypothesis_id": "chamber_concentration", "comparison": "categorical_concentration",
-               "column": "eq_chamber",
+    "result": {"hypothesis_id": "eqp_ch_commonality",
+               "legend": [{"level": "chamber", "columns": ["eqp_id", "ch_id"]}],
+               "status": "ok",
                "candidates": [
-                   {"value": ["Etch", "ETCH-9"], "specificity": 1.0, "passes": True,
-                    "counterexamples": {}, "effect_size": None, "spec_violation_rate": None,
-                    "n_group": 3, "n_control": 0, "reject_reason": None},
+                   {"value": ["Etch", "ETCH-9"], "passes": True,
+                    "level": "chamber", "key": "ETCH-9",
+                    "target_pass": 3, "control_pass": 0, "reject_reason": None},
                ]},
     "thought": "그룹 대조",
 }
 
 # 신형(레지스트리) 증거 finding: 챔버 가설이 ETCH9_B 를 통과 판정
 EVIDENCE_FINDING_NEW = {
-    "loop": 2, "tool": "hyp_chamber_concentration",
+    "loop": 2, "tool": "hyp_eqp_ch_commonality",
     "args": {"group_ids": ["W2406_02", "W2406_04", "W2406_06"],
              "control_ids": ["W2406_01", "W2406_03", "W2406_05"]},
-    "result": {"hypothesis_id": "chamber_concentration", "comparison": "categorical_concentration",
-               "column": "eq_chamber",
+    "result": {"hypothesis_id": "eqp_ch_commonality",
+               "legend": [{"level": "chamber", "columns": ["eqp_id", "ch_id"]}],
+               "status": "ok",
                "candidates": [
-                   {"value": ["Etch", "ETCH9_B"], "specificity": 1.0, "passes": True,
-                    "counterexamples": {}, "effect_size": None, "spec_violation_rate": None,
-                    "n_group": 3, "n_control": 0, "reject_reason": None},
-                   {"value": ["Photo", "PHOTO1_A"], "specificity": 0.5, "passes": False,
-                    "counterexamples": {}, "effect_size": None, "spec_violation_rate": None,
-                    "n_group": 3, "n_control": 3, "reject_reason": "편중 특이성 0.5 < 0.9"},
+                   {"value": ["Etch", "ETCH9_B"], "passes": True,
+                    "level": "chamber", "key": "ETCH9_B",
+                    "target_pass": 3, "control_pass": 0, "reject_reason": None},
+                   {"value": ["Photo", "PHOTO1_A"], "passes": False,
+                    "level": "chamber", "key": "PHOTO1_A",
+                    "target_pass": 3, "control_pass": 3, "reject_reason": "분리 없음"},
                ]},
     "thought": "챔버 편중",
 }
@@ -174,11 +176,11 @@ def test_finalize_gate_rejects_hypothesis_not_backed_by_evidence():
 
 
 def test_finalize_gate_sees_evidence_from_same_message():
-    # 한 메시지에 hyp_chamber_concentration + finalize 가 같이 오면, 방금 실행된 대조 결과도 증거다
+    # 한 메시지에 hyp_eqp_ch_commonality + finalize 가 같이 오면, 방금 실행된 대조 결과도 증거다
     ai = AIMessage(
         content="그룹 대조 후 바로 종료 제안",
         tool_calls=[
-            {"name": "hyp_chamber_concentration",
+            {"name": "hyp_eqp_ch_commonality",
              "args": {"group_ids": ["W2406_02", "W2406_04", "W2406_06"],
                       "control_ids": ["W2406_01", "W2406_03", "W2406_05"]},
              "id": "call_c"},

@@ -45,18 +45,19 @@ def test_scripted_sequence():
 
     # 3) 챔버 편중 가설로 원인 공정/장비를 좁힌다
     ai = llm.analyze_step(msgs)
-    assert ai.tool_calls[0]["name"] == "hyp_chamber_concentration"
+    assert ai.tool_calls[0]["name"] == "hyp_eqp_ch_commonality"
     assert ai.tool_calls[0]["args"] == {"group_ids": TARGET, "control_ids": CONTROL}
-    msgs += [ai, _tm("hyp_chamber_concentration", {
-        "hypothesis_id": "chamber_concentration", "comparison": "categorical_concentration",
-        "column": "eq_chamber",
+    msgs += [ai, _tm("hyp_eqp_ch_commonality", {
+        "hypothesis_id": "eqp_ch_commonality",
+        "legend": [{"level": "chamber", "columns": ["eqp_id", "ch_id"]}],
+        "status": "ok",
         "candidates": [
-            {"value": ["Etch", "ETCH9_B"], "specificity": 1.0, "passes": True,
-             "counterexamples": {}, "effect_size": None, "spec_violation_rate": None,
-             "n_group": 3, "n_control": 0, "reject_reason": None},
-            {"value": ["Photo", "PHOTO1_A"], "specificity": 0.5, "passes": False,
-             "counterexamples": {}, "effect_size": None, "spec_violation_rate": None,
-             "n_group": 3, "n_control": 3, "reject_reason": "편중 특이성 0.5 < 0.9"},
+            {"value": ["Etch", "ETCH9_B"], "passes": True,
+             "level": "chamber", "key": "ETCH9_B",
+             "target_pass": 3, "control_pass": 0, "reject_reason": None},
+            {"value": ["Photo", "PHOTO1_A"], "passes": False,
+             "level": "chamber", "key": "PHOTO1_A",
+             "target_pass": 3, "control_pass": 3, "reject_reason": "분리 없음"},
         ],
     })]
 
