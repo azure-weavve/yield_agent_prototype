@@ -25,8 +25,15 @@ def _conn():
         conn.close()
 
 
+def _assert_column(conn, column):
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(process_log)")}
+    if column not in cols:
+        raise ValueError(f"컬럼 '{column}' 없음 (process_log). 가능한 컬럼: {', '.join(sorted(cols))}")
+
+
 def _usage(conn, ids, column):
     """(process_step, column값) -> 통과 wafer 수. 값이 NULL/빈 문자열이면 제외."""
+    _assert_column(conn, column)
     if not ids:
         return {}
     ph = ",".join("?" * len(ids))
@@ -46,6 +53,7 @@ def _counterexamples(column, value, process_step, defect_type):
     (기존 find_counterexamples 를 임의 컬럼으로 일반화)
     """
     with _conn() as conn:
+        _assert_column(conn, column)
         users = conn.execute(
             f"SELECT DISTINCT y.wafer_id, y.defect_type FROM process_log p "
             f"JOIN yield y ON y.wafer_id = p.wafer_id "

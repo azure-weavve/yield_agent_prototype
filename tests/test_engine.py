@@ -46,6 +46,12 @@ def test_group_only_excludes_shared_equipment(fx_db):
     assert all(c["value"] != ["Etch", "ETCH-1"] or not c["passes"] for c in cands)
 
 
+def test_unknown_column_raises_clear_error(fx_db):
+    with pytest.raises(ValueError, match="bogus"):
+        engine.group_only_categorical(["G1", "G2", "G3"], ["C1", "C2", "C3"],
+                                       "bogus; DROP TABLE yield", {})
+
+
 def test_group_only_matches_legacy_compare_process_logs():
     """이관 안전망: engine 통과 후보의 장비 == 기존 도구 suspect_equipment."""
     from tools import yield_tools as yt
