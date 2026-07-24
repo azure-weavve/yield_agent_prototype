@@ -192,7 +192,9 @@ def generate():
         wafer_ids.append(wid)
 
     logs = _make_process_logs(rows, rng)
-    _write_sqlite(rows, logs)
+    _augment_yield(rows)
+    steps = _make_step_history(rows)
+    _write_sqlite(rows, logs, steps)
     _write_index(vectors, wafer_ids)
     _report(rows, vectors, wafer_ids)
 
@@ -237,7 +239,45 @@ def _make_process_logs(rows, rng):
     return logs
 
 
-def _write_sqlite(rows, logs):
+def _augment_yield(rows):
+    """commonality 가 요구하는 root_lot_id·lot_type 을 채운다 (rng 미사용)."""
+    for r in rows:
+        r["root_lot_id"] = r["lot_id"]          # 더미는 lot_id 를 root_lot 으로 취급
+        r["lot_type"] = "prod"                   # 더미는 전부 양산으로 단순화
+    return rows
+
+
+# step_history 용 설비/챔버/PPID (process_log 와 느슨하게 공존).
+SH_REAL_EQP, SH_REAL_CH, SH_REAL_PPID = "ETCH9", "B", "PPID_X"    # 불량군 전용
+SH_CTRL_EQP, SH_CTRL_PPID = "ETCH9", "PPID_Y"                     # 대조군: 같은 설비 다른 챔버/PPID
+SH_STEPS = ["Photo", "Etch", "Diffusion", "CMP"]                  # wafer 당 경로
+
+
+def _make_step_history(rows):
+    """wafer×스텝 이력. RECENT_LOT 타깃은 Etch 에서 ETCH9_B·PPID_X 를 공유하고
+    대조군은 ETCH9_<번호>·PPID_Y 로 갈린다. 나머지 스텝은 양쪽 공통(미끼)."""
+    sh_rng = np.random.default_rng(SEED + 1)
+    steps = []
+    for r in rows:
+        wid = r["wafer_id"]
+        for step in SH_STEPS:
+            eqp, ch, ppid = f"{step.upper()[:4]}1", "A", "PPID_Z"   # 기본: 공통 경로
+            if step == "Etch":
+                if wid in GROUP_WAFERS:
+                    eqp, ch, ppid = SH_REAL_EQP, SH_REAL_CH, SH_REAL_PPID
+                elif wid in CONTROL_WAFERS:
+                    eqp, ch, ppid = SH_CTRL_EQP, str(int(sh_rng.integers(1, 9))), SH_CTRL_PPID
+                else:
+                    eqp, ch, ppid = f"ETCH{int(sh_rng.integers(1, 9))}", "A", "PPID_Z"
+            steps.append({
+                "wafer_id": wid, "process_step": step,
+                "eqp_id": eqp, "ch_id": ch, "ppid": ppid,
+                "timestamp": r["date"] + " 10:00:00",
+            })
+    return steps
+
+
+def _write_sqlite(rows, logs, steps):
     if DB_PATH.exists():
         DB_PATH.unlink()
     conn = sqlite3.connect(DB_PATH)
@@ -248,13 +288,14 @@ def _write_sqlite(rows, logs):
             yield        REAL NOT NULL,
             defect_type  TEXT NOT NULL,
             process_step TEXT,
-            date         TEXT NOT NULL
+            date         TEXT NOT NULL,
+            root_lot_id  TEXT NOT NULL,
+            lot_type     TEXT NOT NULL
         )
     """)
     conn.executemany(
-        "INSERT INTO yield VALUES (:wafer_id, :lot_id, :yield, :defect_type, :process_step, :date)",
-        rows,
-    )
+        "INSERT INTO yield VALUES (:wafer_id, :lot_id, :yield, :defect_type, "
+        ":process_step, :date, :root_lot_id, :lot_type)", rows)
     conn.execute("""
         CREATE TABLE process_log (
             wafer_id     TEXT NOT NULL,
@@ -269,9 +310,21 @@ def _write_sqlite(rows, logs):
     """)
     conn.executemany(
         """INSERT INTO process_log VALUES
-           (:wafer_id, :process_step, :equipment_id, :eq_chamber, :param_name, :param_value, :spec_low, :spec_high)""",
-        logs,
-    )
+           (:wafer_id, :process_step, :equipment_id, :eq_chamber, :param_name,
+            :param_value, :spec_low, :spec_high)""", logs)
+    conn.execute("""
+        CREATE TABLE step_history (
+            wafer_id     TEXT NOT NULL,
+            process_step TEXT NOT NULL,
+            eqp_id       TEXT NOT NULL,
+            ch_id        TEXT,
+            ppid         TEXT,
+            timestamp    TEXT
+        )
+    """)
+    conn.executemany(
+        """INSERT INTO step_history VALUES
+           (:wafer_id, :process_step, :eqp_id, :ch_id, :ppid, :timestamp)""", steps)
     conn.commit()
     conn.close()
 

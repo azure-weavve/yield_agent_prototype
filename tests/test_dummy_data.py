@@ -139,3 +139,28 @@ def test_control_shares_equipment_not_chamber():
         ).fetchall()
         assert all(r["equipment_id"] == "ETCH-9" for r in rows)      # 같은 설비
         assert all(r["eq_chamber"] != "ETCH9_B" for r in rows)       # 다른 챔버
+
+
+def test_yield_has_root_lot_and_lot_type():
+    import sqlite3, config
+    conn = sqlite3.connect(config.DB_PATH); conn.row_factory = sqlite3.Row
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(yield)")}
+    assert {"root_lot_id", "lot_type"} <= cols
+    # RECENT_LOT 타깃·대조군이 같은 root_lot 을 공유(commonality 층화 성립)
+    rows = conn.execute(
+        "SELECT DISTINCT root_lot_id FROM yield WHERE wafer_id IN "
+        "('W2406_02','W2406_04','W2406_06','W2406_01','W2406_03','W2406_05')").fetchall()
+    conn.close()
+    assert len(rows) == 1
+
+
+def test_step_history_planted_eqp_ch_and_ppid_separation():
+    import config
+    from tools import commonality as cm
+    t = ["W2406_02", "W2406_04", "W2406_06"]
+    c = ["W2406_01", "W2406_03", "W2406_05"]
+    res = cm.find_commonality(t, c)               # 기본 EQP_CH legend
+    keys = {(x["level"], x["key"]) for x in res["candidates"]}
+    assert ("chamber", "ETCH9_B") in keys
+    ppid = cm.find_commonality(t, c, legend=[{"level": "ppid", "columns": ["ppid"]}])
+    assert ("ppid", "PPID_X") in {(x["level"], x["key"]) for x in ppid["candidates"]}
