@@ -43,28 +43,29 @@ def test_scripted_sequence():
     assert ai.tool_calls[0]["args"]["confidence"] < 0.8
     msgs += [ai, _tm("finalize", "반려: 확신도 0.60 < 0.8. 근거를 좁힐 tool 을 더 호출하라.")]
 
-    # 3) 그룹 대조로 원인 공정/장비를 좁힌다
+    # 3) 챔버 편중 가설로 원인 공정/장비를 좁힌다
     ai = llm.analyze_step(msgs)
-    assert ai.tool_calls[0]["name"] == "compare_process_logs"
+    assert ai.tool_calls[0]["name"] == "hyp_chamber_concentration"
     assert ai.tool_calls[0]["args"] == {"group_ids": TARGET, "control_ids": CONTROL}
-    msgs += [ai, _tm("compare_process_logs", {
-        "suspect_equipment": [{"process_step": "Etch", "equipment_id": "ETCH-9",
-                               "group_count": 3, "control_count": 0}],
-        "equipment_usage": [],
-        "group_spec_violations": [
-            {"wafer_id": w, "process_step": "Etch", "equipment_id": "ETCH-9",
-             "param_name": "rf_power", "param_value": 570.0,
-             "spec_low": 450.0, "spec_high": 550.0}
-            for w in TARGET
+    msgs += [ai, _tm("hyp_chamber_concentration", {
+        "hypothesis_id": "chamber_concentration", "comparison": "categorical_concentration",
+        "column": "eq_chamber",
+        "candidates": [
+            {"value": ["Etch", "ETCH9_B"], "specificity": 1.0, "passes": True,
+             "counterexamples": {}, "effect_size": None, "spec_violation_rate": None,
+             "n_group": 3, "n_control": 0, "reject_reason": None},
+            {"value": ["Photo", "PHOTO1_A"], "specificity": 0.5, "passes": False,
+             "counterexamples": {}, "effect_size": None, "spec_violation_rate": None,
+             "n_group": 3, "n_control": 3, "reject_reason": "편중 특이성 0.5 < 0.9"},
         ],
     })]
 
-    # 4) 최종 finalize — 스펙 이탈 장비를 가설에 명시
+    # 4) 최종 finalize — 통과한 챔버 후보를 가설에 명시
     ai = llm.analyze_step(msgs)
     call = ai.tool_calls[0]
     assert call["name"] == "finalize"
     assert call["args"]["confidence"] >= 0.8
-    assert "ETCH-9" in call["args"]["hypothesis"]
+    assert "ETCH9_B" in call["args"]["hypothesis"]
 
 
 def test_generate_report_contains_findings_and_conclusion():

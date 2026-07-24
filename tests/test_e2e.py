@@ -20,12 +20,12 @@ def test_full_loop_reaches_report_with_audit_trail():
     assert any("반려" in r for r in gate_results)
     assert any("승인" in r for r in gate_results)
     assert state["finalize_accepted"] is True
-    assert "ETCH-9" in state["final_hypothesis"]
+    assert "ETCH9_B" in state["final_hypothesis"]        # ETCH-9 → 챔버로 좁혀진 결론
 
     tools_used = [f["tool"] for f in state["findings"]]
     assert tools_used[:2] == ["normalize_target", "select_control"]   # loop 0 골격
-    for expected in ("aggregate_defects", "compare_process_logs"):
-        assert expected in tools_used
+    assert "aggregate_defects" in tools_used
+    assert any(t.startswith("hyp_") for t in tools_used)  # 레지스트리 도구가 실제 호출됨
     assert state["loop_count"] <= 6
     assert all("thought" in f for f in state["findings"])   # 모든 실행에 감사용 사고 기록
 

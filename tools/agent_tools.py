@@ -10,6 +10,7 @@ TOOLS_BY_NAME 에는 넣지 않는다.
 
 from langchain_core.tools import tool
 
+from domain import registry
 from tools import yield_tools as yt
 from tools.eds_search import get_searcher
 
@@ -56,36 +57,12 @@ def get_process_log(wafer_id: str, reason: str = "") -> list[dict]:
 
 
 @tool
-def compare_process_logs(group_ids: list[str], control_ids: list[str],
-                         reason: str = "") -> dict:
-    """불량 그룹과 대조 그룹(정상 wafer)의 공정 로그를 대조해, 불량 그룹만
-    공통으로 거친 장비(suspect_equipment)와 불량 그룹의 스펙 이탈
-    (group_spec_violations)을 찾는다. 그룹 간 차이로 원인 공정/장비를 좁힐 때 사용.
-    reason: 이 tool 을 호출하는 판단 이유를 한 문장으로 기술한다 (감사 기록에 남는다)."""
-    return yt.compare_process_logs(group_ids, control_ids)
-
-
-@tool
 def validate_data_completeness(wafer_ids: list[str], reason: str = "") -> dict:
     """분석 대상 wafer 들의 수율 행 누락·공정 로그 단계 누락·중복 로그를 검사한다.
-    그룹 대조(compare_process_logs) 전에 호출해 데이터가 결론에 쓸 만큼 완전한지 확인.
+    그룹 대조(hyp_*) 전에 호출해 데이터가 결론에 쓸 만큼 완전한지 확인.
     status=blocked 면 비교 결과를 신뢰하지 말고 리포트에 품질 경고를 남겨야 한다.
     reason: 이 tool 을 호출하는 판단 이유를 한 문장으로 기술한다 (감사 기록에 남는다)."""
     return yt.validate_data_completeness(wafer_ids)
-
-
-@tool
-def compare_parameter_distribution(group_ids: list[str], control_ids: list[str],
-                                   process_step: str | None = None,
-                                   param_name: str | None = None,
-                                   reason: str = "") -> list[dict]:
-    """불량 그룹과 대조 그룹의 공정 파라미터 분포(표본 수·평균·표준편차·효과 크기·
-    스펙 이탈률)를 (공정, 파라미터) 단위로 비교한다. compare_process_logs 가 지목한
-    후보의 정량 검증, 또는 스펙 이탈이 없어도 그룹 간 차이를 찾을 때 사용.
-    process_step/param_name 으로 범위를 좁힐 수 있다.
-    reason: 이 tool 을 호출하는 판단 이유를 한 문장으로 기술한다 (감사 기록에 남는다)."""
-    return yt.compare_parameter_distribution(group_ids, control_ids,
-                                             process_step, param_name)
 
 
 @tool
@@ -106,8 +83,9 @@ def finalize(hypothesis: str, confidence: float) -> str:
     return "finalize 는 게이트가 처리한다"  # 직접 실행되지 않음
 
 
+_HYPOTHESIS_TOOLS = registry.build_tools(registry.load_hypotheses())
+
 ANALYSIS_TOOLS = [get_wafer, search_similar, aggregate_defects, get_process_log,
-                  compare_process_logs, validate_data_completeness,
-                  compare_parameter_distribution, find_counterexamples]
+                  validate_data_completeness, find_counterexamples, *_HYPOTHESIS_TOOLS]
 ALL_TOOLS = ANALYSIS_TOOLS + [finalize]
 TOOLS_BY_NAME = {t.name: t for t in ANALYSIS_TOOLS}

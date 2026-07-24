@@ -6,8 +6,9 @@ from tools import agent_tools as at
 def test_tool_names():
     assert {t.name for t in at.ALL_TOOLS} == {
         "get_wafer", "search_similar", "aggregate_defects", "get_process_log",
-        "compare_process_logs", "validate_data_completeness",
-        "compare_parameter_distribution", "find_counterexamples", "finalize",
+        "validate_data_completeness", "find_counterexamples",
+        "hyp_equipment_commonality", "hyp_chamber_concentration", "hyp_parameter_drift",
+        "finalize",
     }
     assert "finalize" not in at.TOOLS_BY_NAME  # finalize 는 게이트가 처리
 
@@ -29,16 +30,6 @@ def test_aggregate_defects_tool_invokes():
     assert rows[0]["defect_type"] == "center_spot"
 
 
-def test_compare_process_logs_tool_invokes():
-    # 대조군도 Etch 에서 같은 설비 ETCH-9 를 쓴다(다른 챔버) — 공유 설비이므로
-    # 더 이상 suspect_equipment 로 잡히지 않는다 (실제 원인은 챔버 단위에만 있다).
-    res = at.TOOLS_BY_NAME["compare_process_logs"].invoke({
-        "group_ids": ["W2406_02", "W2406_04", "W2406_06"],
-        "control_ids": ["W2406_01", "W2406_03", "W2406_05"],
-    })
-    assert not any(r["equipment_id"] == "ETCH-9" for r in res["suspect_equipment"])
-
-
 def test_validate_data_completeness_tool_invokes():
     res = at.TOOLS_BY_NAME["validate_data_completeness"].invoke(
         {"wafer_ids": ["W2406_02"]}
@@ -46,12 +37,12 @@ def test_validate_data_completeness_tool_invokes():
     assert res["status"] == "good"
 
 
-def test_compare_parameter_distribution_tool_invokes():
-    rows = at.TOOLS_BY_NAME["compare_parameter_distribution"].invoke({
+def test_hyp_chamber_concentration_tool_invokes():
+    res = at.TOOLS_BY_NAME["hyp_chamber_concentration"].invoke({
         "group_ids": ["W2406_02", "W2406_04", "W2406_06"],
         "control_ids": ["W2406_01", "W2406_03", "W2406_05"],
     })
-    assert rows[0]["param_name"] == "rf_power"
+    assert "candidates" in res
 
 
 def test_find_counterexamples_tool_invokes():
