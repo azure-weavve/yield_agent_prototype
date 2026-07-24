@@ -33,6 +33,11 @@ LLM_MODEL = os.getenv("LLM_MODEL", "<사내-모델명>")
 MAX_LOOPS = 6              # 가드레일: 최대 순환 횟수 (무한루프 차단)
 CONFIDENCE_THRESHOLD = 0.8 # finalize 승인 임계 확신도
 
+# commonality 후보의 '판별 통과(passes)' 기준 — 게이트 증거로 쓸 최소 신뢰선.
+# 후보≠결론 철학상 못 박지 않고 실데이터 보며 조정한다.
+COMMONALITY_PASS_MIN_SCORE = float(os.getenv("COMMONALITY_PASS_MIN_SCORE", "0.5"))
+COMMONALITY_PASS_MIN_TARGET = int(os.getenv("COMMONALITY_PASS_MIN_TARGET", "2"))
+
 # 형제 묶기 (status 입력 재설계): "같은 사건" 판정이라 유사 사례 검색(0.5)보다 높게.
 # 실행 중 불변이므로 결정론 원칙과 충돌 없음 (재설계 문서 6절 2번).
 SIBLING_MIN_SIMILARITY = float(os.getenv("SIBLING_MIN_SIMILARITY", "0.8"))
