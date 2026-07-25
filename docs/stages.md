@@ -1,0 +1,140 @@
+# Stage 표 — 실데이터에서 돌게 만들기까지
+
+**이 문서가 Stage 순서의 단일 출처입니다.** 이전 판은 Stage 0 설계 문서
+(`superpowers/specs/2026-07-24-registry-commonality-realignment-design.md` §12)의 참고 절에
+얹혀 있었고, 2026-07-25 재배열이 반영되어 있지 않습니다.
+
+갱신: 2026-07-25
+
+---
+
+## 현재 위치
+
+```
+Stage 0    ✅ 완료 (2026-07-24) — 레지스트리를 commonality(step_history) 위에 재정렬
+Stage 1    ⏸  Stage 5.5 로 이동 (실데이터 · 사내 _extract() 작업 대기)
+Stage A    🔄 진행 중 — 안전장치 + 계약 동결 + 적대적 더미
+Stage 2    ⬜ find_normal_wafers → root_lot 기반 대조군
+Stage 3    ⬜ sensor_log + SensorStore, parameter_drift 부활     ⚠ 서브시스템 규모
+Stage 4    ⬜ defect_type 그룹핑 → EDS top-k, status_node 재설계
+Stage 5    ⬜ process_log · 레거시 도구 삭제 = 단일 스키마 완성
+Stage 5.5  ⬜ 구 Stage 1 — 실데이터 적재 · 검증 · 임계 튜닝
+```
+
+**Stage A 세부** (`2026-07-25-dummy-first-stage-reorder.md`):
+Task 0·1·2·3·5·6 완료, **Task 4(적대적 더미 5종)만 남음.**
+
+---
+
+## 왜 Stage 1 을 뒤로 미뤘나
+
+2026-07-25 결정. 두 가지가 착수 직전에 드러났습니다.
+
+1. **Stage 1 은 Stage 2 없이 완주할 수 없다.** commonality 는 `(target, control)` 을 받는데,
+   대조군을 만드는 `find_normal_wafers` 가 `defect_type = 'none'` 에 의존합니다. 사내
+   `defect_type` 은 nullable 이라 실데이터에서 대조군이 비고 `no_paired_stratum` 으로 끝납니다.
+   대조군 재작성이 곧 Stage 2 입니다.
+2. **Stage 1 에 합격 기준이 없었다.** "실데이터로 commonality 1회 검증" 에서 무엇을 보면
+   통과인지가 정의되지 않았습니다. 실데이터에는 정답지가 없어 후보가 나와도 맞는지 알 수 없습니다.
+
+Stage 2~5 는 대부분 배선·계약·구조 문제이고, 수치 임계는 이미 `config` 상수 + "실데이터 보고
+조정" 으로 분리하는 관행이 있습니다. 구조를 먼저 짜고 상수를 나중에 맞추는 것이 원래 설계 의도입니다.
+
+**이 순서가 만드는 대가:** 더미는 정답을 심어둔 데이터라 green 이 실력인지 데이터가 착한
+건지 구분이 안 됩니다. Stage A Task 4(적대적 더미)가 그 절반을 메웁니다.
+
+---
+
+## 각 Stage 진입 전 확인 사항
+
+각 Stage 는 별도 spec/plan 을 씁니다. 착수 시 아래를 먼저 확인합니다.
+
+### Stage 2 — 대조군
+
+`2026-07-18-status-node-review-and-redesign.md` §7 의 3단계 규칙(형제 lot 내 합집합 → 같은
+root_lot 양산랏 확장 → 정직 보고)이 확정 상태입니다. 새로 정할 것은 **`defect_type` 의존 제거
+방법** — 라벨 없이 "정상" 을 어떻게 정의하는가(수율 임계만? EDS 비유사성?)가 핵심 결정입니다.
+근거: `2026-07-24-domain-corrections.md` B-3.
+
+### Stage 3 — 센서 (⚠ 규모가 다릅니다)
+
+`sensor_log` + `SensorStore` + 캐시 DB + 온디맨드 fetch/무효화 + `compare_parameter_distribution`
+재설계 + `parameter_drift` 부활. Stage 2·4 가 파일 한두 개 규모인데 **Stage 3 만 서브시스템
+신설**입니다. 일정 산정 시 분리하십시오. 2단 깔때기가 완성되는 것도 Stage 3 이므로, 그전까지
+시스템은 "어느 챔버가 의심된다" 까지만 말하고 "왜" 는 못 말합니다.
+
+**계약 (어기면 분석이 성립하지 않습니다):**
+
+1. **fetch 단위는 (지목된 스텝 × 타깃+대조군 전원).** 챔버 단위로 당기면 안 됩니다 — 1단이 그
+   챔버를 지목한 근거가 "대조군은 안 거쳤다"(score=1.0 이면 control_pass=0)이므로, 지목된
+   챔버만 뽑으면 대조군 표본이 0 이라 비교 자체가 성립하지 않습니다.
+2. **tool 반환은 집계값만** (표본 수·평균·표준편차·효과크기·이탈률). 원본 트레이스는
+   `sensor_cache.db` 에 두고 ToolMessage 에 싣지 않습니다. 분석당 수만 행이라 한 번만 어겨도
+   컨텍스트가 터집니다. 반환은 효과크기 top-K 로 절단해 fetch 량과 무관하게 유계로 만듭니다.
+3. **2단 출력은 후보이지 결론이 아닙니다.** p-value 컷이 아니라 효과크기 랭킹. 스텝당 센서
+   수백 개라 α=0.05 면 우연히 수십 개가 유의합니다. tool 결과 `note` 에 명시합니다.
+
+**결정 항목:**
+
+4. **기준선을 그룹 대조로 할지 시간 대조로 할지.** 그룹 대조 = 같은 스텝의 다른 챔버,
+   시간 대조 = 그 챔버의 과거 정상 구간. 둘은 다른 원인에 반응합니다 — PM·부품 교체는 시간
+   대조로만 잡힙니다. `parameter_drift 부활` 이 후자를 암시하나 명시된 적이 없습니다.
+   둘 다 하면 규모가 다시 늡니다.
+5. **캐시 무효화 정책·`sensor_cache.db` 수명 주기·온디맨드 fetch 실패 처리가 미설계.**
+   수명 주기는 성능이 아니라 **감사 추적** 문제입니다 — 반환이 집계값만이면 `findings` 에도
+   집계값만 남고, 캐시가 비워진 뒤에는 리포트의 효과크기 3.6 이 어디서 나왔는지 재현할 수
+   없습니다. 리포트 보존 기간만큼 캐시를 살리거나, `findings` 에 재fetch 키(스텝·wafer
+   목록·시각 범위)를 남기거나 — 무효화 정책과 함께 정합니다.
+
+### Stage 4 — 그룹핑
+
+`SIBLING_MIN_SIMILARITY` 컷오프가 실데이터 분포에서 타당한지 확인 불가(Stage 5.5 로 이월).
+컷오프를 못 정한 채 구조만 짜는 것을 감수합니다. 근거: `2026-07-24-domain-corrections.md` A-3.
+
+### Stage 5 — 삭제
+
+**삭제 전 대체 매핑을 명시적으로 확인합니다.** 레거시 도구 중
+`validate_data_completeness`·`find_counterexamples` 는 레거시가 아니라 **기능**입니다.
+설계상 반례는 commonality 2×2 의 b·c 셀이, 품질 검사는 `load_internal.validate()` +
+`missing_history`/`no_paired_stratum` 이 흡수한 것으로 보이지만, 확인 없이 지우면 기능이
+조용히 빠집니다.
+
+### Stage 5.5 — 구 Stage 1 (실데이터)
+
+**합격 기준을 착수 전에 정의합니다.** 최소:
+
+1. `load_internal.validate()` 리포트에 fatal 없음
+2. 적대적 케이스 5종(Stage A Task 4)의 판정이 실데이터에서도 유지
+3. **과거에 원인이 확정된 사례 3~5건에서 Top-3 안에 정답이 들어오는지** ← 이것이 진짜 검증.
+   사내 사례 확보가 전제입니다.
+4. 임계(`COMMONALITY_PASS_MIN_SCORE`·`MIN_TARGET`·`SIBLING_MIN_SIMILARITY`·`YIELD_THRESHOLD`)를
+   실분포로 조정
+
+3번이 확보되지 않으면 Stage 5.5 는 "에러 없이 돈다" 수준의 스모크임을 문서에 정직하게 남깁니다.
+**사내 사례 확보는 코드 작업이 아니라 조직 작업이므로 지금부터 병행 요청해 두는 편이 좋습니다.**
+
+---
+
+## 이 축이 다루지 않는 것
+
+Stage 축은 **"실데이터에서 돌게 만든다"** 이고, `evidence_based_analysis_roadmap.md` 의 Phase
+축은 **"믿을 만하게 만든다"** 입니다. 서로를 참조하지 않습니다.
+
+**Stage 5 를 다 끝내도 결론 정확도를 측정할 수단은 없습니다.** Stage A Task 4 의 적대적
+케이스가 Phase 축으로 넘어가는 첫 다리입니다.
+
+Phase 축 소관(여기서 안 다룸): EvidenceBundle 게이트 강화(게이트가 여전히 문자열 매칭),
+시간축(장비 이벤트·PM·recipe 이력), 사람 검토 폐루프, 다인성(독립 원인 2개가 타깃을 절반씩 설명).
+
+---
+
+## 관련 문서
+
+| 문서 | 내용 |
+|---|---|
+| `2026-07-24-domain-corrections.md` | 사내 데이터로 뒤집힌 설계 결정 (A/B/C/D/E/F 절). Stage 표의 A-3·B-3·§E 라벨이 가리키는 곳 |
+| `2026-07-25-dummy-first-stage-reorder.md` | Stage A 실행 플랜 (Task 0~6) |
+| `superpowers/specs/2026-07-24-registry-commonality-realignment-design.md` | Stage 0 설계 (§12 에 구판 Stage 표) |
+| `2026-07-18-status-node-review-and-redesign.md` | 대조군 3단계 규칙 (Stage 2 전제) |
+| `evidence_based_analysis_roadmap.md` | Phase 축 — 신뢰도 로드맵 |
+| `도메인지식-주입-틀-공백분석.md` | 왜 레지스트리가 1순위였는지 |

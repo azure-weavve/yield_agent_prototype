@@ -483,21 +483,30 @@ README 의 데모 출력·도구 목록이 Stage 0 이전(`compare_process_logs`
 
 **Files:** Modify: `README.md`
 
-- [ ] **Step 1: 데모 출력 블록을 실제 실행 결과로 교체**
+- [x] **Step 1: 데모 출력 블록을 실제 실행 결과로 교체**
 
 Run: `PYTHONUTF8=1 python main.py W2406_02` → 출력을 그대로 붙인다. **손으로 쓰지 말고 실제 출력을 쓴다.**
 
-- [ ] **Step 2: "분석 루프" 절의 도구 목록을 실제 `ANALYSIS_TOOLS` 와 일치시킨다**
+README 데모 블록의 명령은 자동 모드(`python main.py`)라 그쪽을 실행해 붙였다. wafer 목록과
+`control_ids`(67장)만 `...` 로 줄이고 그 사실을 블록 아래에 명시했다.
+
+- [x] **Step 2: "분석 루프" 절의 도구 목록을 실제 `ANALYSIS_TOOLS` 와 일치시킨다**
 
 `compare_process_logs`·`compare_parameter_distribution` 서술을 legend 기반 `hyp_*` 로 교체. `LEGACY_TOOLS_ENABLED`(Task 3)를 한 줄 언급.
 
-- [ ] **Step 3: 시연 서사 정정**
+계획 밖 추가: 디렉토리 구조에 `domain/` 패키지·`load_internal.py`·`commonality.py` 등
+누락분 반영, 더미 설계 절에 step_history 신호(ETCH9_B·PPID_X) 명시. 같은 부류의 드리프트다.
+
+- [x] **Step 3: 시연 서사 정정**
 
 「반려→재시도→승인 순환이 End-to-End 의 핵심」은 mock 각본에서만 보인다. 실제 사내 LLM 은 근거를 먼저 쌓고 finalize 하므로 반려가 안 나타난다(정상 동작). 문구를 "게이트가 근거 없는 결론을 반려한다" 로 낮추고, 순환 자체를 볼거리로 내세우지 않는다.
 
-- [ ] **Step 4: 빠른 시작 절** — `pytest` → `python -m pytest`, `config.py` 손수정 전제 → 환경변수/`.env` 방식으로 갱신.
+- [x] **Step 4: 빠른 시작 절** — `pytest` → `python -m pytest`, `config.py` 손수정 전제 → 환경변수/`.env` 방식으로 갱신.
 
-- [ ] **Step 5: 커밋** — `docs: README 를 Stage 0 이후 코드 현실과 동기화`
+⚠️ 정확히는 `LLM_*`·임계·도구 플래그만 환경변수이고 `EDS_MODE`·`EDS_HTTP_URL` 등은 여전히
+파일 상수다. "전부 환경변수" 로 쓰면 거짓이 되므로 그렇게 구분해 적었다.
+
+- [x] **Step 5: 커밋** — `docs: README 를 Stage 0 이후 코드 현실과 동기화`
 
 ---
 
@@ -505,14 +514,21 @@ Run: `PYTHONUTF8=1 python main.py W2406_02` → 출력을 그대로 붙인다. *
 
 현재 Stage 표는 Stage 0 설계 문서 §12 의 "(참고)" 절에 얹혀 있고, 참조하는 `docs/2026-07-24-domain-corrections.md`(A-3·B-3·§E)는 저장소에 없다. 재배열까지 반영된 표가 찾기 쉬운 곳에 있어야 한다.
 
+**정정 (착수 시 확인):** `docs/2026-07-24-domain-corrections.md` 는 **존재한다.** 같은 날
+커밋 `6ea497a`("문서 추가")로 들어왔고 A~F 절 구조에 `§E. 현재 구현 상태`까지 있다. 이 계획을
+쓸 당시의 전제가 낡은 것이다. 따라서 Step 2 는 "누락 기록"이 아니라 **정상 링크**로 바뀐다.
+
 **Files:**
 - Create: `docs/stages.md`
 - Modify: `docs/superpowers/specs/2026-07-24-registry-commonality-realignment-design.md` (§12 에 포인터 한 줄)
 
-- [ ] **Step 1: `docs/stages.md` 작성** — §1 개정 표 + 각 Stage 의 진입 조건(§4) + 현재 위치. 단일 출처로 삼는다.
-- [ ] **Step 2: 누락 문서 기록** — `domain-corrections.md` 부재와 A-3/B-3/§E 라벨이 그것을 가리킨다는 사실을 명시. 복원 필요 항목으로 남긴다.
-- [ ] **Step 3: §12 에 포인터 추가** — `> 재배열 반영 최신판: docs/stages.md (2026-07-25)`
-- [ ] **Step 4: 커밋** — `docs: Stage 표를 docs/stages.md 로 승격 (재배열 반영)`
+- [x] **Step 1: `docs/stages.md` 작성** — §1 개정 표 + 각 Stage 의 진입 조건(§4) + 현재 위치. 단일 출처로 삼는다.
+- [x] **Step 2: ~~누락 문서 기록~~ → 관련 문서 표로 연결** — `domain-corrections.md` 가 실재하므로
+      A-3(Stage 4)·B-3(Stage 2)·§E 가 어느 Stage 의 근거인지 본문에 직접 걸었다.
+- [x] **Step 3: §12 에 포인터 추가** — `> 재배열 반영 최신판: docs/stages.md (2026-07-25)`
+- [x] **Step 4: 커밋** — `docs: Stage 표를 docs/stages.md 로 승격 (재배열 반영)`
+
+계획 밖 추가: README "한계와 다음 단계" 에서도 `docs/stages.md` 를 단일 출처로 가리키게 했다.
 
 ---
 
