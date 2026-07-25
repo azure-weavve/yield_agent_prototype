@@ -79,6 +79,16 @@ class ScriptedMockLLMClient(LLMClient):
 
         res = self._result(tool_msgs, "hyp_eqp_ch_commonality")
         passing = [c for c in res["candidates"] if c["passes"]]
+        if not passing:
+            # 분리되는 후보가 없다 — **원인 없음이 아니라 lot 내부 대조로는 안 보인다**는 뜻.
+            # 억지로 후보를 집으면 허위 확정이므로 낮은 확신도로 물러선다(게이트가 반려하고,
+            # 루프 한계에 닿아 '미확정' 리포트로 끝난다).
+            return self._call(
+                "finalize",
+                {"hypothesis": "lot 내부 대조로는 타깃만 거친 설비/챔버가 없다 — "
+                               "원인이 root_lot 전체에 걸렸을 수 있어 lot 밖 대조군이 필요하다",
+                 "confidence": 0.2},
+                "대조 결과에 분리되는 후보가 없다. 확정할 근거가 없으므로 물러선다.")
         top = passing[0]
         val = top["value"][-1]
         hyp = (f"{top['value'][0]} 공정 {val} 편중(분리 점수 {top.get('score')}, "
