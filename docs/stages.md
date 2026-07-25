@@ -14,7 +14,7 @@
 Stage 0    ✅ 완료 (2026-07-24) — 레지스트리를 commonality(step_history) 위에 재정렬
 Stage 1    ⏸  Stage 5.5 로 이동 (실데이터 · 사내 _extract() 작업 대기)
 Stage A    ✅ 완료 (2026-07-25) — 안전장치 + 계약 동결 + 적대적 더미
-Stage 2    ⬜ find_normal_wafers → root_lot 기반 대조군
+Stage 2    ✅ 완료 (2026-07-25) — 대조군을 같은 root_lot 의 비타깃 전원으로
 Stage 3    ⬜ sensor_log + SensorStore, parameter_drift 부활     ⚠ 서브시스템 규모
 Stage 4    ⬜ defect_type 그룹핑 → EDS top-k, status_node 재설계
 Stage 5    ⬜ process_log · 레거시 도구 삭제 = 단일 스키마 완성
@@ -52,12 +52,18 @@ Stage 2~5 는 대부분 배선·계약·구조 문제이고, 수치 임계는 �
 
 각 Stage 는 별도 spec/plan 을 씁니다. 착수 시 아래를 먼저 확인합니다.
 
-### Stage 2 — 대조군
+### Stage 2 — 대조군 ✅ 완료
 
-`2026-07-18-status-node-review-and-redesign.md` §7 의 3단계 규칙(형제 lot 내 합집합 → 같은
-root_lot 양산랏 확장 → 정직 보고)이 확정 상태입니다. 새로 정할 것은 **`defect_type` 의존 제거
-방법** — 라벨 없이 "정상" 을 어떻게 정의하는가(수율 임계만? EDS 비유사성?)가 핵심 결정입니다.
-근거: `2026-07-24-domain-corrections.md` B-3.
+spec `superpowers/specs/2026-07-25-root-lot-control-group-design.md`,
+플랜 `superpowers/plans/2026-07-25-root-lot-control-group.md`.
+
+**대조군 = 타깃과 같은 root_lot 의 비타깃 wafer 전원** (수율·라벨·`lot_type` 조건 없음).
+라벨 없이는 "정상"을 판정할 수 없으므로 판정을 없앴고, 저수율 혼입은 막는 대신
+`yield_summary`(중앙값·임계 미만 장수)로 리포트까지 보인다. `lot_id` → `root_lot_id` 로
+넓혀 분할 lot 이 갈려 있어도 대조군을 찾는다. 1/2단계 확장 개념(`stage` 키)은 폐기했다.
+
+07-18 §7 에서 살아남은 것은 3단계(정직 보고 = `control_insufficient`)와 출처 명시뿐이다.
+더미에 분할 lot `R2418`(`.1`/`.2`/`.3`)을 심어 root_lot 기준의 효과를 테스트로 고정했다.
 
 ### Stage 3 — 센서 (⚠ 규모가 다릅니다)
 
