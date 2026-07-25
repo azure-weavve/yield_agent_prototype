@@ -51,13 +51,13 @@ def normalize_target(wafers: list[str]) -> dict:
     }
 
 
-def _yield_summary(control: list[str]) -> dict | None:
+def _yield_summary(control_rows: list[dict]) -> dict | None:
     """대조군 수율 분포 — **판정이 아니라 해석 재료**다 (spec 2026-07-25 결정 2).
 
     라벨이 없어 저수율 피해 wafer 를 거를 수 없으므로, 걸러내는 대신 분포를 실어
     "이 반례가 진짜인가 피해 wafer 인가" 를 사람·LLM 이 판단할 재료로 넘긴다.
     """
-    ys = sorted(r["yield"] for r in yt.get_wafers(control))
+    ys = sorted(r["yield"] for r in control_rows)
     if not ys:
         return None
     mid = len(ys) // 2
@@ -78,12 +78,13 @@ def select_control(target_group: list[str]) -> dict:
     root_lots = sorted({r["root_lot_id"] for r in yt.get_wafers(target_group)})
     control = yt.find_control_candidates(root_lots, exclude=set(target_group))
 
+    control_rows = yt.get_wafers(control)
     sources: dict[str, list[str]] = {}
-    for r in yt.get_wafers(control):
+    for r in control_rows:
         sources.setdefault(r["root_lot_id"], []).append(r["wafer_id"])
     return {
         "control_group": control,
         "sources": {rl: sorted(ws) for rl, ws in sources.items()},
         "insufficient": len(control) < config.CONTROL_MIN_SIZE,
-        "yield_summary": _yield_summary(control),
+        "yield_summary": _yield_summary(control_rows),
     }
