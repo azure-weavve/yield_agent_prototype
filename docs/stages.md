@@ -13,7 +13,7 @@
 ```
 Stage 0    ✅ 완료 (2026-07-24) — 레지스트리를 commonality(step_history) 위에 재정렬
 Stage 1    ⏸  Stage 5.5 로 이동 (실데이터 · 사내 _extract() 작업 대기)
-Stage A    🔄 진행 중 — 안전장치 + 계약 동결 + 적대적 더미
+Stage A    ✅ 완료 (2026-07-25) — 안전장치 + 계약 동결 + 적대적 더미
 Stage 2    ⬜ find_normal_wafers → root_lot 기반 대조군
 Stage 3    ⬜ sensor_log + SensorStore, parameter_drift 부활     ⚠ 서브시스템 규모
 Stage 4    ⬜ defect_type 그룹핑 → EDS top-k, status_node 재설계
@@ -21,8 +21,11 @@ Stage 5    ⬜ process_log · 레거시 도구 삭제 = 단일 스키마 완성
 Stage 5.5  ⬜ 구 Stage 1 — 실데이터 적재 · 검증 · 임계 튜닝
 ```
 
-**Stage A 세부** (`2026-07-25-dummy-first-stage-reorder.md`):
-Task 0·1·2·3·5·6 완료, **Task 4(적대적 더미 5종)만 남음.**
+**Stage A 세부** (`2026-07-25-dummy-first-stage-reorder.md`): Task 0~6 전부 완료.
+전체 테스트 133 passed. **다음은 Stage 2(대조군) — 별도 spec/plan 부터.**
+
+Stage A 가 남긴 것: `test_schema_contract.py`(스키마 계약 동결)·`test_load_internal.py`
+(적재 왕복)·`test_adversarial_dummy.py`(적대적 케이스)·`LEGACY_TOOLS_ENABLED`·`docs/stages.md`.
 
 ---
 
