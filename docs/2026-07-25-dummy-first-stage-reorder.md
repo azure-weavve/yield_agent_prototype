@@ -308,7 +308,7 @@ Run: `python -m pytest -q` → Task 0 기준선과 동일 + 신규 3
 
 **설계 메모:** 도구를 `ANALYSIS_TOOLS` 에서 그냥 빼면 `test_agent_tools.py`·`test_graph_nodes.py`(`get_process_log` 를 `TOOLS_BY_NAME` 으로 실행하는 케이스가 있다)·mock 시나리오가 깨진다. 그래서 **기본값 켜짐 플래그**로 게이팅한다 — 더미/테스트는 현행 그대로, 실데이터 실행만 끈다. Stage 5 에서 이 플래그와 도구를 함께 지운다.
 
-- [ ] **Step 1: `config.py` 에 플래그 추가**
+- [x] **Step 1: `config.py` 에 플래그 추가**
 
 `COMMONALITY_PASS_MIN_TARGET` 아래에 추가:
 
@@ -320,7 +320,11 @@ Run: `python -m pytest -q` → Task 0 기준선과 동일 + 신규 3
 LEGACY_TOOLS_ENABLED = os.getenv("LEGACY_TOOLS_ENABLED", "1") == "1"
 ```
 
-- [ ] **Step 2: 실패 테스트 추가**
+- [x] **Step 2: 실패 테스트 추가**
+
+⚠️ 아래 원안의 `finally` 는 `LEGACY_TOOLS_ENABLED` 를 **True 로 고정 복원**한다. 환경변수로
+플래그를 끈 채 테스트를 돌리면 config 와 모듈 상태가 어긋난다. 실제로는 `monkeypatch.undo()`
+후 reload 하도록 바꿔, 원래 값과 무관하게 정확히 되돌린다.
 
 `tests/test_agent_tools.py` 끝에 추가:
 
@@ -345,9 +349,10 @@ def test_legacy_tools_hidden_when_flag_off(monkeypatch):
         importlib.reload(agent_tools)                         # 다른 테스트에 누수 방지
 ```
 
-- [ ] **Step 3: 실패 확인** — Run: `python -m pytest tests/test_agent_tools.py -v` → FAIL
+- [x] **Step 3: 실패 확인** — Run: `python -m pytest tests/test_agent_tools.py -v` → FAIL
+      (`AttributeError: config has no attribute 'LEGACY_TOOLS_ENABLED'`)
 
-- [ ] **Step 4: 구현**
+- [x] **Step 4: 구현**
 
 `tools/agent_tools.py` 의 `ANALYSIS_TOOLS` 조립부를 교체. **실제 현재 목록을 먼저 읽고**, 레거시로 분류된 것만 플래그 뒤로 옮긴다:
 
@@ -366,9 +371,18 @@ TOOLS_BY_NAME = {t.name: t for t in ANALYSIS_TOOLS}
 
 `aggregate_defects` 는 `yield.defect_type` 에 의존하므로 실데이터(nullable)에서 의미가 약하지만, Stage 4(defect_type→EDS)의 소관이라 여기서는 건드리지 않는다. `_BASE_TOOLS` 에 둔다.
 
-- [ ] **Step 5: 전체 회귀** — Run: `python -m pytest -q` → 기준선 + 신규
+- [x] **Step 5: 전체 회귀** — Run: `python -m pytest -q` → 기준선 + 신규
 
-- [ ] **Step 6: 커밋**
+결과: **126 passed**. 추가 확인 2건 —
+`LEGACY_TOOLS_ENABLED=0` 환경변수 경로로 `ANALYSIS_TOOLS` 가
+`{get_wafer, search_similar, aggregate_defects, hyp_eqp_ch_commonality, hyp_ppid_commonality}`
+로 줄고, 그 상태로 `python main.py W2406_02` 가 **정상 완주**(레거시 도구 없이
+aggregate_defects → hyp_eqp_ch_commonality 로 ETCH9_B 결론, 게이트 반려→승인 유지).
+
+구현 시 `_LEGACY_TOOLS` 순서는 원안(`get_process_log, find_counterexamples,
+validate_data_completeness`)이 아니라 기존 `ANALYSIS_TOOLS` 등장 순서를 유지했다.
+
+- [x] **Step 6: 커밋**
 
 ```
 feat: 레거시 도구 노출을 LEGACY_TOOLS_ENABLED 로 게이팅

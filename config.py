@@ -38,6 +38,12 @@ CONFIDENCE_THRESHOLD = 0.8 # finalize 승인 임계 확신도
 COMMONALITY_PASS_MIN_SCORE = float(os.getenv("COMMONALITY_PASS_MIN_SCORE", "0.5"))
 COMMONALITY_PASS_MIN_TARGET = int(os.getenv("COMMONALITY_PASS_MIN_TARGET", "2"))
 
+# 옛 process_log 스키마에 묶인 레거시 도구를 LLM 에 노출할지.
+# 더미에서는 동작하므로 기본 켜짐. 실데이터(step_history)에서는 못 도니 끈다 —
+# 켜둔 채로 실데이터를 돌리면 LLM 이 죽은 도구를 골라 루프 예산(MAX_LOOPS)을 태운다.
+# Stage 5 에서 도구와 이 플래그를 함께 삭제한다.
+LEGACY_TOOLS_ENABLED = os.getenv("LEGACY_TOOLS_ENABLED", "1") == "1"
+
 # 형제 묶기 (status 입력 재설계): "같은 사건" 판정이라 유사 사례 검색(0.5)보다 높게.
 # 실행 중 불변이므로 결정론 원칙과 충돌 없음 (재설계 문서 6절 2번).
 SIBLING_MIN_SIMILARITY = float(os.getenv("SIBLING_MIN_SIMILARITY", "0.8"))

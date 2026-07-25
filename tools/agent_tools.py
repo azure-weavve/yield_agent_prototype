@@ -10,6 +10,7 @@ TOOLS_BY_NAME 에는 넣지 않는다.
 
 from langchain_core.tools import tool
 
+import config
 from domain import registry
 from tools import yield_tools as yt
 from tools.eds_search import get_searcher
@@ -85,7 +86,16 @@ def finalize(hypothesis: str, confidence: float) -> str:
 
 _HYPOTHESIS_TOOLS = registry.build_tools(registry.load_hypotheses())
 
-ANALYSIS_TOOLS = [get_wafer, search_similar, aggregate_defects, get_process_log,
-                  validate_data_completeness, find_counterexamples, *_HYPOTHESIS_TOOLS]
+# 옛 process_log 스키마에 묶인 도구들 — 실데이터(step_history)에서는 못 돈다.
+# 삭제(Stage 5)까지는 노출만 막는다. aggregate_defects 는 yield.defect_type 에
+# 묶여 있어 실데이터에서 의미가 약하지만, 그 처리는 Stage 4 소관이라 여기 두지 않는다.
+_LEGACY_TOOLS = [get_process_log, validate_data_completeness, find_counterexamples]
+_BASE_TOOLS = [get_wafer, search_similar, aggregate_defects]
+
+ANALYSIS_TOOLS = [
+    *_BASE_TOOLS,
+    *(_LEGACY_TOOLS if config.LEGACY_TOOLS_ENABLED else []),
+    *_HYPOTHESIS_TOOLS,
+]
 ALL_TOOLS = ANALYSIS_TOOLS + [finalize]
 TOOLS_BY_NAME = {t.name: t for t in ANALYSIS_TOOLS}

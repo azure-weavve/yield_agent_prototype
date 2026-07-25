@@ -59,6 +59,26 @@ def test_find_counterexamples_tool_invokes():
         "W2406_01", "W2406_03", "W2406_05", "W2406_07",
     ]
 
+def test_legacy_tools_hidden_when_flag_off(monkeypatch):
+    """실데이터 모드에서는 process_log 기반 레거시 도구가 LLM 에 노출되지 않는다."""
+    import importlib
+
+    import config
+    from tools import agent_tools
+
+    monkeypatch.setattr(config, "LEGACY_TOOLS_ENABLED", False)
+    importlib.reload(agent_tools)
+    try:
+        names = {t.name for t in agent_tools.ANALYSIS_TOOLS}
+        assert not (names & {"get_process_log", "find_counterexamples",
+                             "validate_data_completeness"})
+        assert any(n.startswith("hyp_") for n in names)      # 가설 도구는 남는다
+        assert "finalize" in {t.name for t in agent_tools.ALL_TOOLS}
+    finally:
+        monkeypatch.undo()                                   # 원래 값으로 (True 고정 아님)
+        importlib.reload(agent_tools)                        # 다른 테스트에 누수 방지
+
+
 def test_reason_is_optional_and_ignored():
     # reason 은 감사 기록용 — 있어도 없어도 결과는 같다
     args = {"wafer_ids": ["W2406_02"]}
