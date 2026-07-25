@@ -197,7 +197,14 @@ def _make_split_lot_steps():
 Run: `PYTHONUTF8=1 python data/generate_dummy.py && PYTHONUTF8=1 python -m pytest -q`
 Expected: 신규 2개 PASS, 전체 **135 passed**(기준선 133 + 2). 기존이 깨지면 난수열을 건드린 것이니 append 위치를 되돌린다.
 
-`_report` 출력에서 최저 lot 이 여전히 `LOT2406`(87.4) → `LOT2407`(89.8) 인지 눈으로 확인한다.
+`_report` 출력에서 최저 lot 이 여전히 `LOT2406`(87.4) 인지 눈으로 확인한다.
+
+**실행 결과 (2026-07-25): 135 passed.** 제약 하나가 문자 그대로는 어긋났다 —
+`R2418.1` 은 타깃 4장만 있어 **lot 평균 88.6 < 임계**라 `find_low_yield_lots` 에 잡힌다
+(root_lot 전체 평균은 92.2 지만 그 함수는 `lot_id` 로 묶는다). 제약의 목적인
+"자동 대상 선정 불변" 은 지켜졌다 — `LOT2406`(87.4)이 여전히 최저이고
+`test_target_selection` 도 green. 타깃 수율을 임계 위로 올리면 '불량' 이라는 성격이
+사라지므로 현 상태를 유지한다.
 
 - [ ] **Step 8: 커밋**
 

@@ -154,6 +154,37 @@ def test_yield_has_root_lot_and_lot_type():
     assert len(rows) == 1
 
 
+def test_split_lot_root_lot_spans_multiple_lots():
+    """분할 lot: root_lot R2418 이 lot 3개로 갈리고, 타깃 lot 에는 비타깃이 0장이다.
+
+    이 성질이 root_lot 기준과 lot 기준을 가른다 — lot 으로 대조군을 찾으면 0장이다.
+    """
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT wafer_id, lot_id, lot_type FROM yield "
+            "WHERE root_lot_id = 'R2418' ORDER BY wafer_id").fetchall()
+    assert len(rows) == 8
+    assert {r["lot_id"] for r in rows} == {"R2418.1", "R2418.2", "R2418.3"}
+    assert [r["wafer_id"] for r in rows if r["lot_id"] == "R2418.1"] == [
+        "R2418_01", "R2418_02", "R2418_03", "R2418_04"]
+    # 평가랏이 섞여 있다 — 필터가 아니라 컨텍스트 (corrections B-4)
+    assert {r["lot_type"] for r in rows if r["lot_id"] == "R2418.2"} == {"eval"}
+    assert {r["lot_type"] for r in rows if r["lot_id"] == "R2418.3"} == {"prod"}
+
+
+def test_split_lot_signal_is_target_only_chamber():
+    """분할 lot 을 하나로 보면 타깃 전용 챔버가 score 1.0 으로 잡힌다."""
+    from data.generate_dummy import SPLIT_CONTROLS, SPLIT_TARGETS
+    from tools import commonality as cm
+
+    res = cm.find_commonality(SPLIT_TARGETS, SPLIT_CONTROLS)
+    top = res["candidates"][0]
+    assert top["key"] == "ETCH5_B"
+    assert top["score"] == 1.0
+    # lot_type 은 배제 대상이 아니라 meta 로 실린다
+    assert res["meta"]["control_lot_types"] == {"eval": 2, "prod": 2}
+
+
 def test_step_history_planted_eqp_ch_and_ppid_separation():
     import config
     from tools import commonality as cm

@@ -122,6 +122,23 @@ ADV_WAFERS = {w for lot in ADV_CASES for grp in adv_group(lot) for w in grp}
 ADV_MISSING_WAFER = adv_group(ADV_MISSING_LOT)[0][3]      # step_history 자체가 없는 타깃
 ADV_NULL_CH_WAFERS = tuple(adv_group(ADV_MISSING_LOT)[1][:2])  # Etch 행의 ch_id 가 NULL
 
+# ---------------------------------------------------------------- 분할 lot 케이스
+# 사내는 root_lot 하나가 여러 lot 으로 갈린다(lot_id 의 '.1' = 양산). 기존 더미는
+# root_lot_id = lot_id 1:1 이라 이 축이 무테스트 상태였다.
+# 핵심: **R2418.1 에는 비타깃이 한 장도 없다.** lot 으로 대조군을 찾으면 0장이고,
+# root_lot 으로 찾아야 .2/.3 의 4장이 나온다. 평가랏(.2)이 대조군에 포함되는 것
+# (corrections B-4)도 이 케이스가 함께 시험한다.
+# 사내 ID 관례(root_lot 5자 · wafer_id = {root_lot}_{no})를 쓰는 첫 케이스다.
+SPLIT_ROOT_LOT = "R2418"
+SPLIT_LOTS = {                       # lot_id -> (wafer 번호, lot_type)
+    "R2418.1": ([1, 2, 3, 4], "prod"),
+    "R2418.2": ([5, 6], "eval"),
+    "R2418.3": ([7, 8], "prod"),
+}
+SPLIT_TARGETS = [f"{SPLIT_ROOT_LOT}_{i:02d}" for i in (1, 2, 3, 4)]
+SPLIT_CONTROLS = [f"{SPLIT_ROOT_LOT}_{i:02d}" for i in (5, 6, 7, 8)]
+SPLIT_WAFERS = set(SPLIT_TARGETS + SPLIT_CONTROLS)
+
 DATA_DIR = Path(__file__).resolve().parent
 DB_PATH = DATA_DIR / "yield.db"
 EMB_DIR = DATA_DIR / "embeddings"
@@ -249,9 +266,27 @@ def generate():
                            else _unit(rng.standard_normal(DIM)))
             wafer_ids.append(wid)
 
+    # ---------------- 분할 lot (root_lot 하나에 lot 여럿) — 기존 난수열 뒤에 붙인다
+    for lot, (nos, lot_type) in SPLIT_LOTS.items():
+        for no in nos:
+            wid = f"{SPLIT_ROOT_LOT}_{no:02d}"
+            rows.append({
+                "wafer_id": wid,
+                "lot_id": lot,
+                "yield": ADV_TARGET_YIELD if wid in SPLIT_TARGETS else ADV_CONTROL_YIELD,
+                "defect_type": "none",       # 라벨 없음 — 실데이터와 같은 조건
+                "process_step": "Normal",    # process_log 를 전부 스펙 내로 유지
+                "date": RECENT_DATE,
+                "root_lot_id": SPLIT_ROOT_LOT,   # lot_id 와 다르다 (_augment_yield 가 보존)
+                "lot_type": lot_type,
+            })
+            vectors.append(_unit(rng.standard_normal(DIM)))
+            wafer_ids.append(wid)
+
     logs = _make_process_logs(rows, rng)
     _augment_yield(rows)
-    steps = _make_step_history(rows) + _make_adversarial_steps()
+    steps = (_make_step_history(rows) + _make_adversarial_steps()
+             + _make_split_lot_steps())
     _write_sqlite(rows, logs, steps)
     _write_index(vectors, wafer_ids)
     _report(rows, vectors, wafer_ids)
@@ -298,10 +333,14 @@ def _make_process_logs(rows, rng):
 
 
 def _augment_yield(rows):
-    """commonality 가 요구하는 root_lot_id·lot_type 을 채운다 (rng 미사용)."""
+    """commonality 가 요구하는 root_lot_id·lot_type 을 채운다 (rng 미사용).
+
+    **이미 값이 있으면 보존한다** — 분할 lot 케이스는 root_lot_id != lot_id 이고
+    lot_type 도 lot 마다 다르다.
+    """
     for r in rows:
-        r["root_lot_id"] = r["lot_id"]          # 더미는 lot_id 를 root_lot 으로 취급
-        r["lot_type"] = "prod"                   # 더미는 전부 양산으로 단순화
+        r.setdefault("root_lot_id", r["lot_id"])   # 더미 기본: lot_id = root_lot
+        r.setdefault("lot_type", "prod")           # 더미 기본: 전부 양산
     return rows
 
 
@@ -318,7 +357,7 @@ def _make_step_history(rows):
     steps = []
     for r in rows:
         wid = r["wafer_id"]
-        if wid in ADV_WAFERS:          # 적대적 lot 은 _make_adversarial_steps 가 따로 만든다
+        if wid in ADV_WAFERS or wid in SPLIT_WAFERS:   # 전용 생성기가 따로 만든다
             continue
         for step in SH_STEPS:
             eqp, ch, ppid = f"{step.upper()[:4]}1", "A", "PPID_Z"   # 기본: 공통 경로
@@ -379,6 +418,25 @@ def _make_adversarial_steps():
                     "eqp_id": eqp, "ch_id": ch, "ppid": ppid,
                     "timestamp": RECENT_DATE + " 10:00:00",
                 })
+    return steps
+
+
+def _make_split_lot_steps():
+    """분할 lot 의 wafer×스텝 이력 (rng 미사용). 타깃만 ETCH5_B, 비타깃은 ETCH5_C.
+
+    설비(ETCH5)는 양쪽이 같아 롤업 점수가 0 으로 눌리고, 챔버에서만 갈린다.
+    """
+    steps = []
+    for wid in SPLIT_TARGETS + SPLIT_CONTROLS:
+        for step in SH_STEPS:
+            eqp, ch, ppid = f"{step.upper()[:4]}1", "A", "PPID_Z"
+            if step == "Etch":
+                eqp, ch = "ETCH5", ("B" if wid in SPLIT_TARGETS else "C")
+            steps.append({
+                "wafer_id": wid, "process_step": step,
+                "eqp_id": eqp, "ch_id": ch, "ppid": ppid,
+                "timestamp": RECENT_DATE + " 10:00:00",
+            })
     return steps
 
 
