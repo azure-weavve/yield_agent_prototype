@@ -417,7 +417,14 @@ process_log 기반 도구는 실데이터에서 못 돈다. 삭제(Stage 5) 전�
 
 **범위 밖:** 다인성(독립 원인 2개가 타깃을 절반씩 설명)은 게이트·리포트가 병렬 원인을 어떻게 표현할지 설계가 필요하다. 별도 작업으로 분리.
 
-- [ ] **Step 1: 실패 테스트 작성**
+- [x] **Step 1: 실패 테스트 작성**
+
+실제로는 케이스 설계가 데이터 구조에 달려 있어 `generate_dummy.py` 수정과 테스트를 함께
+잡았다. 다만 **재생성 전에 red 를 확인**했다(6 failed — 해당 lot 이 DB 에 없음).
+
+- [x] **Step 1b: 케이스 5 는 중복하지 않는다** — `LOT2407` 이 이미 있고
+      `tests/test_grouping.py::test_control_insufficient_reported_honestly` 가 지킨다.
+      새 파일 docstring 에 그 사실을 적어 연결만 했다.
 
 `tests/test_adversarial_dummy.py` 신규. 케이스별로 하나씩. 예:
 
@@ -450,22 +457,39 @@ def test_case1_counterexample_lowers_score_below_one():
 
 wafer ID 상수는 Step 2 에서 심는 값으로 채운다.
 
-- [ ] **Step 2: 실패 확인** — Run: `python -m pytest tests/test_adversarial_dummy.py -v` → FAIL (해당 lot 없음)
+- [x] **Step 2: 실패 확인** — Run: `python -m pytest tests/test_adversarial_dummy.py -v` → FAIL (해당 lot 없음). 6 failed.
 
-- [ ] **Step 3: `generate_dummy.py` 에 적대적 lot 추가**
+- [x] **Step 3: `generate_dummy.py` 에 적대적 lot 추가**
 
 기존 `_make_step_history` 패턴을 따라 신규 lot 을 추가한다. 제약: 기존 난수열 미변경, 기존 lot 미변형.
 
-- [ ] **Step 4: 더미 재생성 + 통과 확인**
+신규 lot 4개(`LOT2414`~`LOT2417`). `_make_adversarial_steps()` 를 따로 두고 rng 를 쓰지
+않는다 — 케이스가 난수에 흔들리면 안 된다. `_make_step_history` 는 적대적 wafer 를 건너뛴다.
+**yield 는 lot 평균이 임계(90) 이상**이 되게 잡아 `find_low_yield_lots` 에 안 잡히게 했다
+(자동 대상 선정 = 데모 흐름 불변). 타깃 88.6 / 대조군 95.8 → lot 평균 92.2~92.6.
+
+- [x] **Step 4: 더미 재생성 + 통과 확인**
 
 Run: `python data/generate_dummy.py && python -m pytest -q`
 기대: 신규 테스트 PASS + **기존 전체 PASS**(Task 0 기준선). 기존이 깨지면 난수열·임베딩을 건드린 것이니 되돌린다.
 
-- [ ] **Step 5: 게이트까지 확인 — 케이스 4 는 E2E 로**
+결과: 전체 **133 passed** (126 + 7). 기존 전부 유지 — 난수열·임베딩 보존 확인.
+`_report` 상 최저 lot 은 여전히 LOT2406(87.4) → LOT2407(89.8) 순.
+
+- [x] **Step 5: 게이트까지 확인 — 케이스 4 는 E2E 로**
 
 케이스 4 대상으로 `python main.py <해당 wafer>` 를 돌려, 리포트가 확정 결론이 아니라 미확정/분석 미수행 톤으로 나오는지 눈으로 확인한다. `no_signal` 인데 확정 결론이 나오면 **게이트 결함**이므로 별도 이슈로 기록한다.
 
-- [ ] **Step 6: 커밋**
+**🔴 결함을 찾았다 — 확정 결론이 아니라 크래시였다.** `llm/client.py:82` 의
+`top = passing[0]` 이 "통과 후보가 항상 하나는 있다" 를 가정해 `IndexError` 로 죽었다.
+적대적 케이스가 없었으면 실데이터에서 처음 터졌을 자리다. 최소 수정으로 고쳤다 —
+후보가 없으면 낮은 확신도(0.2)로 물러서고, 게이트가 반려한 뒤 루프 한계에서
+**미확정(루프 한계 도달)** 리포트로 끝난다. 이 경로를 E2E 테스트로 고정했다.
+
+부수 확인: `finalize_accepted` 는 **승인 신호가 아니다** — 루프 한계에서도 True 가 된다
+(`graph/nodes.py:188`). 확정 여부 판정에는 `finalize_status` 를 써야 한다.
+
+- [x] **Step 6: 커밋**
 
 ```
 test: 적대적 더미 케이스 5종 (반례·근접 미끼·결측·no_signal·대조군 부족)
@@ -580,6 +604,19 @@ README 데모 블록의 명령은 자동 모드(`python main.py`)라 그쪽을 �
 4. 임계(`COMMONALITY_PASS_MIN_SCORE`·`MIN_TARGET`·`SIBLING_MIN_SIMILARITY`·`YIELD_THRESHOLD`)를 실분포로 조정
 
 3번이 확보되지 않으면 Stage 5.5 는 "에러 없이 돈다" 수준의 스모크임을 문서에 정직하게 남긴다.
+
+---
+
+### Task 4 에서 드러난 것 (기록)
+
+1. **mock LLM 무후보 크래시** — 위 Step 5. 고쳤고 테스트로 고정.
+2. **게이트는 근접 미끼를 걸러내지 못한다.** `engine._passes` 의 판별선은
+   (score ≥ 0.5, target_pass ≥ 2)뿐이라 0.75 짜리 미끼도 `passes=True` 다. 미끼를 거르는
+   것은 게이트가 아니라 **순위**다. LLM 이 2위를 고르면 게이트는 승인한다.
+   `test_case2_gate_alone_does_not_reject_the_decoy` 가 이 한계를 고정해 둔다 —
+   게이트를 강화하면(Phase 축, EvidenceBundle) 그 테스트가 빨간불로 알려준다.
+3. **다인성은 여전히 범위 밖.** 독립 원인 2개가 타깃을 절반씩 설명하는 케이스는
+   게이트·리포트가 병렬 원인을 어떻게 표현할지 설계가 없다.
 
 ---
 

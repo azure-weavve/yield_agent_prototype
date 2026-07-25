@@ -85,6 +85,43 @@ DECOY_CHAMBER = "PHOTO1_A"       # 불량군·대조군 공유 (미끼)
 REAL_CHAMBER = "ETCH9_B"         # 진짜 원인 (불량군 전용)
 CONTROL_ETCH_CHAMBER = "ETCH9_C" # 대조군: 같은 ETCH-9, 다른 챔버
 
+# ---------------------------------------------------------------- 적대적 케이스
+# 위 시나리오는 "정답을 심어둔 데이터" 라, 전부 green 이어도 그게 실력인지 데이터가
+# 착한 건지 구분할 수 없다 (07-18 리뷰: 「더미 데이터가 너무 착해서 안 드러난다」).
+# 아래 4개 lot 은 그 구분을 만들기 위한 실패 모드다. 5번째(대조군 부족)는 LOT2407 로
+# 이미 존재한다.
+#
+# 제약 — 기존 wafer·기존 난수열을 건드리지 않는다. 전부 신규 lot 이고 rows/vectors 의
+# 맨 끝에 붙는다. yield 는 **lot 평균이 임계(90) 이상**이 되게 잡아 find_low_yield_lots
+# 에 잡히지 않게 한다 (자동 대상 선정 = 데모 흐름을 흔들지 않기 위해).
+ADV_COUNTEREX_LOT = "LOT2414"   # 케이스 1: 반례 살아있음 (score < 1.0)
+ADV_DECOY_LOT     = "LOT2415"   # 케이스 2: 근접 미끼 (진짜 1.0 옆에 0.75)
+ADV_MISSING_LOT   = "LOT2416"   # 케이스 3: 이력 결측 · ch_id NULL
+ADV_NOSIGNAL_LOT  = "LOT2417"   # 케이스 4: "모른다" 가 정답 (no_signal)
+
+ADV_CASES = {                    # lot -> (타깃 수, 대조군 수)
+    ADV_COUNTEREX_LOT: (4, 5),
+    ADV_DECOY_LOT:     (4, 5),
+    ADV_MISSING_LOT:   (4, 4),
+    ADV_NOSIGNAL_LOT:  (4, 4),
+}
+
+# 타깃은 임계 미만(대조군 후보에서 자연히 빠진다), 대조군은 임계 이상.
+ADV_TARGET_YIELD, ADV_CONTROL_YIELD = 88.6, 95.8
+
+
+def adv_group(lot: str) -> tuple[list[str], list[str]]:
+    """적대적 lot 의 (타깃, 대조군) wafer id. 테스트가 이 함수를 그대로 쓴다."""
+    n_t, n_c = ADV_CASES[lot]
+    tag = lot[-4:]
+    ids = [f"W{tag}_{i:02d}" for i in range(1, n_t + n_c + 1)]
+    return ids[:n_t], ids[n_t:]
+
+
+ADV_WAFERS = {w for lot in ADV_CASES for grp in adv_group(lot) for w in grp}
+ADV_MISSING_WAFER = adv_group(ADV_MISSING_LOT)[0][3]      # step_history 자체가 없는 타깃
+ADV_NULL_CH_WAFERS = tuple(adv_group(ADV_MISSING_LOT)[1][:2])  # Etch 행의 ch_id 가 NULL
+
 DATA_DIR = Path(__file__).resolve().parent
 DB_PATH = DATA_DIR / "yield.db"
 EMB_DIR = DATA_DIR / "embeddings"
@@ -191,9 +228,30 @@ def generate():
         vectors.append(_unit(rng.standard_normal(DIM)))
         wafer_ids.append(wid)
 
+    # ---------------- 적대적 케이스 (신규 lot — 기존 난수열 보존을 위해 끝에 추가)
+    # 케이스 4 는 E2E 로도 확인해야 하므로(형제 묶기 → 대조군 선정 → no_signal) 타깃을
+    # 임베딩 공간에서 묶어 둔다. 나머지 케이스는 find_commonality 를 직접 부르므로 무작위.
+    adv_center = _unit(rng.standard_normal(DIM))
+    for lot in ADV_CASES:
+        adv_targets, adv_controls = adv_group(lot)
+        for wid in adv_targets + adv_controls:
+            is_target = wid in adv_targets
+            rows.append({
+                "wafer_id": wid,
+                "lot_id": lot,
+                "yield": ADV_TARGET_YIELD if is_target else ADV_CONTROL_YIELD,
+                "defect_type": "none",      # 라벨 없음 — 실데이터와 같은 조건
+                "process_step": "Normal",   # process_log 를 전부 스펙 내로 유지
+                "date": RECENT_DATE,
+            })
+            vectors.append(_make_member(adv_center, rng)
+                           if is_target and lot == ADV_NOSIGNAL_LOT
+                           else _unit(rng.standard_normal(DIM)))
+            wafer_ids.append(wid)
+
     logs = _make_process_logs(rows, rng)
     _augment_yield(rows)
-    steps = _make_step_history(rows)
+    steps = _make_step_history(rows) + _make_adversarial_steps()
     _write_sqlite(rows, logs, steps)
     _write_index(vectors, wafer_ids)
     _report(rows, vectors, wafer_ids)
@@ -260,6 +318,8 @@ def _make_step_history(rows):
     steps = []
     for r in rows:
         wid = r["wafer_id"]
+        if wid in ADV_WAFERS:          # 적대적 lot 은 _make_adversarial_steps 가 따로 만든다
+            continue
         for step in SH_STEPS:
             eqp, ch, ppid = f"{step.upper()[:4]}1", "A", "PPID_Z"   # 기본: 공통 경로
             if step == "Etch":
@@ -274,6 +334,51 @@ def _make_step_history(rows):
                 "eqp_id": eqp, "ch_id": ch, "ppid": ppid,
                 "timestamp": r["date"] + " 10:00:00",
             })
+    return steps
+
+
+def _make_adversarial_steps():
+    """적대적 lot 의 wafer×스텝 이력 (rng 미사용 — 케이스가 난수에 흔들리면 안 된다).
+
+    기본 경로는 타깃·대조군 공통이라 분리 신호가 되지 않는다. 케이스마다 Etch(케이스 2 만
+    Photo 도)의 챔버 배정만 달리해서 원하는 실패 모드를 만든다. 설비 레벨은 양쪽이 같은
+    설비를 쓰게 두어 롤업 점수가 0 으로 눌리는 것까지 함께 시험한다.
+    """
+    steps = []
+    for lot in ADV_CASES:
+        targets, controls = adv_group(lot)
+        for wid in targets + controls:
+            if wid == ADV_MISSING_WAFER:
+                continue                          # 케이스 3: 이력 자체가 없는 타깃
+            for step in SH_STEPS:
+                eqp, ch, ppid = f"{step.upper()[:4]}1", "A", "PPID_Z"
+
+                if lot == ADV_COUNTEREX_LOT and step == "Etch":
+                    # 케이스 1: 대조군 1장이 진짜 원인 챔버를 거쳤는데 정상 (반례)
+                    eqp = "ETCH1"
+                    ch = "B" if (wid in targets or wid == controls[0]) else "C"
+                elif lot == ADV_DECOY_LOT and step == "Etch":
+                    eqp, ch = "ETCH2", ("B" if wid in targets else "C")
+                elif lot == ADV_DECOY_LOT and step == "Photo":
+                    # 케이스 2: 진짜(1.0) 옆의 근접 미끼 — 타깃 4장 중 3장만 거친다
+                    eqp, ch = "PHOT2", ("X" if wid in targets[:3] else "A")
+                elif lot == ADV_MISSING_LOT and step == "Etch":
+                    eqp = "ETCH3"
+                    if wid in targets:
+                        ch = "B"
+                    elif wid in ADV_NULL_CH_WAFERS:
+                        ch = None                 # 케이스 3: 챔버 레벨이 조용히 빠져야 한다
+                    else:
+                        ch = "C"
+                elif lot == ADV_NOSIGNAL_LOT and step == "Etch":
+                    # 케이스 4: 원인이 root_lot 전원에 걸려 타깃·대조군이 같은 경로
+                    eqp, ch = "ETCH4", "A"
+
+                steps.append({
+                    "wafer_id": wid, "process_step": step,
+                    "eqp_id": eqp, "ch_id": ch, "ppid": ppid,
+                    "timestamp": RECENT_DATE + " 10:00:00",
+                })
     return steps
 
 
