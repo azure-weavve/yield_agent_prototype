@@ -159,9 +159,15 @@ prototype/
 ## 인터페이스 ↔ 구현 교체 (mock ↔ 사내)
 
 외부 의존성은 추상 인터페이스 뒤에 두고, 모드 하나로 구현을 바꿔 끼웁니다.
-`LLM_*` 계열과 도구 플래그는 **환경변수(또는 `.env`)** 로 읽으므로 `config.py` 를 손대지 않아도
-됩니다 (`config.py` 는 `load_dotenv()` 를 호출합니다). `EDS_MODE` 등 나머지는 아직 파일 상수입니다.
 사내망 밖에서는 기본값(local/mock)으로 동일 그래프가 그대로 동작합니다.
+
+설정은 두 갈래입니다 (`config.py` 가 `load_dotenv()` 를 호출합니다):
+
+- **환경변수 / `.env` 로 덮어쓸 수 있는 것** — `LLM_MODE`·`LLM_BASE_URL`·`LLM_API_KEY`·`LLM_MODEL`,
+  `LEGACY_TOOLS_ENABLED`, 그리고 임계값 `COMMONALITY_PASS_MIN_SCORE`·`COMMONALITY_PASS_MIN_TARGET`·
+  `SIBLING_MIN_SIMILARITY`·`CONTROL_MIN_SIZE`
+- **아직 `config.py` 파일 상수인 것** — `EDS_MODE`·`EDS_HTTP_URL`·`EDS_HTTP_VERIFY`·
+  `EDS_MIN_SIMILARITY`·`YIELD_THRESHOLD`·`MAX_LOOPS`·`CONFIDENCE_THRESHOLD`
 
 | 설정 | 데모(기본) | 운영(사내) |
 |------|-----------|-----------|

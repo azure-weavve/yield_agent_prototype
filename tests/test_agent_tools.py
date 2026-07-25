@@ -59,8 +59,15 @@ def test_find_counterexamples_tool_invokes():
         "W2406_01", "W2406_03", "W2406_05", "W2406_07",
     ]
 
+
 def test_legacy_tools_hidden_when_flag_off(monkeypatch):
-    """실데이터 모드에서는 process_log 기반 레거시 도구가 LLM 에 노출되지 않는다."""
+    """실데이터 모드에서는 process_log 기반 레거시 도구가 LLM 에 노출되지 않는다.
+
+    reload 로 모듈 상태를 갈아끼우므로, 플래그가 꺼진 창(window) 안에서 다른 모듈이
+    agent_tools 를 처음 import 하면 그쪽은 줄어든 목록을 붙든 채로 남는다.
+    graph/nodes.py 가 `from tools.agent_tools import TOOLS_BY_NAME` 로 이름을 직접
+    바인딩하는데, 수집 시점에 이미 import 되므로 지금은 안전하다.
+    """
     import importlib
 
     import config
