@@ -84,12 +84,12 @@ Stage 5.5  구 Stage 1 — 실데이터 적재 · 검증 · 임계 튜닝
 
 **Files:** 없음 (조사만)
 
-- [ ] **Step 1: 현재 테스트 수·통과 상태 기록**
+- [x] **Step 1: 현재 테스트 수·통과 상태 기록**
 
 Run: `python -m pytest -q`
 기대: 전체 PASS. **통과 개수를 이 문서 하단 §5 에 기록한다.** 이후 모든 Task 의 회귀 판정 기준선이다.
 
-- [ ] **Step 2: Stage 0 실제 병합 범위 확인**
+- [x] **Step 2: Stage 0 실제 병합 범위 확인**
 
 Run:
 ```bash
@@ -99,7 +99,7 @@ git grep -n "compare_process_logs" -- '*.py'
 ```
 확인할 것: Stage 0 의 7개 Task 가 전부 병합됐는지, `compare_process_logs` 가 `ANALYSIS_TOOLS` 에서 빠졌는지. **문서보다 코드가 앞서 있는 것이 이 저장소의 관행이므로 반드시 코드로 확인한다.**
 
-- [ ] **Step 3: 세 스키마 정의원의 컬럼을 직접 나열**
+- [x] **Step 3: 세 스키마 정의원의 컬럼을 직접 나열**
 
 ```bash
 git grep -n "CREATE TABLE step_history" -A 10 -- data/
@@ -483,7 +483,36 @@ Run: `PYTHONUTF8=1 python main.py W2406_02` → 출력을 그대로 붙인다. *
 
 **Stage 2 (대조군)** — 07-18 문서 §7 의 3단계 규칙(형제 lot 내 합집합 → 같은 root_lot 양산랏 확장 → 정직 보고)이 확정 상태다. 새로 정할 것은 `defect_type` 의존 제거 방법. 라벨 없이 "정상" 을 어떻게 정의하는가(수율 임계만? EDS 비유사성?)가 핵심 결정.
 
-**Stage 3 (센서)** — 착수 전 규모를 분리 산정할 것. 캐시 무효화 정책·온디맨드 fetch 실패 처리·`sensor_cache.db` 수명 주기가 미설계.
+**Stage 3 (센서)** — 착수 전 규모를 분리 산정할 것. 아래 계약 3건은 이미 정해진
+제약이므로 spec 에 그대로 옮기고, 결정 항목은 spec 초반에 답을 정한다.
+
+*계약 (어기면 분석이 성립하지 않는다):*
+
+1. **fetch 단위는 (지목된 스텝 × 타깃+대조군 전원).** 챔버 단위로 당기면 안 된다 —
+   1단이 그 챔버를 지목한 근거가 "대조군은 안 거쳤다"(score=1.0 이면 control_pass=0)
+   이므로, 지목된 챔버만 뽑으면 대조군 표본이 0 이라 비교 자체가 성립하지 않는다.
+2. **tool 반환은 집계값만** (표본 수·평균·표준편차·효과크기·이탈률). 원본 트레이스는
+   `sensor_cache.db` 에 두고 ToolMessage 에 싣지 않는다. 분석당 수만 행이라 한 번만
+   어겨도 컨텍스트가 터진다. 반환은 효과크기 top-K 로 절단해 fetch 량과 무관하게
+   유계로 만든다 (commonality 의 `top_k`·`truncated` 와 같은 구조).
+3. **2단 출력은 후보이지 결론이 아니다.** p-value 컷이 아니라 효과크기 랭킹.
+   스텝당 센서 수백 개라 α=0.05 면 우연히 수십 개가 유의하다. tool 결과 `note` 에
+   명시한다 (1단과 같은 원칙 — B-1).
+
+*결정 항목:*
+
+4. **기준선을 그룹 대조로 할지 시간 대조로 할지.** 그룹 대조 = 같은 스텝의 다른 챔버,
+   시간 대조 = 그 챔버의 과거 정상 구간. 둘은 다른 원인에 반응한다 — PM·부품 교체는
+   시간 대조로만 잡힌다. `parameter_drift 부활` 이 후자를 암시하나 명시된 적이 없다.
+   둘 다 하면 규모가 다시 는다.
+
+*기존 항목 보강:*
+
+5. **캐시 무효화 정책·`sensor_cache.db` 수명 주기·온디맨드 fetch 실패 처리가 미설계.**
+   특히 수명 주기는 성능이 아니라 **감사 추적** 문제다 — 반환이 집계값만이면 `findings`
+   에도 집계값만 남고, 캐시가 비워진 뒤에는 리포트의 효과크기 3.6 이 어디서 나왔는지
+   재현할 수 없다. 리포트 보존 기간만큼 캐시를 살리거나, `findings` 에 재fetch 키
+   (스텝·wafer 목록·시각 범위)를 남기거나 — 무효화 정책과 함께 정한다.
 
 **Stage 4 (그룹핑)** — `SIBLING_MIN_SIMILARITY` 컷오프가 실데이터 분포에서 타당한지 확인 불가(Stage 5.5 로 이월). 컷오프를 못 정한 채 구조만 짜는 것을 감수한다.
 
@@ -508,7 +537,13 @@ Run: `PYTHONUTF8=1 python main.py W2406_02` → 출력을 그대로 붙인다. *
 5. README 데모 출력이 실제 실행 결과와 일치.
 6. `docs/stages.md` 존재, Stage 0 설계 문서 §12 가 그것을 가리킴.
 
-**Task 0 기준선 기록:** `python -m pytest -q` = ____ passed (착수 시 채울 것)
+**Task 0 기준선 기록:** `python -m pytest -q` = **120 passed** (2026-07-25, Stage 0 직후)
+
+착수 시 확인한 것:
+- Stage 0 배선 정상 — `hyp_eqp_ch_commonality`·`hyp_ppid_commonality` 라이브,
+  `compare_process_logs` 는 `tools/yield_tools.py` 에 남아 있으나 `ANALYSIS_TOOLS` 에서 빠짐(미노출).
+- 세 정의원 컬럼 비교 결과 **`legend - internal = ['ppid']`** — Task 2 가 지목한 어긋남 확인.
+  `legend - dummy` 는 공집합(더미에는 ppid 있음)이라 기존 테스트가 green 이었던 것도 확인.
 
 ---
 
