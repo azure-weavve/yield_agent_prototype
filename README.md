@@ -21,33 +21,37 @@ $ PYTHONUTF8=1 python main.py
 
 [현황 파악 — 고정 골격]
 분석 대상 입력 (auto): W2406_06
-형제 묶기 (EDS, 컷오프 0.8): 7장 — 입력 + W2406_02(0.93), W2413_cen4(0.923), ...
+형제 묶기 (EDS, 컷오프 0.8): 7장 — 입력 + W2406_02(0.93), W2413_cen4(0.923), W2411_cen2(0.922), ...
 defect 라벨 (참고): center_spot 7장
 대조군 (1단계: 형제 lot 내 합집합): 67장 — LOT2402 16장, LOT2403 16장, LOT2404 16장, LOT2405 16장, LOT2406 3장
 
-[분석 그룹] 불량 W2406_06, W2406_02, ...  /  대조 W2401_001, W2401_002, ...
-
 [분석 루프 — 감사 기록]
-  1. aggregate_defects  args={'wafer_ids': ['W2406_06', 'W2406_02', ...]}
+  1. aggregate_defects  args={'wafer_ids': ['W2406_06', 'W2406_02', 'W2413_cen4', ...]}
      판단: 불량 그룹이 같은 불량 유형을 공유하는지 먼저 집계한다.
   2. finalize  args={'hypothesis': '불량 그룹 7장이 모두 center_spot — 공통 원인 존재 추정', 'confidence': 0.6}
      판단: 불량 유형은 좁혔지만 공정 근거가 아직 없다. 이 정도로 종료를 제안해 본다.
      게이트: 반려: 확신도 0.60 < 0.8. 근거를 좁힐 tool 을 더 호출하라.
-  3. compare_process_logs  args={'group_ids': ['W2406_06', 'W2406_02', ...], 'control_ids': ['W2401_001', ...]}
-     판단: 종료 제안이 반려됐다. 그룹 대조로 원인 공정/장비를 좁힌다.
-  4. finalize  args={'hypothesis': 'Etch 공정 ETCH-9 장비의 rf_power 스펙 이탈(불량 그룹 7장 공통, 스펙 450.0~550.0, 측정 570.0)이 원인', 'confidence': 0.9}
-     판단: 그룹 대조에서 불량 그룹만 공유하는 스펙 이탈 장비를 특정했다. 근거가 충분하다.
+  3. hyp_eqp_ch_commonality  args={'group_ids': ['W2406_06', 'W2406_02', ...], 'control_ids': ['W2401_001', ...]}
+     판단: 종료 제안이 반려됐다. 챔버 편중 가설로 두 그룹을 대조한다.
+  4. finalize  args={'hypothesis': 'Etch 공정 ETCH9_B 편중(분리 점수 1.0, 불량군 3장 전용)이 원인', 'confidence': 0.9}
+     판단: 챔버 편중 가설이 불량군 전용 챔버를 특이적으로 집었다. 근거 충분.
      게이트: 승인 (확신도·증거 충족): 리포팅으로 진행한다.
 
 [리포트 — 고정 골격]
 ...
-[결론] Etch 공정 ETCH-9 장비의 rf_power 스펙 이탈(불량 그룹 7장 공통, 스펙 450.0~550.0, 측정 570.0)이 원인 (확신도 0.9)
+[결론] Etch 공정 ETCH9_B 편중(분리 점수 1.0, 불량군 3장 전용)이 원인 (확신도 0.9)
 ```
 
+> 실제 실행 출력입니다. wafer 목록과 `control_ids`(67장)만 `...` 로 줄였습니다.
+
 현황 파악이 지목한 wafer(`W2406_06`) 를 EDS 유사맵으로 형제 묶기(컷오프 0.8)한 불량 그룹 7장과,
-형제 lot 들의 대조군을 대상으로 Agent 가 tool 을 자율적으로 호출하며 근거를 쌓다가, 확신도 낮은
-finalize 시도는 게이트가 반려하고 더 조사하게 만듭니다. 근거가 충분해지면 게이트가 승인해
-리포트로 넘어갑니다. 이 반려→재시도→승인 순환이 End-to-End의 핵심입니다.
+형제 lot 들의 대조군을 대상으로 Agent 가 tool 을 자율적으로 호출하며 근거를 쌓습니다.
+**게이트는 근거 없는 결론을 반려합니다** — 위 2번처럼 확신도만 높고 공정 근거가 없는 finalize 는
+`analyze` 로 되돌려 보내집니다.
+
+> 다만 위 반려→재시도 순환은 **mock LLM 각본에서 보이는 모습**입니다. 실제 사내 LLM 은 대개
+> 근거를 먼저 쌓고 finalize 하므로 반려가 나타나지 않습니다 — 정상 동작이며, 볼거리는
+> 순환 자체가 아니라 **승인 실권이 LLM 자기 신고가 아니라 findings 의 결정론적 증거에 있다는 점**입니다.
 
 ## 빠른 시작
 
@@ -60,7 +64,7 @@ pip install -r requirements.txt
 python data/generate_dummy.py
 
 # 테스트 전체 실행
-pytest
+python -m pytest
 
 # 데모 실행 (자동 모드 — 최악 lot 의 최저 wafer 를 대상으로 선정)
 PYTHONUTF8=1 python main.py
@@ -96,25 +100,26 @@ status ──▶ analyze ──(tool call)──▶ tools ──(반려/계속)�
 ## 분석 루프
 
 `analyze` 노드에서 Agent 는 `get_wafer`, `search_similar`, `aggregate_defects`,
-`get_process_log`, `compare_process_logs`, `finalize` 등의 tool 을 자율적으로 호출합니다.
+`hyp_*` 가설 도구, `finalize` 를 자율적으로 호출합니다.
 매 호출은 `findings` 에 감사 기록(`loop`, `tool`, `args`, `result`, `thought`)으로 남습니다.
 
-인과 가설(스펙 이탈·챔버 편중 등)은 `domain/hypotheses.yaml` 에 선언되어 engine 이 실행합니다.
-새 인과 가설을 추가할 때 tool 코드를 새로 짤 필요 없이 이 YAML 에 항목을 한 줄 추가하면 됩니다.
+- **hyp_eqp_ch_commonality** (1차): 타깃 전원이 거쳤고 대조군은 안 거친 (공정 스텝, 설비/챔버)를
+  찾습니다. 설비 롤업과 챔버 세부를 함께 냅니다 — 엔지니어가 가장 먼저 돌리는 주 분석입니다.
+- **hyp_ppid_commonality** (2차): 설비/챔버로 두 그룹이 안 갈릴 때 PPID 축으로 다시 봅니다.
 
-- **compare_process_logs**: 불량 그룹과 대조 그룹의 공정 로그를 대조해, 불량 그룹에서만
-  공유되는 suspect 장비·스펙 이탈을 집계합니다.
-- **validate_data_completeness**: 그룹 대조 전에 수율 행·공정 로그의 누락과 중복을
-  검사합니다. blocked 면 비교 결과를 신뢰하지 않습니다 (허위 suspect 방지).
-- **compare_parameter_distribution**: 두 그룹의 파라미터 분포(평균·표준편차·효과 크기·
-  스펙 이탈률)를 비교합니다 — 스펙 안이어도 그룹 간 체계적 차이를 잡습니다.
-- **find_counterexamples**: 가설에 반하는 사례(장비를 거친 정상 wafer, 장비 없이 난
-  동일 불량)를 전수 데이터에서 찾아 가설의 특이성을 확인합니다.
+이 `hyp_*` 도구는 손으로 짠 것이 아니라 **`domain/hypotheses.yaml` 의 선언에서 생성**됩니다.
+각 가설은 "어느 축(legend)으로 공통성을 돌릴지"만 선언하고, 계산은 공용 commonality 엔진이
+합니다. 새 인과 가설을 추가할 때 tool 코드를 새로 짤 필요 없이 YAML 에 항목을 추가하면 됩니다.
 
 - **finalize 게이트**: Agent 가 결론을 제안(`finalize`)하면, 확신도(`confidence`)가 임계값
-  (기본 0.8) 이상이고 **가설의 장비가 그룹 대조 결과가 지목한 suspect 와 일치**해야 승인됩니다.
+  (기본 0.8) 이상이고 **가설이 지목한 대상이 가설 도구 결과의 suspect 와 일치**해야 승인됩니다.
   확신도 미달·그룹 대조 근거 부재·가설-근거 불일치는 각각의 사유와 함께 반려되어 `analyze` 로
   되돌아가 근거를 더 쌓습니다 — 승인 실권은 LLM 자기 신고가 아니라 findings 의 결정론적 증거에 있습니다.
+
+> **레거시 도구**: `get_process_log`·`validate_data_completeness`·`find_counterexamples` 는
+> 옛 `process_log` 스키마에 묶여 있어 실데이터(`step_history`)에서는 돌지 않습니다.
+> 더미에서는 동작하므로 기본 노출이지만, `LEGACY_TOOLS_ENABLED=0` 으로 끄면 LLM 도구 목록에서
+> 빠집니다 — 켜둔 채 실데이터를 돌리면 LLM 이 죽은 도구를 골라 루프 예산을 태웁니다.
 - **가드레일(MAX_LOOPS)**: 루프가 한계(기본 6회)에 도달하면 확신도와 무관하게 강제로 리포팅으로
   진행합니다 — 무한 루프를 원천 차단합니다. 이때의 finalize 는 승인이 아니라
   **미확정(루프 한계 도달)** 으로 구분 기록되고, 리포트 결론도 확정이 아닌 유력 가설 제시로 나갑니다.
@@ -125,14 +130,23 @@ status ──▶ analyze ──(tool call)──▶ tools ──(반려/계속)�
 
 ```
 prototype/
-├── config.py              설정 (데이터 경로, EDS/LLM 모드 토글, 임계값)
+├── config.py              설정 (데이터 경로, EDS/LLM 모드 토글, 임계값, 도구 플래그)
 ├── main.py                실행 진입점 (하이브리드 분석 루프 데모)
 ├── data/
-│   ├── generate_dummy.py  더미 생성 (yield + 임베딩, 유사 그룹 심기)
+│   ├── generate_dummy.py  더미 생성 (yield + step_history + 임베딩, 유사 그룹 심기)
+│   ├── load_internal.py   사내 실데이터 적재 ETL (추출은 사내 lib — _extract() 에 연결)
 │   ├── yield.db           (생성물) SQLite — gitignore
 │   └── embeddings/        (생성물) hnswlib 인덱스 — gitignore
+├── domain/                도메인 전문가가 손대는 자리
+│   ├── hypotheses.yaml    인과 가설 선언 (어느 축으로 공통성을 돌릴지)
+│   ├── registry.py        YAML 로드·검증 → hyp_* tool 동적 생성
+│   └── engine.py          가설 선언 → commonality 호출로 잇는 어댑터
 ├── tools/
+│   ├── agent_tools.py     @tool 래퍼 + LLM 노출 목록 (레거시 게이팅)
+│   ├── commonality.py     공통성 계산 엔진 (legend = 임의의 축)
 │   ├── yield_tools.py     수율 조회·집계 (결정론 SQLite)
+│   ├── grouping.py        EDS 형제 묶기 / 대조군 선정
+│   ├── target_selection.py 분석 대상 자동 선정
 │   └── eds_search.py      EDS 유사맵 도구 (인터페이스 + 로컬/HTTP 구현)
 ├── llm/
 │   └── client.py          LLM 클라이언트 (인터페이스 + mock/사내 OpenAI 구현)
@@ -144,7 +158,9 @@ prototype/
 
 ## 인터페이스 ↔ 구현 교체 (mock ↔ 사내)
 
-외부 의존성은 추상 인터페이스 뒤에 두고, `config.py`의 모드 한 줄로 구현을 바꿔 끼웁니다.
+외부 의존성은 추상 인터페이스 뒤에 두고, 모드 하나로 구현을 바꿔 끼웁니다.
+`LLM_*` 계열과 도구 플래그는 **환경변수(또는 `.env`)** 로 읽으므로 `config.py` 를 손대지 않아도
+됩니다 (`config.py` 는 `load_dotenv()` 를 호출합니다). `EDS_MODE` 등 나머지는 아직 파일 상수입니다.
 사내망 밖에서는 기본값(local/mock)으로 동일 그래프가 그대로 동작합니다.
 
 | 설정 | 데모(기본) | 운영(사내) |
@@ -157,8 +173,11 @@ LLM은 데이터를 만들지 않고 도구 결과를 표현만 하므로, 식�
 
 ## 더미 데이터 설계
 
-`generate_dummy.py`는 LOT2406에 불량 3장(W2406_02/04/06, 수율 76~82, center_spot, ETCH-9)과
-대조 3장(W2406_01/03/05, 수율 93~97, 정상)을 심습니다. 이와 별도로 4개의 패턴 그룹은 전부
+`generate_dummy.py`는 LOT2406에 불량 3장(W2406_02/04/06, 수율 76~82, center_spot)과
+대조 3장(W2406_01/03/05, 수율 93~97, 정상)을 심습니다. 원인 신호는 두 층에 있습니다 —
+옛 `process_log` 에는 `ETCH-9` 의 `rf_power` 스펙 이탈이, 사내 스키마와 같은 모양의
+`step_history` 에는 불량군 전용 챔버 `ETCH9_B`(+`PPID_X`)가 들어 있습니다.
+현재 분석 경로가 쓰는 것은 후자입니다. 이와 별도로 4개의 패턴 그룹은 전부
 과거 wafer로 구성되어, `search_similar`가 참조하는 유사 사례 풀 역할을 합니다(각 그룹은
 임베딩 공간에서 서로 가깝고 같은 `defect_type`을 공유). 불량 그룹은 `center_spot` 패턴 그룹과
 임베딩 중심을 공유해, 유사 검색 시 관련 과거 사례가 반환됩니다.
@@ -170,8 +189,12 @@ LLM은 데이터를 만들지 않고 도구 결과를 표현만 하므로, 식�
 
 - 사내 EDS는 자체 발급 인증서라 프로토타입은 `verify=False`로 우회합니다.
   운영 전환 시 사내 루트 인증서(`.pem`)를 확보해 `verify="인증서경로"`로 바꿉니다.
-- 분석 루프의 tool 목록(`get_wafer`, `search_similar`, `aggregate_defects`, `get_process_log`,
-  `compare_process_logs`)은 데모 흐름 기준이며, 실제 원인 계열이 늘어나면 tool 도 함께
-  확장될 여지가 있습니다.
+- 인과 가설은 현재 공통성(commonality) 축 2종(`eqp_ch`·`ppid`)뿐입니다. 즉 시스템은
+  "어느 챔버가 의심된다" 까지 말하고 **"왜 그런지" 는 아직 말하지 못합니다** — 센서 파라미터
+  비교(2단)가 붙어야 완성됩니다.
+- 레거시 도구(`get_process_log` 등)는 옛 `process_log` 스키마에 묶여 있어 실데이터에서는
+  못 돕니다. `LEGACY_TOOLS_ENABLED=0` 으로 노출만 막아둔 상태이고, 삭제는 이후 단계입니다.
 - 사내 연동 시점으로 미룬 항목(오류 복구, 게이트 증거 조건, TLS 검증 등)은
   [docs/deferred-internal-integration.md](docs/deferred-internal-integration.md) 참고.
+- 실데이터로 가기까지의 작업 순서와 각 단계 진입 조건은 [docs/stages.md](docs/stages.md) 가
+  단일 출처입니다.
