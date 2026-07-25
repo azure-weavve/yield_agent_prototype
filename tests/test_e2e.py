@@ -12,8 +12,11 @@ def test_full_loop_reaches_report_with_audit_trail():
         "W2406_02", "W2406_04", "W2406_06",
         "W2410_cen1", "W2411_cen2", "W2412_cen3", "W2413_cen4",
     }
-    assert "W2406_07" not in state["control_group"]      # 수율 조건 (문제 2)
+    # 라벨이 없으면 '정상' 을 판정할 수 없다 — W2406_07(88.5, 무라벨)도 대조군에 들어간다.
+    # 희석은 막지 않고 yield_summary 로 보인다 (spec 2026-07-25 결정 1·2).
+    assert "W2406_07" in state["control_group"]
     assert set(state["control_group"]) >= {"W2406_01", "W2406_03", "W2406_05"}
+    assert "root_lot" in state["status_summary"]     # 대조군 출처가 root_lot 단위로 보고된다
     assert state["report"]
 
     gate_results = [f["result"] for f in state["findings"] if f["tool"] == "finalize"]

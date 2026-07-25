@@ -66,7 +66,7 @@ def test_status_node_sets_groups_and_seed_messages():
     out = nodes.status_node({"target_wafers": ["W2406_02"], "target_source": "manual"})
     assert out["target_group"][0] == "W2406_02"
     assert {"W2406_04", "W2406_06"} < set(out["target_group"])   # EDS 형제 (전 lot)
-    assert "W2406_07" not in out["control_group"]                # 수율 조건 (문제 2)
+    assert "W2406_07" in out["control_group"]     # 라벨 없는 저수율 wafer 도 대조군 (spec 결정 1)
     seed = out["messages"][-1].content
     assert "GROUPS_JSON=" in seed                                # mock 파싱 계약 (문제 7)
     assert [f["tool"] for f in out["findings"]] == ["normalize_target", "select_control"]
@@ -102,7 +102,8 @@ def test_summary_notes_unmatched_siblings():
             "label_counts": [{"defect_type": "center_spot", "count": 2}]}
     ctrl = {"control_group": ["W2406_01", "W2406_03", "W2406_05"],
             "sources": {"LOT2406": ["W2406_01", "W2406_03", "W2406_05"]},
-            "stage": 1, "insufficient": False}
+            "insufficient": False,
+            "yield_summary": {"median": 95.3, "n_below_threshold": 0, "threshold": 90.0}}
     summary = nodes._summarize_target("manual", ["W2406_02"], norm, ctrl)
     assert "W_GHOST" in summary
 

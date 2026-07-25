@@ -74,7 +74,7 @@ def status_node(state: dict) -> dict:
         HumanMessage(content=(
             f"현황:\n{summary}\n\n"
             f"불량 그룹 ({label}): {', '.join(norm['target_group'])}\n"
-            f"대조 그룹 (정상): {', '.join(ctrl['control_group'])}\n"
+            f"대조 그룹 (비타깃): {', '.join(ctrl['control_group'])}\n"
             f"분석 대상: {', '.join(targets)} 의 불량 원인 분석\n"
             f"GROUPS_JSON={groups_json}"
         )),
@@ -102,12 +102,17 @@ def _summarize_target(source: str, targets: list[str], norm: dict, ctrl: dict) -
         lines.append(f"그룹 입력: {len(norm['target_group'])}장 그대로 사용 (묶기 생략)")
     labels = ", ".join(f"{c['defect_type']} {c['count']}장" for c in norm["label_counts"])
     lines.append(f"defect 라벨 (참고): {labels}")
-    src = ", ".join(f"{lot} {len(ws)}장" for lot, ws in sorted(ctrl["sources"].items()))
-    lines.append(f"대조군 ({ctrl['stage']}단계: 형제 lot 내 합집합): "
-                 f"{len(ctrl['control_group'])}장 — {src}")
+    src = ", ".join(f"{rl} {len(ws)}장" for rl, ws in sorted(ctrl["sources"].items()))
+    line = f"대조군 (같은 root_lot 비타깃): {len(ctrl['control_group'])}장 — {src}"
+    ys = ctrl["yield_summary"]
+    if ys:
+        # 라벨이 없어 저수율 wafer 를 거를 수 없다 — 거르는 대신 분포를 보인다
+        line += (f" · 수율 중앙값 {ys['median']}, 임계 {ys['threshold']} 미만 "
+                 f"{ys['n_below_threshold']}장")
+    lines.append(line)
     if ctrl["insufficient"]:
         lines.append(f"대조군 부족: {len(ctrl['control_group'])}장 < "
-                     f"{config.CONTROL_MIN_SIZE} (lot 내 대조 한계 — 추후 분석 필요)")
+                     f"{config.CONTROL_MIN_SIZE} (root_lot 내 대조 한계 — 추후 분석 필요)")
     return "\n".join(lines)
 
 

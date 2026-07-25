@@ -56,15 +56,47 @@ def test_unknown_wafer_is_reported():
     assert res["unknown_wafers"] == ["W_NOPE"]
 
 
-def test_control_is_union_of_sibling_lots_with_yield_condition():
-    # 7절 1단계: 형제 각자의 lot 에서 none+수율임계 wafer 합집합. 출처 명시.
+def test_control_is_all_non_targets_in_same_root_lots():
+    """대조군 = 타깃과 같은 root_lot 의 비타깃 전원. 출처는 root_lot 단위로 명시한다.
+
+    W2406_04·W2406_06 은 center_spot 불량이지만 이 호출에서는 타깃이 아니므로
+    대조군에 들어간다 — 새 규칙에는 라벨 조건이 없다.
+    """
     res = grouping.select_control(["W2406_02", "W2410_cen1"])   # LOT2406 + LOT2402
-    assert res["stage"] == 1
+    assert "stage" not in res                                   # 단계 개념 폐기
     assert res["insufficient"] is False
     assert set(res["sources"]) == {"LOT2406", "LOT2402"}
-    assert res["sources"]["LOT2406"] == ["W2406_01", "W2406_03", "W2406_05"]
-    assert "W2406_07" not in res["control_group"]        # 88.5 < 90 — 오염원 제외 (문제 2)
+    assert res["sources"]["LOT2406"] == [
+        "W2406_01", "W2406_03", "W2406_04", "W2406_05", "W2406_06", "W2406_07"]
     assert set(res["control_group"]) == {w for ws in res["sources"].values() for w in ws}
+
+
+def test_control_reports_yield_distribution_instead_of_filtering():
+    """저수율·무라벨 wafer 를 거르지 않고 yield_summary 로 보인다 (spec 결정 2)."""
+    import config
+
+    res = grouping.select_control(["W2406_02", "W2410_cen1"])
+    assert "W2406_07" in res["control_group"]          # 88.5 — 옛 규칙에서는 제외됐다
+    assert res["yield_summary"]["threshold"] == config.YIELD_THRESHOLD
+    assert res["yield_summary"]["n_below_threshold"] >= 1
+    assert res["yield_summary"]["median"] > 0
+
+
+def test_control_spans_split_lots_of_same_root_lot():
+    """타깃 lot 안에 비타깃이 0장이어도 같은 root_lot 의 다른 분할 lot 에서 찾는다."""
+    from data.generate_dummy import SPLIT_CONTROLS, SPLIT_TARGETS
+
+    res = grouping.select_control(SPLIT_TARGETS)
+    assert res["control_group"] == SPLIT_CONTROLS
+    assert set(res["sources"]) == {"R2418"}            # 출처는 root_lot 단위
+    assert res["insufficient"] is False
+
+
+def test_control_group_is_empty_when_no_yield_rows():
+    res = grouping.select_control(["W_NOPE"])
+    assert res["control_group"] == []
+    assert res["yield_summary"] is None
+    assert res["insufficient"] is True
 
 
 def test_control_excludes_target_members():

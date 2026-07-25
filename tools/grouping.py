@@ -51,20 +51,39 @@ def normalize_target(wafers: list[str]) -> dict:
     }
 
 
+def _yield_summary(control: list[str]) -> dict | None:
+    """대조군 수율 분포 — **판정이 아니라 해석 재료**다 (spec 2026-07-25 결정 2).
+
+    라벨이 없어 저수율 피해 wafer 를 거를 수 없으므로, 걸러내는 대신 분포를 실어
+    "이 반례가 진짜인가 피해 wafer 인가" 를 사람·LLM 이 판단할 재료로 넘긴다.
+    """
+    ys = sorted(r["yield"] for r in yt.get_wafers(control))
+    if not ys:
+        return None
+    mid = len(ys) // 2
+    median = ys[mid] if len(ys) % 2 else (ys[mid - 1] + ys[mid]) / 2
+    return {
+        "median": round(median, 1),
+        "n_below_threshold": sum(1 for y in ys if y < config.YIELD_THRESHOLD),
+        "threshold": config.YIELD_THRESHOLD,
+    }
+
+
 def select_control(target_group: list[str]) -> dict:
-    lots = sorted({r["lot_id"] for r in yt.get_wafers(target_group)})
-    targets = set(target_group)
-    sources = {}
-    for lot in lots:
-        cands = [w for w in yt.find_normal_wafers(lot) if w not in targets]
-        if cands:
-            sources[lot] = cands
-    control = sorted({w for ws in sources.values() for w in ws})
-    # 2단계(같은 root_lot 의 다른 양산랏 확장)는 lot_type 컬럼(ETL 이후) 전제 —
-    # 규칙만 확정된 상태라 자리만 남긴다 (재설계 문서 7절).
+    """대조군 = 타깃과 같은 root_lot 의 비타깃 wafer 전원 (spec 2026-07-25 §2).
+
+    수율·라벨·lot_type 조건이 없다. lot 이 아니라 root_lot 으로 묶으므로 분할 lot 이
+    갈려 있어도 대조군을 찾는다. 확장 단계 개념은 없다 — 부족하면 정직 보고한다.
+    """
+    root_lots = sorted({r["root_lot_id"] for r in yt.get_wafers(target_group)})
+    control = yt.find_control_candidates(root_lots, exclude=set(target_group))
+
+    sources: dict[str, list[str]] = {}
+    for r in yt.get_wafers(control):
+        sources.setdefault(r["root_lot_id"], []).append(r["wafer_id"])
     return {
         "control_group": control,
-        "sources": sources,
-        "stage": 1,
+        "sources": {rl: sorted(ws) for rl, ws in sources.items()},
         "insufficient": len(control) < config.CONTROL_MIN_SIZE,
+        "yield_summary": _yield_summary(control),
     }

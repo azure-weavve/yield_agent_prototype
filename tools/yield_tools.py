@@ -79,18 +79,24 @@ def get_wafers(wafer_ids: list[str]) -> list[dict]:
         return [dict(r) for r in rows]
 
 
-def find_normal_wafers(lot_id: str, threshold: float | None = None) -> list[str]:
-    """lot 의 정상 대조군 후보: defect 'none' 이면서 수율 임계 이상 (target 과 대칭 조건)."""
-    threshold = config.YIELD_THRESHOLD if threshold is None else threshold
+def find_control_candidates(root_lot_ids: list[str], exclude: set[str]) -> list[str]:
+    """주어진 root_lot 들의 비타깃 wafer 전원 (수율·라벨·lot_type 조건 없음).
+
+    사내 defect_type 은 대부분 NULL 이라 '정상' 을 판정할 방법이 없다. 저수율 피해
+    wafer 가 대조군에 섞이는 것을 **막지 않고 보이게 한다** — commonality 의 2x2
+    (control_pass)와 select_control 의 yield_summary 가 그 자리다.
+    수율 임계로 거르면 임의 수치가 계산에 들어간다 (spec 2026-07-25 §1).
+    """
+    if not root_lot_ids:
+        return []
+    placeholders = ",".join("?" * len(root_lot_ids))
     with _conn() as conn:
-        return [r["wafer_id"] for r in conn.execute(
-            """
-            SELECT wafer_id FROM yield
-            WHERE lot_id = ? AND defect_type = 'none' AND yield >= ?
-            ORDER BY wafer_id
-            """,
-            (lot_id, threshold),
-        ).fetchall()]
+        rows = conn.execute(
+            f"SELECT wafer_id FROM yield WHERE root_lot_id IN ({placeholders}) "
+            f"ORDER BY wafer_id",
+            list(root_lot_ids),
+        ).fetchall()
+    return [r["wafer_id"] for r in rows if r["wafer_id"] not in exclude]
 
 
 def aggregate_defects(wafer_ids: list[str]) -> list[dict]:
