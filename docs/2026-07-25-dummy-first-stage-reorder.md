@@ -123,7 +123,7 @@ cat domain/hypotheses.yaml
 
 **설계 메모:** 세 정의원을 **문자열 파싱이 아니라 각 모듈이 실제로 쓰는 값**에서 뽑는다. `load_internal` 은 DDL 상수를 in-memory sqlite 에 실행해 `PRAGMA table_info` 로 읽고, 더미는 생성된 `yield.db` 에서 읽고, legend 는 `load_hypotheses()` → `_legend_columns()` 로 읽는다. 파싱을 피해야 DDL 포맷이 바뀌어도 테스트가 살아 있다.
 
-- [ ] **Step 1: 테스트 작성**
+- [x] **Step 1: 테스트 작성**
 
 `tests/test_schema_contract.py` 신규:
 
@@ -214,18 +214,22 @@ def test_internal_and_dummy_step_history_do_not_diverge_silently():
     )
 ```
 
-- [ ] **Step 2: 실패 확인 — 이것이 이 Task 의 산출물이다**
+- [x] **Step 2: 실패 확인 — 이것이 이 Task 의 산출물이다**
 
 Run: `python -m pytest tests/test_schema_contract.py -v`
 기대: `test_legend_columns_exist_in_internal_schema` **FAIL** — `{'ppid'}` 가 빠졌다고 나와야 한다.
+
+실행 결과(2026-07-25): **2 failed, 1 passed** — `..._internal_schema` 와
+`..._do_not_diverge_silently` 가 `{'ppid'}` 로 FAIL, 더미 쪽만 PASS. 예측대로다.
+`load_internal.DDL` 은 모듈 상수로 존재해 `_internal_step_cols()` 를 고칠 필요 없었다.
 
 `load_internal.py` 에 `DDL` 이라는 이름의 모듈 상수가 없으면(내부 변수·다른 이름) `_internal_step_cols()` 를 실제 구조에 맞게 고친다. 파일 자체는 아직 수정하지 않는다.
 
 세 테스트가 전부 통과하면 ppid 어긋남이 이미 해소된 것이므로 Task 2 는 건너뛰고 Step 4 로 간다.
 
-- [ ] **Step 3: Task 2 로 이동** — 빨간불의 해소는 결정이 필요하다.
+- [x] **Step 3: Task 2 로 이동** — 빨간불의 해소는 결정이 필요하다.
 
-- [ ] **Step 4: 커밋** (Task 2 해소 후 함께 green 으로 커밋)
+- [x] **Step 4: 커밋** (Task 2 해소 후 함께 green 으로 커밋)
 
 ```
 test: step_history 스키마 계약 동결 테스트 (ppid 어긋남 가시화)
@@ -256,19 +260,40 @@ test: step_history 스키마 계약 동결 테스트 (ppid 어긋남 가시화)
 - Task 1 테스트는 green 이 되지만 **2차 legend 능력을 포기**하는 것
 - ppid 를 실을 수 없는 사내 사정이 확인된 경우에만
 
-- [ ] **Step 1: 사용자에게 옵션 A/B 를 제시하고 결정을 받는다.** 결정 없이 진행하지 않는다.
+- [x] **Step 1: 사용자에게 옵션 A/B 를 제시하고 결정을 받는다.** 결정 없이 진행하지 않는다.
 
-- [ ] **Step 2: 결정에 따라 구현** — 옵션 A 면 `load_internal.py` 4곳(DDL·INSERT·`transform_steps`·`_extract()` docstring), 옵션 B 면 `hypotheses.yaml` + `registry.py` 검증.
+**결정 (2026-07-25): 옵션 A.** 사내 `_extract()` 에 ppid 를 싣는 것으로 사용자가 확정.
+저장소 쪽 컬럼은 nullable 이라 사내 반영을 기다리지 않고 먼저 뚫는다 — ppid 가 아직
+안 실려도 commonality 가 그 레벨을 건너뛰므로(`_candidate_keys`) 무해하다.
 
-- [ ] **Step 3: Task 1 테스트 green 확인**
+- [x] **Step 2: 결정에 따라 구현** — 옵션 A 면 `load_internal.py` 4곳(DDL·INSERT·`transform_steps`·`_extract()` docstring), 옵션 B 면 `hypotheses.yaml` + `registry.py` 검증.
 
-Run: `python -m pytest tests/test_schema_contract.py -v` → 3 PASS
+실제 수정한 곳(입력 계약은 `_extract()` 자체 docstring 이 아니라 **모듈 docstring** 에 있다):
+1. 모듈 docstring 입력 계약 — `step_records` 에 `ppid(optional)` + **grain 경고**
+   (wafer×스텝 단위. lot/recipe 단위로 넣으면 에러 없이 틀린 집계가 난다)
+2. `transform_steps()` — `"ppid": _text(r.get("ppid"))`
+3. `DDL` step_history — `ppid TEXT` (더미와 같은 자리: ch_id 다음)
+4. INSERT 컬럼·바인딩
 
-- [ ] **Step 4: 전체 회귀**
+계획 밖 추가 2건(사용자 승인):
+5. `validate()`/`_print()` 에 `ppid_null_rate` — 전부 NULL 이면 `hyp_ppid_commonality`
+   가 **에러 없이 후보 0** 으로 끝나, 이 값이 없으면 "PPID 로도 안 갈린다" 와
+   "PPID 가 안 실렸다" 를 구분할 수 없다. `ch_id_null_rate` 와 대칭.
+6. `tools/commonality.py` 모듈 docstring 의 의존 테이블 컬럼 목록 드리프트 정정.
+
+- [x] **Step 3: Task 1 테스트 green 확인**
+
+Run: `python -m pytest tests/test_schema_contract.py -v` → 3 PASS ✅
+
+- [x] **Step 4: 전체 회귀**
 
 Run: `python -m pytest -q` → Task 0 기준선과 동일 + 신규 3
 
-- [ ] **Step 5: 커밋** (Task 1 Step 4 와 함께)
+결과: **123 passed** (120 + 3). 추가로 `load()` 자체를 도는 테스트가 저장소에 없어
+임시 DB 스모크로 확인 — ppid 있는 행은 적재, 없는 행은 NULL, 결측률 0.333 출력.
+(`load_internal` 무테스트 상태는 이 계획 범위 밖이나 기록해 둔다.)
+
+- [x] **Step 5: 커밋** (Task 1 Step 4 와 함께)
 
 ---
 

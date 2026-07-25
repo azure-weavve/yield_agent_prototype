@@ -23,7 +23,7 @@ score = 1.0 이면 타깃 전원이 거쳤고 대조군은 아무도 안 거친 
   배제하면 단서를 버린다. 분포만 meta 에 싣는다.
  
 의존 테이블 (ETL 선적재 대상):
-    step_history(wafer_id, process_step, eqp_id, ch_id NULL 허용, timestamp)
+    step_history(wafer_id, process_step, eqp_id, ch_id·ppid NULL 허용, timestamp)
     yield(wafer_id, ..., root_lot_id, lot_type)
 """
  

@@ -14,7 +14,11 @@
   yield_records : [{root_lot_id, wafer_id, lot_id, yield, date,
                     defect_type(optional)}, ...]                     # wafer 1장당 1행
   step_records  : [{root_lot_id, wafer_id, process_step, eqp_id,
-                    ch_id(optional), timestamp}, ...]                # wafer×스텝당 1행
+                    ch_id(optional), ppid(optional), timestamp}, ...]  # wafer×스텝당 1행
+
+  ⚠️ ppid 는 **그 wafer 가 그 스텝을 돌 때 쓴 PPID** — wafer×스텝 단위다.
+      lot 단위나 recipe 마스터 단위로 넣으면 에러 없이 틀린 집계가 나온다.
+      hyp_ppid_commonality(2차 legend)가 이 컬럼 위에서 돈다.
 
   ⚠️ **이름 겹침 주의 (이 스크립트에서 가장 헷갈리는 지점)**
       원천의 `wafer_id`  = 두 자리 **순번** ("01", "13", "25")
@@ -127,6 +131,9 @@ def transform_steps(records):
             # ch_id 는 NULL 허용 (단일 챔버 설비·챔버 개념 없는 스텝).
             # commonality 가 NULL 이면 챔버 레벨을 건너뛰고 설비 레벨만 계산한다.
             "ch_id": _text(r.get("ch_id")),
+            # ppid 도 NULL 허용. 원천에 없거나 PPID 개념이 없는 스텝이면 commonality 가
+            # 그 레벨을 건너뛴다(ch_id 와 같은 취급).
+            "ppid": _text(r.get("ppid")),
             "timestamp": _text(r.get("timestamp")),
         }
 
@@ -154,6 +161,7 @@ CREATE TABLE step_history (
     process_step TEXT NOT NULL,
     eqp_id       TEXT NOT NULL,
     ch_id        TEXT,               -- NULL 허용
+    ppid         TEXT,               -- NULL 허용 (2차 legend: hyp_ppid_commonality)
     timestamp    TEXT
 );
 """
@@ -208,8 +216,8 @@ def load(yield_records, step_records, db_path: Path,
                     :date, :root_lot_id, :lot_type)""", transform_yield(yield_records))
 
         n_s = _insert_batched(conn, """
-            INSERT INTO step_history (wafer_id, process_step, eqp_id, ch_id, timestamp)
-            VALUES (:wafer_id, :process_step, :eqp_id, :ch_id, :timestamp)""",
+            INSERT INTO step_history (wafer_id, process_step, eqp_id, ch_id, ppid, timestamp)
+            VALUES (:wafer_id, :process_step, :eqp_id, :ch_id, :ppid, :timestamp)""",
             transform_steps(step_records))
 
         conn.executescript(INDEXES)
@@ -320,6 +328,11 @@ def validate(conn: sqlite3.Connection, n_yield: int, n_steps: int) -> dict:
         "ch_id_null_rate": round(
             one("SELECT COUNT(*) FROM step_history WHERE ch_id IS NULL")
             / max(n_steps, 1), 3),
+        # ppid 결측률 — 전부 NULL 이면 hyp_ppid_commonality 가 **에러 없이 후보 0** 으로
+        # 끝난다. 이 값이 없으면 "PPID 로도 안 갈린다" 와 "PPID 가 안 실렸다" 를 구분 못 한다.
+        "ppid_null_rate": round(
+            one("SELECT COUNT(*) FROM step_history WHERE ppid IS NULL")
+            / max(n_steps, 1), 3),
         "fatal": fatal,
         "issues": issues,
     }
@@ -329,7 +342,8 @@ def _print(r: dict) -> None:
     print(f"[적재] yield {r['n_yield']}행 / step_history {r['n_steps']}행")
     print(f"[구성] root_lot {r['n_root_lots']}개 · 이력 보유 wafer {r['n_wafers_with_history']}장 "
           f"· lot_type {r['lot_types']}")
-    print(f"[이력] wafer 당 스텝 {r['steps_per_wafer']} · ch_id 결측률 {r['ch_id_null_rate']}")
+    print(f"[이력] wafer 당 스텝 {r['steps_per_wafer']} · ch_id 결측률 {r['ch_id_null_rate']}"
+          f" · ppid 결측률 {r['ppid_null_rate']}")
     print(f"[라벨] defect_type 보유 {r['defect_labeled']}건 (없으면 EDS 로 그룹을 만든다)")
     if r["issues"]:
         print("[정합성 경고]")
