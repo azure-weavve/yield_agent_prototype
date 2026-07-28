@@ -8,6 +8,7 @@ def test_tool_names():
         "get_wafer", "search_similar", "aggregate_defects", "get_process_log",
         "validate_data_completeness", "find_counterexamples",
         "hyp_eqp_ch_commonality", "hyp_ppid_commonality",
+        "compare_sensor_distribution",
         "finalize",
     }
     assert "finalize" not in at.TOOLS_BY_NAME  # finalize 는 게이트가 처리
@@ -91,3 +92,15 @@ def test_reason_is_optional_and_ignored():
     args = {"wafer_ids": ["W2406_02"]}
     assert (at.TOOLS_BY_NAME["aggregate_defects"].invoke(args)
             == at.TOOLS_BY_NAME["aggregate_defects"].invoke({**args, "reason": "테스트"}))
+
+
+def test_compare_sensor_distribution_tool_invokes():
+    from data.generate_dummy import CONTROL_WAFERS, GROUP_WAFERS, SENSOR_REAL, SENSOR_STEP
+
+    res = at.TOOLS_BY_NAME["compare_sensor_distribution"].invoke({
+        "process_step": SENSOR_STEP,
+        "group_ids": GROUP_WAFERS, "control_ids": CONTROL_WAFERS,
+    })
+    assert res["status"] == "ok"
+    assert res["candidates"][0]["sensor_name"] == f"{SENSOR_REAL}_avg"
+    assert "refetch_key" in res

@@ -12,6 +12,7 @@ from langchain_core.tools import tool
 
 import config
 from domain import registry
+from tools import sensor_compare as sc
 from tools import yield_tools as yt
 from tools.eds_search import get_searcher
 
@@ -77,6 +78,16 @@ def find_counterexamples(equipment_id: str, process_step: str,
 
 
 @tool
+def compare_sensor_distribution(process_step: str, group_ids: list[str],
+                                control_ids: list[str], reason: str = "") -> dict:
+    """가설 도구(hyp_*)가 지목한 공정 스텝에서 두 그룹의 센서 통계값 분포를 비교한다.
+    효과크기가 큰 센서 top-K 를 낸다 — 어느 챔버인지까지 좁힌 뒤 '왜' 를 보는 2단이다.
+    후보는 결론이 아니다: 표본 수(n_target/n_control)를 함께 보고 판단하라.
+    reason: 이 tool 을 호출하는 판단 이유를 한 문장으로 기술한다 (감사 기록에 남는다)."""
+    return sc.compare_sensor_distribution(process_step, group_ids, control_ids)
+
+
+@tool
 def finalize(hypothesis: str, confidence: float) -> str:
     """원인을 특정 공정/장비까지 좁혔고 근거가 충분하다고 판단될 때만 호출해
     분석 종료를 제안한다. hypothesis=원인 가설(공정·장비·파라미터 명시),
@@ -90,7 +101,7 @@ _HYPOTHESIS_TOOLS = registry.build_tools(registry.load_hypotheses())
 # 삭제(Stage 5)까지는 노출만 막는다. aggregate_defects 는 yield.defect_type 에
 # 묶여 있어 실데이터에서 의미가 약하지만, 그 처리는 Stage 4 소관이라 여기 두지 않는다.
 _LEGACY_TOOLS = [get_process_log, validate_data_completeness, find_counterexamples]
-_BASE_TOOLS = [get_wafer, search_similar, aggregate_defects]
+_BASE_TOOLS = [get_wafer, search_similar, aggregate_defects, compare_sensor_distribution]
 
 ANALYSIS_TOOLS = [
     *_BASE_TOOLS,
