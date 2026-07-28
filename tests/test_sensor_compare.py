@@ -75,3 +75,14 @@ def test_insufficient_sample_is_reported_not_computed():
     res = sc.compare_sensor_distribution(SENSOR_STEP, GROUP_WAFERS[:1], CONTROL_WAFERS)
     assert res["status"] == "insufficient_sample"
     assert res["candidates"] == []
+
+
+def test_step_without_sensors_is_no_signal():
+    """1단이 지목한 스텝에 센서 행이 없으면 '원인 없음' 이 아니라 no_signal 이다.
+
+    더미는 Etch 에만 센서를 심는다. 조회 실패(fetch_failed)와 구분되어야 한다.
+    """
+    res = sc.compare_sensor_distribution("CMP", GROUP_WAFERS, CONTROL_WAFERS)
+    assert res["status"] == "no_signal"
+    assert res["candidates"] == []
+    assert "원인 없음이 아니다" in res["note"]
