@@ -70,7 +70,7 @@ spec `superpowers/specs/2026-07-25-root-lot-control-group-design.md`,
 spec `superpowers/specs/2026-07-25-sensor-comparison-design.md` (2026-07-25),
 플랜 `superpowers/plans/2026-07-25-sensor-comparison.md`.
 
-**구현 완료 (2026-07-28, 157 passed).** `data/generate_dummy.py` 의 `sensor_log`
+**구현 완료 (2026-07-28, 158 passed).** `data/generate_dummy.py` 의 `sensor_log`
 (케이스 4종) → `tools/sensor_store.py`(EDS 와 같은 local↔http 교체) →
 `tools/sensor_compare.py`(효과크기 랭킹·top-K 절단·재-fetch 키) →
 `compare_sensor_distribution` tool 등록. 캐시 DB 는 만들지 않았습니다.
