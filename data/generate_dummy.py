@@ -139,6 +139,24 @@ SPLIT_TARGETS = [f"{SPLIT_ROOT_LOT}_{i:02d}" for i in (1, 2, 3, 4)]
 SPLIT_CONTROLS = [f"{SPLIT_ROOT_LOT}_{i:02d}" for i in (5, 6, 7, 8)]
 SPLIT_WAFERS = set(SPLIT_TARGETS + SPLIT_CONTROLS)
 
+# ---------------------------------------------------------------- 센서 (2단 깔때기)
+# 트레이스가 아니라 **wafer 1장의 구간 통계값**이다. 구간·통계 종류는 센서 이름에
+# 들어 있다(rf_power_steady_avg) — 사내 FDC 추출물 형태.
+# 그래서 ..._avg 와 ..._std 가 서로 독립된 센서가 되고, '평균은 같은데 분산만 이동'
+# 케이스가 비교 로직의 별도 처리 없이 후보에 오른다.
+SENSOR_STEP = "Etch"                    # 1단이 지목하는 스텝 (ETCH9_B 가 여기 있다)
+SENSOR_REAL = "rf_power_steady"         # 진짜 원인 — 불량군에서 평균 이동
+SENSOR_VAR_ONLY = "gas_flow_steady"     # 케이스 1: 평균 동일, 분산만 이동
+SENSOR_DECOYS = ["chuck_temp_steady", "he_leak_steady"]   # 케이스 2: 우연히 유의한 미끼
+SENSOR_COLLINEAR = ("pressure_steady", "throttle_steady") # 케이스 3: 연동되어 함께 이동
+SENSOR_QUIET = ["endpoint_steady", "bias_steady"]         # 어느 그룹에서도 안 갈림
+SENSOR_STATS = ("avg", "std")
+
+# 케이스 4: 센서 행이 아예 없는 wafer (결측이 분모를 오염시키는지)
+# ⚠️ 대조군(CONTROL_WAFERS)에서 고르면 안 된다 — 대조군 3장 중 1장이 빠지면 표본이 2장이
+#    되어 주 비교가 불안정해진다. 어느 그룹에도 안 속하는 W2406_07 을 쓴다.
+SENSOR_MISSING_WAFER = UNLABELED_LOW_WAFER
+
 DATA_DIR = Path(__file__).resolve().parent
 DB_PATH = DATA_DIR / "yield.db"
 EMB_DIR = DATA_DIR / "embeddings"
@@ -287,7 +305,8 @@ def generate():
     _augment_yield(rows)
     steps = (_make_step_history(rows) + _make_adversarial_steps()
              + _make_split_lot_steps())
-    _write_sqlite(rows, logs, steps)
+    sensors = _make_sensor_log(rows)
+    _write_sqlite(rows, logs, steps, sensors)
     _write_index(vectors, wafer_ids)
     _report(rows, vectors, wafer_ids)
 
@@ -440,7 +459,51 @@ def _make_split_lot_steps():
     return steps
 
 
-def _write_sqlite(rows, logs, steps):
+def _make_sensor_log(rows):
+    """wafer×스텝×센서 통계값 (전용 rng — 기존 난수열을 건드리지 않는다).
+
+    지목 스텝(Etch)에만 심는다. 다른 스텝은 2단이 볼 일이 없다.
+    불량군(GROUP_WAFERS)에만 신호를 넣고 나머지는 공통 분포를 쓴다.
+    """
+    sen_rng = np.random.default_rng(SEED + 2)
+    all_sensors = ([SENSOR_REAL, SENSOR_VAR_ONLY, *SENSOR_DECOYS,
+                    *SENSOR_COLLINEAR, *SENSOR_QUIET])
+    out = []
+    for r in rows:
+        wid = r["wafer_id"]
+        if wid == SENSOR_MISSING_WAFER:
+            continue                       # 케이스 4: 이 wafer 는 센서 행이 없다
+        bad = wid in GROUP_WAFERS
+        for name in all_sensors:
+            for stat in SENSOR_STATS:
+                # spread 는 임의가 아니다: 2단이 매기는 효과크기 = 심은 이동폭 / spread 라
+                # 이 값이 곧 센서 순위를 정한다. std 계열의 spread 를 avg 보다 작게 잡으면
+                # '분산만 이동'(케이스 1)이 진짜 원인을 앞질러 1등이 되어 버린다.
+                # 현재 값 기준 효과크기: 진짜 8.0 > 분산만 5.0 > 공선성 4.0 > 미끼 2.0.
+                base, spread = 100.0, 1.5
+                if stat == "std":
+                    base, spread = 5.0, 1.2
+
+                if name == SENSOR_REAL and stat == "avg" and bad:
+                    base += 12.0                      # 진짜 원인: 평균이 크게 이동
+                elif name == SENSOR_VAR_ONLY and stat == "std" and bad:
+                    base *= 2.2                       # 케이스 1: 분산만 이동
+                elif name in SENSOR_DECOYS and stat == "avg" and bad:
+                    base += 3.0                       # 케이스 2: 진짜보다 작게 이동
+                elif name in SENSOR_COLLINEAR and stat == "avg" and bad:
+                    base += 6.0                       # 케이스 3: 둘이 같은 크기로 이동
+
+                out.append({
+                    "wafer_id": wid,
+                    "process_step": SENSOR_STEP,
+                    "sensor_name": f"{name}_{stat}",
+                    "value": round(float(sen_rng.normal(base, spread)), 3),
+                    "tkout_time": r["date"] + " 10:00:00",
+                })
+    return out
+
+
+def _write_sqlite(rows, logs, steps, sensors):
     if DB_PATH.exists():
         DB_PATH.unlink()
     conn = sqlite3.connect(DB_PATH)
@@ -488,6 +551,19 @@ def _write_sqlite(rows, logs, steps):
     conn.executemany(
         """INSERT INTO step_history VALUES
            (:wafer_id, :process_step, :eqp_id, :ch_id, :ppid, :timestamp)""", steps)
+    conn.execute("""
+        CREATE TABLE sensor_log (
+            wafer_id     TEXT NOT NULL,
+            process_step TEXT NOT NULL,
+            sensor_name  TEXT NOT NULL,
+            value        REAL NOT NULL,
+            tkout_time   TEXT
+        )
+    """)
+    conn.execute("CREATE INDEX idx_sensor_step ON sensor_log(process_step, wafer_id)")
+    conn.executemany(
+        """INSERT INTO sensor_log VALUES
+           (:wafer_id, :process_step, :sensor_name, :value, :tkout_time)""", sensors)
     conn.commit()
     conn.close()
 
