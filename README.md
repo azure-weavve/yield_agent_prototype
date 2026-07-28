@@ -21,32 +21,31 @@ $ PYTHONUTF8=1 python main.py
 
 [현황 파악 — 고정 골격]
 분석 대상 입력 (auto): W2406_06
-형제 묶기 (EDS, 컷오프 0.8): 7장 — 입력 + W2406_02(0.93), W2413_cen4(0.923), W2411_cen2(0.922), ...
-defect 라벨 (참고): center_spot 7장
+형제 묶기 (EDS, 컷오프 0.8): 7장 — 입력 + W2406_02(0.93), W2413_cen4(0.923), W2411_cen2(0.922), W2410_cen1(0.92), W2412_cen3(0.918), W2406_04(0.915)
 대조군 (같은 root_lot 비타깃): 78장 — LOT2402 18장, LOT2403 18장, LOT2404 19장, LOT2405 19장, LOT2406 4장 · 수율 중앙값 95.3, 임계 90.0 미만 10장
 
 [분석 루프 — 감사 기록]
-  1. aggregate_defects  args={'wafer_ids': ['W2406_06', 'W2406_02', 'W2413_cen4', ...]}
-     판단: 불량 그룹이 같은 불량 유형을 공유하는지 먼저 집계한다.
-  2. finalize  args={'hypothesis': '불량 그룹 7장이 모두 center_spot — 공통 원인 존재 추정', 'confidence': 0.6}
-     판단: 불량 유형은 좁혔지만 공정 근거가 아직 없다. 이 정도로 종료를 제안해 본다.
+  1. finalize  args={'hypothesis': '불량 그룹 7장이 한 사건으로 묶였다 — 공통 원인 존재 추정', 'confidence': 0.6}
+     판단: 그룹은 묶였지만 공정 근거가 아직 없다. 이 정도로 종료를 제안해 본다.
      게이트: 반려: 확신도 0.60 < 0.8. 근거를 좁힐 tool 을 더 호출하라.
-  3. hyp_eqp_ch_commonality  args={'group_ids': ['W2406_06', 'W2406_02', ...], 'control_ids': ['W2401_001', ...]}
+  2. hyp_eqp_ch_commonality  args={'group_ids': ['W2406_06', 'W2406_02', 'W2413_cen4', ...], 'control_ids': ['W2401_001', ...]}
      판단: 종료 제안이 반려됐다. 챔버 편중 가설로 두 그룹을 대조한다.
-  4. finalize  args={'hypothesis': 'Etch 공정 ETCH9_B 편중(분리 점수 1.0, 불량군 3장 전용)이 원인', 'confidence': 0.9}
-     판단: 챔버 편중 가설이 불량군 전용 챔버를 특이적으로 집었다. 근거 충분.
+  3. compare_sensor_distribution  args={'process_step': 'Etch', 'group_ids': ['W2406_06', 'W2406_02', 'W2413_cen4', ...], 'control_ids': ['W2401_001', ...]}
+     판단: 챔버까지 좁혔다. 그 스텝의 센서 분포로 '왜' 를 본다.
+  4. finalize  args={'hypothesis': 'Etch 공정 ETCH9_B 편중(분리 점수 1.0, 불량군 3장 전용)이 원인 — rf_power_steady_avg 효과크기 2.573', 'confidence': 0.9}
+     판단: 챔버 편중에 센서 근거까지 붙었다. 근거 충분.
      게이트: 승인 (확신도·증거 충족): 리포팅으로 진행한다.
 
 [리포트 — 고정 골격]
 ...
-[결론] Etch 공정 ETCH9_B 편중(분리 점수 1.0, 불량군 3장 전용)이 원인 (확신도 0.9)
+[결론] Etch 공정 ETCH9_B 편중(분리 점수 1.0, 불량군 3장 전용)이 원인 — rf_power_steady_avg 효과크기 2.573 (확신도 0.9)
 ```
 
-> 실제 실행 출력입니다. wafer 목록과 `control_ids`(67장)만 `...` 로 줄였습니다.
+> 실제 실행 출력입니다. wafer 목록과 `control_ids`(78장)만 `...` 로 줄였습니다.
 
 현황 파악이 지목한 wafer(`W2406_06`) 를 EDS 유사맵으로 형제 묶기(컷오프 0.8)한 불량 그룹 7장과,
 형제 lot 들의 대조군을 대상으로 Agent 가 tool 을 자율적으로 호출하며 근거를 쌓습니다.
-**게이트는 근거 없는 결론을 반려합니다** — 위 2번처럼 확신도만 높고 공정 근거가 없는 finalize 는
+**게이트는 근거 없는 결론을 반려합니다** — 위 1번처럼 확신도만 높고 공정 근거가 없는 finalize 는
 `analyze` 로 되돌려 보내집니다.
 
 > 다만 위 반려→재시도 순환은 **mock LLM 각본에서 보이는 모습**입니다. 실제 사내 LLM 은 대개
@@ -99,7 +98,7 @@ status ──▶ analyze ──(tool call)──▶ tools ──(반려/계속)�
 
 ## 분석 루프
 
-`analyze` 노드에서 Agent 는 `get_wafer`, `search_similar`, `aggregate_defects`,
+`analyze` 노드에서 Agent 는 `get_wafer`, `search_similar`,
 `hyp_*` 가설 도구, `finalize` 를 자율적으로 호출합니다.
 매 호출은 `findings` 에 감사 기록(`loop`, `tool`, `args`, `result`, `thought`)으로 남습니다.
 

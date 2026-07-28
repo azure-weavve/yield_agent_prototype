@@ -16,7 +16,7 @@ Stage 1    ⏸  Stage 5.5 로 이동 (실데이터 · 사내 _extract() 작업 �
 Stage A    ✅ 완료 (2026-07-25) — 안전장치 + 계약 동결 + 적대적 더미
 Stage 2    ✅ 완료 (2026-07-25) — 대조군을 같은 root_lot 의 비타깃 전원으로
 Stage 3    ✅ 완료 (2026-07-28) — sensor_log + SensorStore + 2단 센서 비교
-Stage 4    ⬜ defect_type 그룹핑 → EDS top-k, status_node 재설계
+Stage 4    ✅ 완료 (2026-07-28) — 더미에서 정답지 컬럼(defect_type·process_step) 제거
 Stage 5    ⬜ process_log · 레거시 도구 삭제 = 단일 스키마 완성
 Stage 5.5  ⬜ 구 Stage 1 — 실데이터 적재 · 검증 · 임계 튜닝
 ```
@@ -116,10 +116,26 @@ corrections B-3 의 "lot 밖 대조군 확장" 이 이미 후보로 있어, 실�
    wafer 목록·`store_mode`)가 맡고, 이 키만으로 같은 집계값이 재현되는지를 테스트로
    고정했습니다. fetch 실패는 `status="fetch_failed"` 로 '결과 없음'과 구분합니다.
 
-### Stage 4 — 그룹핑
+### Stage 4 — 정답지 제거 (완료)
 
-`SIBLING_MIN_SIMILARITY` 컷오프가 실데이터 분포에서 타당한지 확인 불가(Stage 5.5 로 이월).
-컷오프를 못 정한 채 구조만 짜는 것을 감수합니다. 근거: `2026-07-24-domain-corrections.md` A-3.
+spec `superpowers/specs/2026-07-28-ground-truth-removal-design.md`,
+플랜 `superpowers/plans/2026-07-28-ground-truth-removal.md`.
+
+**원래 Stage 4(`defect_type` 그룹핑 → EDS)는 Stage 2 가 흡수해 이미 끝나 있었다.**
+A-3 이 지정한 코드 영향 3건(status_node 그룹핑 폐기·find_normal_wafers 재작성·형제
+그룹핑 방법 확정)이 전부 완료 상태였다.
+
+진짜 남은 문제는 **더미가 실데이터에 없는 정답지 두 컬럼을 값으로 들고 있다**는
+것이었다. 적재기는 `yield.process_step` 에 NULL 을 강제하는데 더미는 `"Etch"` 를
+채워 넣어, 같은 컬럼을 두고 둘이 반대로 행동했다. 라벨이 있으면 그룹핑이 라벨로도
+되고 EDS 로도 되므로, EDS 경로가 실제로 성립하는지를 더미가 증명해 주지 못했다.
+
+**한 것:** 생성기 정답지를 `_truth_*` 로 분리하고 두 컬럼을 NULL 로,
+`aggregate_defects` 와 `label_counts` 삭제, 레거시 도구 기본 OFF(조용한 오확증 차단),
+mock 각본을 라벨 없이 재작성하며 2단을 데모에 넣었다.
+
+**`SIBLING_MIN_SIMILARITY` 컷오프는 여전히 미검증** — 실데이터 분포가 필요하다
+(Stage 5.5). 컷오프를 못 정한 채 구조만 두는 것을 계속 감수한다.
 
 ### Stage 5 — 삭제
 
