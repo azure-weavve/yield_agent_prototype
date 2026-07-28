@@ -124,17 +124,19 @@ def test_status_respects_user_specified_target():
 
 
 def test_tools_node_executes_and_records_finding():
+    # get_process_log 는 레거시(기본 OFF) 라 기본 노출 도구인 get_wafer 로 대체 —
+    # 검증 대상은 tools_node 의 실행·기록 메커니즘이지 특정 도구가 아니다.
     ai = AIMessage(
         content="유사 사례 확인",
-        tool_calls=[{"name": "get_process_log",
+        tool_calls=[{"name": "get_wafer",
                      "args": {"wafer_id": "W2406_02"}, "id": "call_1"}],
     )
     out = nodes.tools_node({"messages": [ai], "loop_count": 1})
     tm = out["messages"][0]
-    assert isinstance(tm, ToolMessage) and tm.name == "get_process_log"
+    assert isinstance(tm, ToolMessage) and tm.name == "get_wafer"
     f = out["findings"][0]
-    assert (f["loop"], f["tool"], f["thought"]) == (1, "get_process_log", "유사 사례 확인")
-    assert len(f["result"]) == 4                             # 결과 원본이 그대로 남는다
+    assert (f["loop"], f["tool"], f["thought"]) == (1, "get_wafer", "유사 사례 확인")
+    assert f["result"]["wafer_id"] == "W2406_02"              # 결과 원본이 그대로 남는다
     assert "finalize_accepted" not in out
 
 

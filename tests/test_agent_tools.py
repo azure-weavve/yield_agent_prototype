@@ -5,10 +5,8 @@ from tools import agent_tools as at
 
 def test_tool_names():
     assert {t.name for t in at.ALL_TOOLS} == {
-        "get_wafer", "search_similar", "get_process_log",
-        "validate_data_completeness", "find_counterexamples",
+        "get_wafer", "search_similar", "compare_sensor_distribution",
         "hyp_eqp_ch_commonality", "hyp_ppid_commonality",
-        "compare_sensor_distribution",
         "finalize",
     }
     assert "finalize" not in at.TOOLS_BY_NAME  # finalize 는 게이트가 처리
@@ -20,16 +18,39 @@ def test_docstrings_exist():
     assert all(t.description for t in at.ALL_TOOLS)
 
 
-def test_get_process_log_tool_invokes():
-    rows = at.TOOLS_BY_NAME["get_process_log"].invoke({"wafer_id": "W2406_02"})
-    assert len(rows) == 4
+def test_get_process_log_tool_invokes(monkeypatch):
+    """레거시 도구는 코드에 남아 있다 — 플래그를 켜면 여전히 돈다 (삭제는 Stage 5)."""
+    import importlib
+
+    import config
+    from tools import agent_tools
+
+    monkeypatch.setattr(config, "LEGACY_TOOLS_ENABLED", True)
+    importlib.reload(agent_tools)
+    try:
+        rows = agent_tools.TOOLS_BY_NAME["get_process_log"].invoke({"wafer_id": "W2406_02"})
+        assert len(rows) == 4
+    finally:
+        monkeypatch.undo()
+        importlib.reload(agent_tools)
 
 
-def test_validate_data_completeness_tool_invokes():
-    res = at.TOOLS_BY_NAME["validate_data_completeness"].invoke(
-        {"wafer_ids": ["W2406_02"]}
-    )
-    assert res["status"] == "good"
+def test_validate_data_completeness_tool_invokes(monkeypatch):
+    """레거시 도구는 코드에 남아 있다 — 플래그를 켜면 여전히 돈다 (삭제는 Stage 5)."""
+    import importlib
+
+    import config
+    from tools import agent_tools
+
+    monkeypatch.setattr(config, "LEGACY_TOOLS_ENABLED", True)
+    importlib.reload(agent_tools)
+    try:
+        res = agent_tools.TOOLS_BY_NAME["validate_data_completeness"].invoke(
+            {"wafer_ids": ["W2406_02"]})
+        assert res["status"] == "good"
+    finally:
+        monkeypatch.undo()
+        importlib.reload(agent_tools)
 
 
 def test_hyp_eqp_ch_commonality_tool_invokes():
@@ -40,18 +61,6 @@ def test_hyp_eqp_ch_commonality_tool_invokes():
     keys = {c["key"] for c in res["candidates"]}
     assert "ETCH9_B" in keys
     assert any(c["passes"] for c in res["candidates"] if c["key"] == "ETCH9_B")
-
-
-def test_find_counterexamples_tool_invokes():
-    # 대조군 3장도 이제 Etch 에서 ETCH-9 를 쓰므로(다른 챔버) 반례 목록에 추가된다:
-    # 구멍 (가) W2406_07 + 대조군 3장(W2406_01/03/05) = 4건.
-    res = at.TOOLS_BY_NAME["find_counterexamples"].invoke({
-        "equipment_id": "ETCH-9", "process_step": "Etch",
-        "defect_type": "center_spot",
-    })
-    assert [r["wafer_id"] for r in res["passed_but_normal"]] == [
-        "W2406_01", "W2406_03", "W2406_05", "W2406_07",
-    ]
 
 
 def test_legacy_tools_hidden_when_flag_off(monkeypatch):
@@ -78,6 +87,17 @@ def test_legacy_tools_hidden_when_flag_off(monkeypatch):
     finally:
         monkeypatch.undo()                                   # 원래 값으로 (True 고정 아님)
         importlib.reload(agent_tools)                        # 다른 테스트에 누수 방지
+
+
+def test_legacy_tools_are_off_by_default():
+    """기본값이 OFF 다 — 라벨 없는 데이터에서 find_counterexamples 는 '반례 없음' 을
+    조용히 참으로 보고한다(데이터가 없어서 빈 것을 특이성으로 읽는다). 삭제는 Stage 5.
+    """
+    import config
+
+    assert config.LEGACY_TOOLS_ENABLED is False
+    assert not ({t.name for t in at.ANALYSIS_TOOLS}
+                & {"get_process_log", "find_counterexamples", "validate_data_completeness"})
 
 
 def test_reason_is_optional_and_ignored():
