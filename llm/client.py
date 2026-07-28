@@ -45,9 +45,11 @@ class LLMClient(ABC):
 class ScriptedMockLLMClient(LLMClient):
     """사내망 밖 데모용. 그룹 대조 시나리오를 따라가는 결정론적 스크립트.
 
-    aggregate_defects(불량 그룹) → finalize(0.6, 게이트가 반려)
-    → hyp_eqp_ch_commonality(불량 vs 대조) → finalize(0.9, 승인) 순서로 진행하며,
-    각 단계 인자는 seed 메시지의 그룹 라인과 직전 ToolMessage(json) 를 파싱해 이어받는다.
+    finalize(0.6, 게이트가 반려) → hyp_eqp_ch_commonality(1단: 어느 챔버)
+    → compare_sensor_distribution(2단: 왜) → finalize(0.9, 승인) 순서로 진행하며,
+    각 단계 인자는 seed 메시지의 GROUPS_JSON 과 직전 ToolMessage(json) 를 파싱해 이어받는다.
+
+    라벨(defect_type)을 쓰지 않는다 — 실데이터에 없기 때문이다.
     """
 
     def __init__(self):
@@ -59,18 +61,13 @@ class ScriptedMockLLMClient(LLMClient):
         tool_msgs = [m for m in messages if isinstance(m, ToolMessage)]
         done = [m.name for m in tool_msgs]
 
-        if "aggregate_defects" not in done:
-            return self._call(
-                "aggregate_defects", {"wafer_ids": target},
-                "불량 그룹이 같은 불량 유형을 공유하는지 먼저 집계한다.")
-
         if "finalize" not in done:
-            top = self._result(tool_msgs, "aggregate_defects")[0]["defect_type"]
             return self._call(
                 "finalize",
-                {"hypothesis": f"불량 그룹 {len(target)}장이 모두 {top} — 공통 원인 존재 추정",
+                {"hypothesis": f"불량 그룹 {len(target)}장이 한 사건으로 묶였다 — "
+                               f"공통 원인 존재 추정",
                  "confidence": 0.6},
-                "불량 유형은 좁혔지만 공정 근거가 아직 없다. 이 정도로 종료를 제안해 본다.")
+                "그룹은 묶였지만 공정 근거가 아직 없다. 이 정도로 종료를 제안해 본다.")
 
         if "hyp_eqp_ch_commonality" not in done:
             return self._call(
@@ -90,12 +87,24 @@ class ScriptedMockLLMClient(LLMClient):
                  "confidence": 0.2},
                 "대조 결과에 분리되는 후보가 없다. 확정할 근거가 없으므로 물러선다.")
         top = passing[0]
+
+        if "compare_sensor_distribution" not in done:
+            return self._call(
+                "compare_sensor_distribution",
+                {"process_step": top["process_step"],
+                 "group_ids": target, "control_ids": control},
+                "챔버까지 좁혔다. 그 스텝의 센서 분포로 '왜' 를 본다.")
+
+        sensor = self._result(tool_msgs, "compare_sensor_distribution")
         val = top["value"][-1]
         hyp = (f"{top['value'][0]} 공정 {val} 편중(분리 점수 {top.get('score')}, "
                f"불량군 {top['target_pass']}장 전용)이 원인")
+        if sensor.get("candidates"):
+            c = sensor["candidates"][0]
+            hyp += f" — {c['sensor_name']} 효과크기 {c['effect_size']}"
         return self._call(
             "finalize", {"hypothesis": hyp, "confidence": 0.9},
-            "챔버 편중 가설이 불량군 전용 챔버를 특이적으로 집었다. 근거 충분.")
+            "챔버 편중에 센서 근거까지 붙었다. 근거 충분.")
 
     # -------------------------------------------------- report
     def generate_report(self, target_wafers, target_source, target_group, status_summary,

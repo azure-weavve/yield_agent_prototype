@@ -65,7 +65,6 @@ def status_node(state: dict) -> dict:
                 "status_summary": summary, "findings": findings,
                 "finalize_status": "control_insufficient"}
 
-    label = norm["label_counts"][0]["defect_type"] if norm["label_counts"] else "미상"
     groups_json = json.dumps(
         {"target": norm["target_group"], "control": ctrl["control_group"]},
         ensure_ascii=False)
@@ -73,7 +72,7 @@ def status_node(state: dict) -> dict:
         SystemMessage(content=ANALYZE_SYSTEM_PROMPT),
         HumanMessage(content=(
             f"현황:\n{summary}\n\n"
-            f"불량 그룹 ({label}): {', '.join(norm['target_group'])}\n"
+            f"불량 그룹: {', '.join(norm['target_group'])}\n"
             f"대조 그룹 (비타깃): {', '.join(ctrl['control_group'])}\n"
             f"분석 대상: {', '.join(targets)} 의 불량 원인 분석\n"
             f"GROUPS_JSON={groups_json}"
@@ -100,8 +99,6 @@ def _summarize_target(source: str, targets: list[str], norm: dict, ctrl: dict) -
                          f"(인덱스/DB 동기화 확인 필요)")
     else:
         lines.append(f"그룹 입력: {len(norm['target_group'])}장 그대로 사용 (묶기 생략)")
-    labels = ", ".join(f"{c['defect_type']} {c['count']}장" for c in norm["label_counts"])
-    lines.append(f"defect 라벨 (참고): {labels}")
     src = ", ".join(f"{rl} {len(ws)}장" for rl, ws in sorted(ctrl["sources"].items()))
     line = f"대조군 (같은 root_lot 비타깃): {len(ctrl['control_group'])}장 — {src}"
     ys = ctrl["yield_summary"]

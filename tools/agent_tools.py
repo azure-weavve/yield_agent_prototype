@@ -43,14 +43,6 @@ def search_similar(wafer_id: str, k: int = 5, reason: str = "") -> list[dict]:
 
 
 @tool
-def aggregate_defects(wafer_ids: list[str], reason: str = "") -> list[dict]:
-    """여러 wafer 의 defect_type 분포를 집계한다.
-    유사 wafer 들이 같은 불량 유형을 공유하는지 확인할 때 사용.
-    reason: 이 tool 을 호출하는 판단 이유를 한 문장으로 기술한다 (감사 기록에 남는다)."""
-    return yt.aggregate_defects(wafer_ids)
-
-
-@tool
 def get_process_log(wafer_id: str, reason: str = "") -> list[dict]:
     """wafer 의 공정 단계별 장비·파라미터 로그를 조회한다.
     in_spec=False 인 행이 스펙 이탈. 원인을 특정 공정/장비까지 좁히려면 반드시 확인.
@@ -98,10 +90,9 @@ def finalize(hypothesis: str, confidence: float) -> str:
 _HYPOTHESIS_TOOLS = registry.build_tools(registry.load_hypotheses())
 
 # 옛 process_log 스키마에 묶인 도구들 — 실데이터(step_history)에서는 못 돈다.
-# 삭제(Stage 5)까지는 노출만 막는다. aggregate_defects 는 yield.defect_type 에
-# 묶여 있어 실데이터에서 의미가 약하지만, 그 처리는 Stage 4 소관이라 여기 두지 않는다.
+# 삭제(Stage 5)까지는 노출만 막는다.
 _LEGACY_TOOLS = [get_process_log, validate_data_completeness, find_counterexamples]
-_BASE_TOOLS = [get_wafer, search_similar, aggregate_defects, compare_sensor_distribution]
+_BASE_TOOLS = [get_wafer, search_similar, compare_sensor_distribution]
 
 ANALYSIS_TOOLS = [
     *_BASE_TOOLS,

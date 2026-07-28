@@ -4,7 +4,7 @@ status 입력 재설계(2026-07-18 문서 3절)의 두 입력 형태를 한 형�
   - 한 장 입력 → EDS 형제 묶기 (컷오프 config.SIBLING_MIN_SIMILARITY 고정, 전 lot 탐색)
   - 그룹 입력 → 그대로 target_group
 대조군은 형제 각자의 lot 내 합집합(1단계). 부족하면 확장하지 않고 정직 보고한다.
-defect 라벨은 판정 기준이 아니라 참고 정보다 (6절 3번 — 유사맵이 이긴다).
+라벨(defect_type)은 쓰지 않는다 — 실데이터에 없다. 묶는 것은 EDS 뿐이다.
 """
 
 import config
@@ -47,7 +47,6 @@ def normalize_target(wafers: list[str]) -> dict:
         "unmatched_siblings": unmatched,
         "unknown_wafers": unknown,
         "isolated": isolated,
-        "label_counts": yt.aggregate_defects(target) if not unknown else [],
     }
 
 

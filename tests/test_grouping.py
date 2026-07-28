@@ -16,8 +16,6 @@ def test_single_input_expands_to_eds_siblings_across_lots():
     assert sims == sorted(sims, reverse=True)            # 유사도 내림차순
     assert all(s >= 0.8 for s in sims)
     assert res["unmatched_siblings"] == []               # 형제 전원 yield DB 실재
-    # defect 라벨은 참고 정보로만 (판정 기준 아님 — 6절 3번)
-    assert res["label_counts"][0]["defect_type"] == "center_spot"
 
 
 def test_group_input_passes_through_without_grouping():

@@ -99,23 +99,6 @@ def find_control_candidates(root_lot_ids: list[str], exclude: set[str]) -> list[
     return [r["wafer_id"] for r in rows if r["wafer_id"] not in exclude]
 
 
-def aggregate_defects(wafer_ids: list[str]) -> list[dict]:
-    """주어진 wafer 들의 defect_type 분포 집계 (시나리오 3: 원인 추정)."""
-    if not wafer_ids:
-        return []
-    placeholders = ",".join("?" * len(wafer_ids))
-    with _conn() as conn:
-        rows = conn.execute(
-            f"""
-            SELECT defect_type, COUNT(*) AS count
-            FROM yield WHERE wafer_id IN ({placeholders})
-            GROUP BY defect_type ORDER BY count DESC
-            """,
-            wafer_ids,
-        ).fetchall()
-        return [dict(r) for r in rows]
-
-
 def get_process_log(wafer_id: str) -> list[dict]:
     """wafer 의 공정 단계별 장비·파라미터 로그. in_spec 파생 필드 포함."""
     with _conn() as conn:

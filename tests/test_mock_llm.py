@@ -11,7 +11,7 @@ from langchain_core.messages import HumanMessage, ToolMessage
 from llm.client import ScriptedMockLLMClient
 
 HUMAN = HumanMessage(
-    "현황: ...\n\n불량 그룹 (center_spot): W2406_02, W2406_04, W2406_06\n"
+    "현황: ...\n\n불량 그룹: W2406_02, W2406_04, W2406_06\n"
     "대조 그룹 (정상): W2406_01, W2406_03, W2406_05\n"
     "분석 대상: W2406_02 의 불량 원인 분석\n"
     'GROUPS_JSON={"target": ["W2406_02", "W2406_04", "W2406_06"], '
@@ -30,43 +30,38 @@ def test_scripted_sequence():
     llm = ScriptedMockLLMClient()
     msgs = [HUMAN]
 
-    # 1) 불량 그룹의 defect 공유 확인부터
-    ai = llm.analyze_step(msgs)
-    assert ai.tool_calls[0]["name"] == "aggregate_defects"
-    assert ai.tool_calls[0]["args"]["wafer_ids"] == TARGET
-    assert ai.content  # thought(가설 서술)가 감사 기록 재료로 반드시 존재
-    msgs += [ai, _tm("aggregate_defects", [{"defect_type": "center_spot", "count": 3}])]
-
-    # 2) 조기 finalize (낮은 확신도 → 게이트 반려 시연용)
+    # 1) 근거 없이 조기 finalize (낮은 확신도 → 게이트 반려 시연용)
     ai = llm.analyze_step(msgs)
     assert ai.tool_calls[0]["name"] == "finalize"
     assert ai.tool_calls[0]["args"]["confidence"] < 0.8
+    assert ai.content  # thought(가설 서술)가 감사 기록 재료로 반드시 존재
     msgs += [ai, _tm("finalize", "반려: 확신도 0.60 < 0.8. 근거를 좁힐 tool 을 더 호출하라.")]
 
-    # 3) 챔버 편중 가설로 원인 공정/장비를 좁힌다
+    # 2) 1단 — 챔버 편중 가설
     ai = llm.analyze_step(msgs)
     assert ai.tool_calls[0]["name"] == "hyp_eqp_ch_commonality"
-    assert ai.tool_calls[0]["args"] == {"group_ids": TARGET, "control_ids": CONTROL}
-    msgs += [ai, _tm("hyp_eqp_ch_commonality", {
-        "hypothesis_id": "eqp_ch_commonality",
-        "legend": [{"level": "chamber", "columns": ["eqp_id", "ch_id"]}],
-        "status": "ok",
-        "candidates": [
-            {"value": ["Etch", "ETCH9_B"], "passes": True,
-             "level": "chamber", "key": "ETCH9_B",
-             "target_pass": 3, "control_pass": 0, "reject_reason": None},
-            {"value": ["Photo", "PHOTO1_A"], "passes": False,
-             "level": "chamber", "key": "PHOTO1_A",
-             "target_pass": 3, "control_pass": 3, "reject_reason": "분리 없음"},
-        ],
-    })]
+    assert ai.tool_calls[0]["args"]["group_ids"] == TARGET
+    assert ai.tool_calls[0]["args"]["control_ids"] == CONTROL
+    msgs += [ai, _tm("hyp_eqp_ch_commonality", {"candidates": [
+        {"level": "chamber", "key": "ETCH9_B", "value": ["Etch", "ETCH9_B"],
+         "process_step": "Etch", "score": 1.0, "target_pass": 3, "passes": True},
+    ]})]
 
-    # 4) 최종 finalize — 통과한 챔버 후보를 가설에 명시
+    # 3) 2단 — 지목된 스텝의 센서 분포
     ai = llm.analyze_step(msgs)
-    call = ai.tool_calls[0]
-    assert call["name"] == "finalize"
-    assert call["args"]["confidence"] >= 0.8
-    assert "ETCH9_B" in call["args"]["hypothesis"]
+    assert ai.tool_calls[0]["name"] == "compare_sensor_distribution"
+    assert ai.tool_calls[0]["args"]["process_step"] == "Etch"
+    msgs += [ai, _tm("compare_sensor_distribution", {"status": "ok", "candidates": [
+        {"sensor_name": "rf_power_steady_avg", "effect_size": 14.99},
+    ]})]
+
+    # 4) 근거를 갖춘 finalize (승인)
+    ai = llm.analyze_step(msgs)
+    assert ai.tool_calls[0]["name"] == "finalize"
+    assert ai.tool_calls[0]["args"]["confidence"] >= 0.8
+    hyp = ai.tool_calls[0]["args"]["hypothesis"]
+    assert "ETCH9_B" in hyp
+    assert "rf_power_steady_avg" in hyp       # 2단 근거가 결론에 실린다
 
 
 def test_generate_report_contains_findings_and_conclusion():
@@ -75,13 +70,13 @@ def test_generate_report_contains_findings_and_conclusion():
         target_wafers=["W2406_02"], target_source="manual",
         target_group=TARGET,
         status_summary="LOT2406 평균 84.8",
-        findings=[{"loop": 1, "tool": "aggregate_defects", "args": {"wafer_ids": TARGET},
-                   "result": [], "thought": "불량 유형 공유 확인"}],
+        findings=[{"loop": 1, "tool": "hyp_eqp_ch_commonality", "args": {"wafer_ids": TARGET},
+                   "result": [], "thought": "챔버 편중 확인"}],
         hypothesis="Etch 공정 ETCH-9 장비 rf_power 스펙 이탈이 원인",
         confidence=0.9,
     )
     assert "W2406_02" in report
-    assert "aggregate_defects" in report
+    assert "hyp_eqp_ch_commonality" in report
     assert "ETCH-9" in report
 
 
@@ -114,9 +109,12 @@ def test_generate_report_distinguishes_early_exits():
 def test_groups_parsed_from_machine_line_not_prose():
     # 사람용 문구를 바꿔도 GROUPS_JSON 라인만 있으면 mock 이 안 깨진다 (문제 7)
     llm = ScriptedMockLLMClient()
-    msg = HumanMessage('아무 문구나 자유롭게.\nGROUPS_JSON={"target": ["A"], "control": ["B"]}')
-    ai = llm.analyze_step([msg])
-    assert ai.tool_calls[0]["args"]["wafer_ids"] == ["A"]
+    msgs = [HumanMessage('아무 문구나 자유롭게.\nGROUPS_JSON={"target": ["A"], "control": ["B"]}')]
+    ai = llm.analyze_step(msgs)  # 1) 조기 finalize
+    msgs += [ai, _tm("finalize", "반려")]
+    ai = llm.analyze_step(msgs)  # 2) 1단 — GROUPS_JSON 에서 이어받은 그룹으로 대조
+    assert ai.tool_calls[0]["args"]["group_ids"] == ["A"]
+    assert ai.tool_calls[0]["args"]["control_ids"] == ["B"]
 
 
 def test_generate_report_renders_inconclusive_status():

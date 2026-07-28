@@ -5,7 +5,7 @@ from tools import agent_tools as at
 
 def test_tool_names():
     assert {t.name for t in at.ALL_TOOLS} == {
-        "get_wafer", "search_similar", "aggregate_defects", "get_process_log",
+        "get_wafer", "search_similar", "get_process_log",
         "validate_data_completeness", "find_counterexamples",
         "hyp_eqp_ch_commonality", "hyp_ppid_commonality",
         "compare_sensor_distribution",
@@ -23,13 +23,6 @@ def test_docstrings_exist():
 def test_get_process_log_tool_invokes():
     rows = at.TOOLS_BY_NAME["get_process_log"].invoke({"wafer_id": "W2406_02"})
     assert len(rows) == 4
-
-
-def test_aggregate_defects_tool_invokes():
-    rows = at.TOOLS_BY_NAME["aggregate_defects"].invoke(
-        {"wafer_ids": ["W2406_02"]}
-    )
-    assert rows[0]["defect_type"] == "center_spot"
 
 
 def test_validate_data_completeness_tool_invokes():
@@ -89,9 +82,9 @@ def test_legacy_tools_hidden_when_flag_off(monkeypatch):
 
 def test_reason_is_optional_and_ignored():
     # reason 은 감사 기록용 — 있어도 없어도 결과는 같다
-    args = {"wafer_ids": ["W2406_02"]}
-    assert (at.TOOLS_BY_NAME["aggregate_defects"].invoke(args)
-            == at.TOOLS_BY_NAME["aggregate_defects"].invoke({**args, "reason": "테스트"}))
+    args = {"wafer_id": "W2406_02"}
+    assert (at.TOOLS_BY_NAME["get_wafer"].invoke(args)
+            == at.TOOLS_BY_NAME["get_wafer"].invoke({**args, "reason": "테스트"}))
 
 
 def test_compare_sensor_distribution_tool_invokes():

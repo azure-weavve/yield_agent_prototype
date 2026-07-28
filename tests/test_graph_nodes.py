@@ -98,8 +98,7 @@ def test_summary_notes_unmatched_siblings():
     # EDS/DB 동기화 어긋남으로 대상에서 빠진 형제를 사람용 요약에도 남긴다 (재리뷰 Minor)
     norm = {"mode": "single", "target_group": ["W2406_02", "W2406_04"],
             "siblings": [{"wafer_id": "W2406_04", "similarity": 0.95}],
-            "unmatched_siblings": ["W_GHOST"], "unknown_wafers": [], "isolated": False,
-            "label_counts": [{"defect_type": "center_spot", "count": 2}]}
+            "unmatched_siblings": ["W_GHOST"], "unknown_wafers": [], "isolated": False}
     ctrl = {"control_group": ["W2406_01", "W2406_03", "W2406_05"],
             "sources": {"LOT2406": ["W2406_01", "W2406_03", "W2406_05"]},
             "insufficient": False,
@@ -234,7 +233,7 @@ def test_tools_node_recovers_from_unknown_tool_name():
 
 def test_tools_node_recovers_from_bad_args():
     ai = AIMessage(content="", tool_calls=[
-        {"name": "aggregate_defects", "args": {"wafer_ids": "W2406_02"}, "id": "c1"}])
+        {"name": "get_wafer", "args": {}, "id": "c1"}])
     out = nodes.tools_node({"messages": [ai], "loop_count": 1})
     assert "오류" in out["messages"][0].content
 
