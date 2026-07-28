@@ -4,7 +4,7 @@
 (`superpowers/specs/2026-07-24-registry-commonality-realignment-design.md` §12)의 참고 절에
 얹혀 있었고, 2026-07-25 재배열이 반영되어 있지 않습니다.
 
-갱신: 2026-07-25
+갱신: 2026-07-28
 
 ---
 
@@ -15,7 +15,7 @@ Stage 0    ✅ 완료 (2026-07-24) — 레지스트리를 commonality(step_histo
 Stage 1    ⏸  Stage 5.5 로 이동 (실데이터 · 사내 _extract() 작업 대기)
 Stage A    ✅ 완료 (2026-07-25) — 안전장치 + 계약 동결 + 적대적 더미
 Stage 2    ✅ 완료 (2026-07-25) — 대조군을 같은 root_lot 의 비타깃 전원으로
-Stage 3    ⬜ sensor_log + SensorStore, parameter_drift 부활     ⚠ 서브시스템 규모
+Stage 3    ✅ 완료 (2026-07-28) — sensor_log + SensorStore + 2단 센서 비교
 Stage 4    ⬜ defect_type 그룹핑 → EDS top-k, status_node 재설계
 Stage 5    ⬜ process_log · 레거시 도구 삭제 = 단일 스키마 완성
 Stage 5.5  ⬜ 구 Stage 1 — 실데이터 적재 · 검증 · 임계 튜닝
@@ -65,9 +65,22 @@ spec `superpowers/specs/2026-07-25-root-lot-control-group-design.md`,
 07-18 §7 에서 살아남은 것은 3단계(정직 보고 = `control_insufficient`)와 출처 명시뿐이다.
 더미에 분할 lot `R2418`(`.1`/`.2`/`.3`)을 심어 root_lot 기준의 효과를 테스트로 고정했다.
 
-### Stage 3 — 센서 (설계 완료, 구현 대기)
+### Stage 3 — 센서 (완료)
 
-spec `superpowers/specs/2026-07-25-sensor-comparison-design.md` (2026-07-25).
+spec `superpowers/specs/2026-07-25-sensor-comparison-design.md` (2026-07-25),
+플랜 `superpowers/plans/2026-07-25-sensor-comparison.md`.
+
+**구현 완료 (2026-07-28, 157 passed).** `data/generate_dummy.py` 의 `sensor_log`
+(케이스 4종) → `tools/sensor_store.py`(EDS 와 같은 local↔http 교체) →
+`tools/sensor_compare.py`(효과크기 랭킹·top-K 절단·재-fetch 키) →
+`compare_sensor_distribution` tool 등록. 캐시 DB 는 만들지 않았습니다.
+
+더미 센서의 `spread` 는 임의 값이 아닙니다: 효과크기가 `이동폭/spread` 라
+이 값이 곧 센서 순위를 정합니다. `std` 계열 spread 를 작게 잡으면 '분산만 이동'
+케이스가 진짜 원인을 앞질러 1등이 되므로 avg 1.5 / std 1.2 로 맞췄습니다.
+
+**남은 것 = 시간 대조.** 원인이 전 구간에 걸리는 경우(PM·부품 교체)는 그룹 대조로
+잡히지 않습니다. 아래 결정 항목 4번이 그대로 남아 있으며, 실데이터를 보고 정합니다.
 
 **⚠ 이전에 적어둔 "서브시스템 신설" 경고는 철회합니다.** 그 판단은 센서 데이터가
 **트레이스**라는 가정 위에 있었는데, 실제로는 **wafer 1장의 구간 통계값**(구간·통계가 센서
@@ -78,17 +91,17 @@ spec `superpowers/specs/2026-07-25-sensor-comparison-design.md` (2026-07-25).
 corrections B-3 의 "lot 밖 대조군 확장" 이 이미 후보로 있어, 실데이터 없이 한쪽을 못 박지
 않습니다. 계약 3건·재-fetch 키·더미 케이스 4종은 spec 을 보십시오.
 
-2단 깔때기가 완성되는 것이 Stage 3 이므로, 그전까지 시스템은 "어느 챔버가 의심된다" 까지만
-말하고 "왜" 는 못 말합니다.
+이로써 2단 깔때기가 붙어, 시스템이 "어느 챔버가 의심된다" 다음에 "그 스텝의 어느 센서가
+갈렸다" 까지 말합니다. 다만 후보일 뿐 결론이 아니라는 것은 계약 3번 그대로입니다.
 
 **계약 (어기면 분석이 성립하지 않습니다):**
 
 1. **fetch 단위는 (지목된 스텝 × 타깃+대조군 전원).** 챔버 단위로 당기면 안 됩니다 — 1단이 그
    챔버를 지목한 근거가 "대조군은 안 거쳤다"(score=1.0 이면 control_pass=0)이므로, 지목된
    챔버만 뽑으면 대조군 표본이 0 이라 비교 자체가 성립하지 않습니다.
-2. **tool 반환은 집계값만** (표본 수·평균·표준편차·효과크기·이탈률). 원본 트레이스는
-   `sensor_cache.db` 에 두고 ToolMessage 에 싣지 않습니다. 분석당 수만 행이라 한 번만 어겨도
-   컨텍스트가 터집니다. 반환은 효과크기 top-K 로 절단해 fetch 량과 무관하게 유계로 만듭니다.
+2. **tool 반환은 집계값만** (표본 수·평균·표준편차·효과크기). wafer 별 원본값은 ToolMessage 에
+   싣지 않습니다. 분석당 수만 행이라 한 번만 어겨도 컨텍스트가 터집니다. 반환은 효과크기
+   top-K 로 절단해 fetch 량과 무관하게 유계로 만듭니다.
 3. **2단 출력은 후보이지 결론이 아닙니다.** p-value 컷이 아니라 효과크기 랭킹. 스텝당 센서
    수백 개라 α=0.05 면 우연히 수십 개가 유의합니다. tool 결과 `note` 에 명시합니다.
 
@@ -98,11 +111,10 @@ corrections B-3 의 "lot 밖 대조군 확장" 이 이미 후보로 있어, 실�
    시간 대조 = 그 챔버의 과거 정상 구간. 둘은 다른 원인에 반응합니다 — PM·부품 교체는 시간
    대조로만 잡힙니다. `parameter_drift 부활` 이 후자를 암시하나 명시된 적이 없습니다.
    둘 다 하면 규모가 다시 늡니다.
-5. **캐시 무효화 정책·`sensor_cache.db` 수명 주기·온디맨드 fetch 실패 처리가 미설계.**
-   수명 주기는 성능이 아니라 **감사 추적** 문제입니다 — 반환이 집계값만이면 `findings` 에도
-   집계값만 남고, 캐시가 비워진 뒤에는 리포트의 효과크기 3.6 이 어디서 나왔는지 재현할 수
-   없습니다. 리포트 보존 기간만큼 캐시를 살리거나, `findings` 에 재fetch 키(스텝·wafer
-   목록·시각 범위)를 남기거나 — 무효화 정책과 함께 정합니다.
+5. ~~캐시 무효화 정책·`sensor_cache.db` 수명 주기~~ — **해소.** 캐시를 만들지 않기로 해
+   무효화·수명 문제 자체가 사라졌습니다. 감사 추적은 반환의 `refetch_key`(스텝·타깃/대조군
+   wafer 목록·`store_mode`)가 맡고, 이 키만으로 같은 집계값이 재현되는지를 테스트로
+   고정했습니다. fetch 실패는 `status="fetch_failed"` 로 '결과 없음'과 구분합니다.
 
 ### Stage 4 — 그룹핑
 

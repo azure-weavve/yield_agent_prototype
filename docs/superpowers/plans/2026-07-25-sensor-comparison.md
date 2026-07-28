@@ -750,4 +750,4 @@ feat: compare_sensor_distribution 을 LLM 도구로 등록
 3. 재-fetch 키만으로 같은 집계값이 재현된다 (테스트로 확인).
 4. 더미 케이스 4종이 의도대로 — 특히 **분산만 이동**이 후보에 오르고 **2단 조용함**이 `no_signal` 로 나온다.
 5. `SENSOR_MODE=http` 로 바꿔도 호출부 코드가 그대로다.
-6. 전체 회귀 green (153 passed). `python main.py` 출력 불변.
+6. 전체 회귀 green (157 passed). `python main.py` 출력 불변.
