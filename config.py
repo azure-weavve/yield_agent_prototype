@@ -44,6 +44,14 @@ COMMONALITY_PASS_MIN_TARGET = int(os.getenv("COMMONALITY_PASS_MIN_TARGET", "2"))
 # Stage 5 에서 도구와 이 플래그를 함께 삭제한다.
 LEGACY_TOOLS_ENABLED = os.getenv("LEGACY_TOOLS_ENABLED", "1") == "1"
 
+# 센서(2단): "local" = yield.db 의 sensor_log, "http" = 사내 FDC
+SENSOR_MODE = os.getenv("SENSOR_MODE", "local")
+SENSOR_HTTP_URL = os.getenv("SENSOR_HTTP_URL", "https://<사내-fdc-호스트>/sensor")
+# 2단 반환 절단 — fetch 량과 무관하게 유계로 만든다 (후보≠결론)
+SENSOR_TOP_K = int(os.getenv("SENSOR_TOP_K", "10"))
+# 한 그룹의 센서 표본이 이 미만이면 비교하지 않는다 (표본 2장짜리 효과크기는 허상)
+SENSOR_MIN_SAMPLE = int(os.getenv("SENSOR_MIN_SAMPLE", "3"))
+
 # 형제 묶기 (status 입력 재설계): "같은 사건" 판정이라 유사 사례 검색(0.5)보다 높게.
 # 실행 중 불변이므로 결정론 원칙과 충돌 없음 (재설계 문서 6절 2번).
 SIBLING_MIN_SIMILARITY = float(os.getenv("SIBLING_MIN_SIMILARITY", "0.8"))
