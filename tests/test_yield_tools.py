@@ -183,40 +183,66 @@ def test_compare_parameter_distribution_empty_inputs():
 
 
 # ------------------------------------------------ find_counterexamples
+# 이 함수는 라벨(defect_type)이 있다는 전제 위에서만 성립한다. 더미는 실데이터를
+# 모사하느라 라벨이 전원 NULL 이므로, 여기서는 라벨을 가진 자체 fixture 로 검증한다.
+# 함수 자체는 Stage 5 에서 대체 매핑을 확인한 뒤 삭제한다.
+_CX_ROWS = [
+    ("T1", "L1", 80.0, "center_spot", None, "2024-06-01"),   # 불량 + ETCH-9
+    ("T2", "L1", 81.0, "center_spot", None, "2024-06-01"),   # 불량 + ETCH-9
+    ("N1", "L1", 95.0, "none",        None, "2024-06-01"),   # 정상 + ETCH-9 (반례)
+    ("N2", "L1", 96.0, "none",        None, "2024-06-01"),   # 정상 + ETCH-9 (반례)
+    ("D1", "L1", 82.0, "center_spot", None, "2024-06-01"),   # 불량인데 ETCH-9 미사용
+    ("N3", "L1", 97.0, "none",        None, "2024-06-01"),   # 정상 + ETCH-1
+]
+_CX_LOGS = [
+    ("T1", "Etch", "ETCH-9", "rf_power", 500.0, 450.0, 550.0),
+    ("T2", "Etch", "ETCH-9", "rf_power", 500.0, 450.0, 550.0),
+    ("N1", "Etch", "ETCH-9", "rf_power", 500.0, 450.0, 550.0),
+    ("N2", "Etch", "ETCH-9", "rf_power", 500.0, 450.0, 550.0),
+    ("D1", "Etch", "ETCH-1", "rf_power", 500.0, 450.0, 550.0),
+    ("N3", "Etch", "ETCH-1", "rf_power", 500.0, 450.0, 550.0),
+]
 
 
-def test_find_counterexamples_one_for_etch9_hypothesis():
-    # 더미 데이터 설계 변경: 대조군 3장도 Etch 에서 ETCH-9 를 쓴다(챔버만 다름=ETCH9_C).
-    # ETCH-9 사용자: 불량군 3 + 과거 center_spot 패턴 4 + 구멍(가) W2406_07 1 + 대조군 3
-    # = 11장 (기존 8장에서 대조군 3장 추가). 대조군은 defect_type='none' 이고 값이
-    # 스펙 내(균등분포)이므로 반례(passed_but_normal)에도 3장이 새로 추가된다.
+def _cx_db(tmp_path, monkeypatch):
+    _make_db(tmp_path, monkeypatch, rows=_CX_ROWS, logs=_CX_LOGS)
+
+
+def test_find_counterexamples_reports_both_kinds(tmp_path, monkeypatch):
+    """'ETCH-9 가 center_spot 의 원인' 가설의 반례 두 종류를 모두 센다.
+
+    passed_but_normal      = ETCH-9 를 거쳤는데 정상 (N1, N2)
+    defect_without_equipment = ETCH-9 없이 같은 불량 (D1)
+    """
+    _cx_db(tmp_path, monkeypatch)
     res = yt.find_counterexamples("ETCH-9", "Etch", "center_spot")
-    assert res["equipment_wafers"] == 11
-    assert [r["wafer_id"] for r in res["passed_but_normal"]] == [
-        "W2406_01", "W2406_03", "W2406_05", "W2406_07",
-    ]
+    assert res["equipment_wafers"] == 4                      # T1 T2 N1 N2
+    assert [r["wafer_id"] for r in res["passed_but_normal"]] == ["N1", "N2"]
     assert all(r["in_spec"] is True for r in res["passed_but_normal"])
-    assert res["passed_but_normal_rate"] == round(4 / 11, 3)
-    assert res["defect_wafers"] == 7
-    assert res["defect_without_equipment"] == []
-    assert res["defect_without_equipment_rate"] == 0.0
+    assert res["passed_but_normal_rate"] == 0.5              # 2/4
+    assert res["defect_wafers"] == 3                         # T1 T2 D1
+    assert [r["wafer_id"] for r in res["defect_without_equipment"]] == ["D1"]
+    assert res["defect_without_equipment_rate"] == round(1 / 3, 3)
 
 
-def test_find_counterexamples_found_for_normal_equipment():
-    # ETCH-1 통과자는 대부분 정상 → 'ETCH-1 이 원인' 가설이면 반례가 다수 잡힌다
+def test_find_counterexamples_wrong_hypothesis_has_many(tmp_path, monkeypatch):
+    """가설이 틀리면 반례가 많이 잡힌다 — ETCH-1 은 원인이 아니다."""
+    _cx_db(tmp_path, monkeypatch)
     res = yt.find_counterexamples("ETCH-1", "Etch", "center_spot")
-    assert res["passed_but_normal"]
-    assert 0.0 < res["passed_but_normal_rate"] <= 1.0
-    assert all(r["in_spec"] for r in res["passed_but_normal"])
-    # center_spot 은 전부 ETCH-9 를 거쳤으므로 'ETCH-1 없이 발생' 비율 100%
-    assert res["defect_without_equipment_rate"] == 1.0
+    assert res["equipment_wafers"] == 2                      # D1 N3
+    assert [r["wafer_id"] for r in res["passed_but_normal"]] == ["N3"]
+    # center_spot 3장 중 2장(T1,T2)이 ETCH-1 없이 발생
+    assert res["defect_without_equipment_rate"] == round(2 / 3, 3)
 
 
-def test_find_counterexamples_unknown_equipment():
+def test_find_counterexamples_unknown_equipment(tmp_path, monkeypatch):
+    """존재하지 않는 장비 — 0 으로 나누지 않고 조용히 0.0 을 낸다."""
+    _cx_db(tmp_path, monkeypatch)
     res = yt.find_counterexamples("ETCH-99", "Etch", "center_spot")
     assert res["equipment_wafers"] == 0
+    assert res["passed_but_normal"] == []
     assert res["passed_but_normal_rate"] == 0.0
-    assert res["defect_without_equipment_rate"] == 1.0
+    assert res["defect_without_equipment_rate"] == 1.0       # 전원이 이 장비 없이 발생
 
 
 # ------------------------------------------------ spec NULL 처리 (사내 실데이터: 편측/미정 spec)
