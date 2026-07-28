@@ -154,13 +154,18 @@ finalize(0.9)                    → 승인
 
 | 파일 | 현재 | 변경 후 |
 |---|---|---|
-| `test_dummy_data.py` | `defect_type == 'center_spot'`, `== 'none'` 등 6건 | 두 컬럼이 전원 NULL 인지 |
-| `test_yield_tools.py:19` | `bad[0]["process_step"] == "Etch"` | `is None` |
+| `test_dummy_data.py` | `defect_type == 'center_spot'`, `== 'none'` 등 5건 | 라벨 없이 같은 성질을 단언 (생성기 상수 사용) |
 | `test_agent_tools.py:28` | `aggregate_defects` 도구 테스트 | 삭제, 도구 목록에서도 제거 |
 | `test_mock_llm.py` | 각본 순서 | 새 4수 순서 |
-| `test_graph_nodes.py:102` | `label_counts` 스텁 | 제거 |
+| `test_graph_nodes.py:102,237` | `label_counts` 스텁 · `aggregate_defects` tool_call 스텁 | 교체 |
+| `test_e2e.py:30` | `"aggregate_defects" in tools_used` | 새 각본의 도구로 |
 
 `test_commonality.py`·`test_engine.py` 의 인라인 DDL 은 자체 fixture 라 영향 없다.
+
+**`yield.process_step` 제거는 테스트를 거의 안 건드린다.** `test_yield_tools.py:19` 등
+`process_step` 을 단언하는 테스트는 전부 `process_log`/`step_history`/`sensor_log` 쪽이고,
+`yield.process_step` 을 읽는 곳은 `get_wafer(s)` 반환값과 `find_low_yield_lots` 의
+`worst_wafer` 뿐인데 어느 테스트도 그 값을 단언하지 않는다.
 
 ### 5.1 `find_counterexamples` 테스트 5건 — 자체 fixture 로 이전
 
