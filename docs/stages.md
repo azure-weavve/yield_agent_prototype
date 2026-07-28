@@ -145,6 +145,11 @@ mock 각본을 라벨 없이 재작성하며 2단을 데모에 넣었다.
 `missing_history`/`no_paired_stratum` 이 흡수한 것으로 보이지만, 확인 없이 지우면 기능이
 조용히 빠집니다.
 
+**`test_schema_contract.py` 는 `step_history` 만 얼립니다.** `yield` 테이블 DDL 은 계약
+테스트가 보지 않아 더미와 `load_internal.py` 가 조용히 갈라질 수 있습니다 — 실제로 이번
+브랜치에서 더미의 `yield` 는 `defect_type TEXT NOT NULL` 로 남아 있었고 로더만 NULL 허용이라
+NULL 기록이 한동안 실패했습니다.
+
 ### Stage 5.5 — 구 Stage 1 (실데이터)
 
 **합격 기준을 착수 전에 정의합니다.** 최소:

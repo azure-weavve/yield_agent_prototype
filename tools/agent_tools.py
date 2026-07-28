@@ -28,7 +28,7 @@ def _searcher_lazy():
 
 @tool
 def get_wafer(wafer_id: str, reason: str = "") -> dict | None:
-    """wafer 1장의 수율·defect_type·공정·날짜를 조회한다.
+    """wafer 1장의 수율·소속 lot·날짜를 조회한다 (defect_type·process_step 은 항상 NULL).
     대상 wafer 의 기본 정보가 필요할 때 사용.
     reason: 이 tool 을 호출하는 판단 이유를 한 문장으로 기술한다 (감사 기록에 남는다)."""
     return yt.get_wafer(wafer_id)

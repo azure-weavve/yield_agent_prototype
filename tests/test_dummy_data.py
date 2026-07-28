@@ -7,8 +7,7 @@
 import sqlite3
 
 import config
-from data.generate_dummy import (CONTROL_WAFERS, GROUP_WAFERS, PATTERN_GROUPS,
-                                 UNGROUPED_LOT, UNLABELED_LOW_WAFER)
+from data.generate_dummy import GROUP_WAFERS, PATTERN_GROUPS
 
 
 def _conn():
