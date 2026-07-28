@@ -7,6 +7,8 @@
 import sqlite3
 
 import config
+from data.generate_dummy import (CONTROL_WAFERS, GROUP_WAFERS, PATTERN_GROUPS,
+                                 UNGROUPED_LOT, UNLABELED_LOW_WAFER)
 
 
 def _conn():
@@ -34,45 +36,42 @@ def test_pattern_wafer_has_single_anomaly_at_its_step():
         assert bad[0]["equipment_id"] == "ETCH-9"
 
 
-def test_group_members_share_anomaly_equipment():
-    with _conn() as conn:
-        members = [
-            r["wafer_id"]
-            for r in conn.execute(
-                "SELECT wafer_id FROM yield WHERE defect_type = 'center_spot'"
-            ).fetchall()
-        ]
-        assert len(members) >= 2
-        for wid in members:
-            bad = conn.execute(
-                """
-                SELECT equipment_id FROM process_log
-                WHERE wafer_id = ? AND NOT (spec_low <= param_value AND param_value <= spec_high)
-                """,
-                (wid,),
-            ).fetchall()
-            assert [r["equipment_id"] for r in bad] == ["ETCH-9"]
+def test_anomaly_equipment_is_always_the_shared_minus9():
+    """스펙 이탈은 항상 그룹 공유 이상 장비(-9)에서만 난다.
 
-
-def test_normal_wafer_all_in_spec():
+    옛 버전은 defect_type='center_spot' 으로 그룹을 찾았다. 라벨이 사라졌으므로
+    '이상이 있는 wafer 는 전부 -9 를 거쳤다' 로 같은 성질을 라벨 없이 단언한다.
+    """
     with _conn() as conn:
-        bad = conn.execute(
+        rows = conn.execute(
             """
-            SELECT COUNT(*) FROM process_log p
-            JOIN yield y ON y.wafer_id = p.wafer_id
-            WHERE y.defect_type = 'none'
-              AND NOT (p.spec_low <= p.param_value AND p.param_value <= p.spec_high)
+            SELECT DISTINCT equipment_id FROM process_log
+            WHERE NOT (spec_low <= param_value AND param_value <= spec_high)
+            """
+        ).fetchall()
+    assert rows
+    assert all(r["equipment_id"].endswith("-9") for r in rows)
+
+
+def test_only_planted_pattern_wafers_have_anomalies():
+    """이상을 가진 wafer 수 = 심어둔 패턴 wafer 수. 그 밖은 전부 스펙 내다."""
+    expected = len(GROUP_WAFERS) + sum(g["n_past"] for g in PATTERN_GROUPS)
+    with _conn() as conn:
+        n = conn.execute(
+            """
+            SELECT COUNT(DISTINCT wafer_id) FROM process_log
+            WHERE NOT (spec_low <= param_value AND param_value <= spec_high)
             """
         ).fetchone()[0]
-        assert bad == 0
+    assert n == expected
 
 
 def test_recent_lot_has_group_and_control():
-    """그룹 대조 시나리오: LOT2406 = 불량 그룹(짝수, center_spot) + 대조 그룹(홀수, 정상)
-    + 구멍 케이스 W2406_07(저수율인데 defect 라벨 없음)."""
+    """그룹 대조 시나리오: LOT2406 = 불량 그룹(짝수 = GROUP_WAFERS) + 대조 그룹(홀수, 정상)
+    + 구멍 케이스 W2406_07(저수율 비타깃)."""
     with _conn() as conn:
         rows = conn.execute(
-            "SELECT wafer_id, yield, defect_type FROM yield WHERE lot_id = 'LOT2406' ORDER BY wafer_id"
+            "SELECT wafer_id, yield FROM yield WHERE lot_id = 'LOT2406' ORDER BY wafer_id"
         ).fetchall()
         by_id = {r["wafer_id"]: r for r in rows}
         assert set(by_id) == {
@@ -80,10 +79,8 @@ def test_recent_lot_has_group_and_control():
             "W2406_07",
         }
         for wid in ("W2406_02", "W2406_04", "W2406_06"):
-            assert by_id[wid]["defect_type"] == "center_spot"
             assert by_id[wid]["yield"] < config.YIELD_THRESHOLD
         for wid in ("W2406_01", "W2406_03", "W2406_05"):
-            assert by_id[wid]["defect_type"] == "none"
             assert by_id[wid]["yield"] >= config.YIELD_THRESHOLD
         # lot 평균이 임계 미만이어야 시나리오 1(find_low_yield_lots)에 잡힌다
         avg = sum(r["yield"] for r in rows) / len(rows)
@@ -91,13 +88,16 @@ def test_recent_lot_has_group_and_control():
 
 
 def test_hole_case_unlabeled_low_yield_wafer_passed_etch9_in_spec():
-    """구멍 (가): W2406_07 은 저수율인데 defect 라벨이 'none' 이고,
-    이상 장비 ETCH-9 를 '스펙 안으로' 통과했다 — 대조군 오염 시 suspect 를 희석한다."""
+    """구멍 (가): W2406_07 은 저수율인데 이상 장비 ETCH-9 를 '스펙 안으로' 통과했다.
+
+    라벨이 전원 없어진 지금은 "라벨이 없다" 가 이 wafer 만의 특징이 아니다. 남은
+    성질은 '수율은 낮은데 측정값은 스펙 내' 이고, 그것이 대조군에 섞였을 때
+    suspect_equipment 를 희석한다.
+    """
     with _conn() as conn:
         r = conn.execute(
-            "SELECT yield, defect_type FROM yield WHERE wafer_id = 'W2406_07'"
+            "SELECT yield FROM yield WHERE wafer_id = 'W2406_07'"
         ).fetchone()
-        assert r["defect_type"] == "none"
         assert r["yield"] < config.YIELD_THRESHOLD
         etch = conn.execute(
             "SELECT * FROM process_log WHERE wafer_id = 'W2406_07' AND process_step = 'Etch'"
@@ -108,13 +108,12 @@ def test_hole_case_unlabeled_low_yield_wafer_passed_etch9_in_spec():
 
 def test_hole_case_ungrouped_low_yield_lot():
     """구멍 (나): LOT2407 은 평균이 임계 미만인 2번째 저수율 lot 인데,
-    전 wafer 가 'none' 이라 defect 패턴으로는 그룹을 못 묶는다 (출구 B 무대)."""
+    라벨이 없어 defect 패턴으로는 그룹을 못 묶는다 (출구 B 무대)."""
     with _conn() as conn:
         rows = conn.execute(
-            "SELECT yield, defect_type FROM yield WHERE lot_id = 'LOT2407'"
+            "SELECT yield FROM yield WHERE lot_id = 'LOT2407'"
         ).fetchall()
         assert len(rows) == 3
-        assert all(r["defect_type"] == "none" for r in rows)
         avg = sum(r["yield"] for r in rows) / len(rows)
         assert avg < config.YIELD_THRESHOLD
 
@@ -195,3 +194,18 @@ def test_step_history_planted_eqp_ch_and_ppid_separation():
     assert ("chamber", "ETCH9_B") in keys
     ppid = cm.find_commonality(t, c, legend=[{"level": "ppid", "columns": ["ppid"]}])
     assert ("ppid", "PPID_X") in {(x["level"], x["key"]) for x in ppid["candidates"]}
+
+
+def test_ground_truth_columns_are_null():
+    """정답지 컬럼은 DB 에 값이 없다 (A-2·A-3).
+
+    '어느 스텝이 원인인가'·'무슨 불량인가' 는 시스템이 추론할 결론이지 입력이 아니다.
+    실데이터 적재기(load_internal)가 이미 NULL 을 강제하므로 더미도 같아야 한다.
+    누가 더미에 라벨을 다시 채우면 이 테스트가 먼저 깨진다.
+    """
+    with _conn() as conn:
+        n = conn.execute(
+            "SELECT COUNT(*) FROM yield "
+            "WHERE defect_type IS NOT NULL OR process_step IS NOT NULL"
+        ).fetchone()[0]
+    assert n == 0

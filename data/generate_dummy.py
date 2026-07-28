@@ -139,6 +139,12 @@ SPLIT_TARGETS = [f"{SPLIT_ROOT_LOT}_{i:02d}" for i in (1, 2, 3, 4)]
 SPLIT_CONTROLS = [f"{SPLIT_ROOT_LOT}_{i:02d}" for i in (5, 6, 7, 8)]
 SPLIT_WAFERS = set(SPLIT_TARGETS + SPLIT_CONTROLS)
 
+# ---------------------------------------------------------------- 정답지 (DB 에 안 들어감)
+# `_truth_*` 는 **생성기 내부 정답지**다. 어느 스텝에 이상을 심을지 정하는 데만 쓰고
+# yield 테이블에는 NULL 로 들어간다 (A-2·A-3: 실데이터에 이 두 값은 없다).
+# 키 이름을 DB 컬럼과 다르게 둔 이유는, 행을 읽는 사람이 "DB 에도 값이 있겠구나" 로
+# 오해하거나 _write_sqlite 가 실수로 쓰는 경로를 아예 없애기 위해서다.
+
 # ---------------------------------------------------------------- 센서 (2단 깔때기)
 # 트레이스가 아니라 **wafer 1장의 구간 통계값**이다. 구간·통계 종류는 센서 이름에
 # 들어 있다(rf_power_steady_avg) — 사내 FDC 추출물 형태.
@@ -188,8 +194,8 @@ def generate():
             "wafer_id": wid,
             "lot_id": lot,
             "yield": round(float(rng.uniform(93.0, 99.0)), 1),
-            "defect_type": "none",
-            "process_step": "Normal",
+            "_truth_defect": "none",
+            "_truth_step": "Normal",
             "date": PAST_DATES[i % len(PAST_DATES)],
         })
         vectors.append(_unit(rng.standard_normal(DIM)))
@@ -203,8 +209,8 @@ def generate():
             "wafer_id": wid,
             "lot_id": RECENT_LOT,
             "yield": round(float(rng.uniform(76.0, 82.0)), 1),
-            "defect_type": FEATURED_DEFECT,
-            "process_step": FEATURED_PROCESS,
+            "_truth_defect": FEATURED_DEFECT,
+            "_truth_step": FEATURED_PROCESS,
             "date": RECENT_DATE,
         })
         vectors.append(_make_member(centers[FEATURED_DEFECT], rng))
@@ -215,8 +221,8 @@ def generate():
             "wafer_id": wid,
             "lot_id": RECENT_LOT,
             "yield": round(float(rng.uniform(93.0, 97.0)), 1),
-            "defect_type": "none",
-            "process_step": "Normal",
+            "_truth_defect": "none",
+            "_truth_step": "Normal",
             "date": RECENT_DATE,
         })
         vectors.append(_unit(rng.standard_normal(DIM)))
@@ -232,8 +238,8 @@ def generate():
                 "wafer_id": past_wid,
                 "lot_id": NORMAL_LOTS[(g_idx + p) % len(NORMAL_LOTS)],
                 "yield": round(float(rng.uniform(85.0, 92.0)), 1),
-                "defect_type": grp["defect"],
-                "process_step": grp["process"],
+                "_truth_defect": grp["defect"],
+                "_truth_step": grp["process"],
                 "date": PAST_DATES[p % len(PAST_DATES)],
             })
             vectors.append(_make_member(center, rng))
@@ -244,8 +250,8 @@ def generate():
         "wafer_id": UNLABELED_LOW_WAFER,
         "lot_id": RECENT_LOT,
         "yield": UNLABELED_LOW_YIELD,
-        "defect_type": "none",
-        "process_step": "Normal",
+        "_truth_defect": "none",
+        "_truth_step": "Normal",
         "date": RECENT_DATE,
     })
     vectors.append(_unit(rng.standard_normal(DIM)))
@@ -256,8 +262,8 @@ def generate():
             "wafer_id": wid,
             "lot_id": UNGROUPED_LOT,
             "yield": y,
-            "defect_type": "none",
-            "process_step": "Normal",
+            "_truth_defect": "none",
+            "_truth_step": "Normal",
             "date": RECENT_DATE,
         })
         vectors.append(_unit(rng.standard_normal(DIM)))
@@ -275,8 +281,8 @@ def generate():
                 "wafer_id": wid,
                 "lot_id": lot,
                 "yield": ADV_TARGET_YIELD if is_target else ADV_CONTROL_YIELD,
-                "defect_type": "none",      # 라벨 없음 — 실데이터와 같은 조건
-                "process_step": "Normal",   # process_log 를 전부 스펙 내로 유지
+                "_truth_defect": "none",      # 라벨 없음 — 실데이터와 같은 조건
+                "_truth_step": "Normal",   # process_log 를 전부 스펙 내로 유지
                 "date": RECENT_DATE,
             })
             vectors.append(_make_member(adv_center, rng)
@@ -292,8 +298,8 @@ def generate():
                 "wafer_id": wid,
                 "lot_id": lot,
                 "yield": ADV_TARGET_YIELD if wid in SPLIT_TARGETS else ADV_CONTROL_YIELD,
-                "defect_type": "none",       # 라벨 없음 — 실데이터와 같은 조건
-                "process_step": "Normal",    # process_log 를 전부 스펙 내로 유지
+                "_truth_defect": "none",       # 라벨 없음 — 실데이터와 같은 조건
+                "_truth_step": "Normal",    # process_log 를 전부 스펙 내로 유지
                 "date": RECENT_DATE,
                 "root_lot_id": SPLIT_ROOT_LOT,   # lot_id 와 다르다 (_augment_yield 가 보존)
                 "lot_type": lot_type,
@@ -312,12 +318,12 @@ def generate():
 
 
 def _make_process_logs(rows, rng):
-    """wafer 별 공정 로그. 패턴 wafer 의 원인 공정(r['process_step'])만 이상 처리.
-    정상 wafer 는 process_step='Normal' 이라 어떤 step 과도 일치하지 않는다."""
+    """wafer 별 공정 로그. 패턴 wafer 의 원인 공정(r['_truth_step'])만 이상 처리.
+    정상 wafer 는 _truth_step='Normal' 이라 어떤 step 과도 일치하지 않는다."""
     logs = []
     for r in rows:
         for step, param, lo, hi in PROCESS_FLOW:
-            if r["process_step"] == step:
+            if r["_truth_step"] == step:
                 equip = f"{step.upper()}-9"                # 그룹 공유 이상 장비
                 value = round(hi + (hi - lo) * 0.2, 2)     # 스펙 상한 20% 초과
                 chamber = REAL_CHAMBER if step == "Etch" else f"{equip}_A"
@@ -512,7 +518,7 @@ def _write_sqlite(rows, logs, steps, sensors):
             wafer_id     TEXT PRIMARY KEY,
             lot_id       TEXT NOT NULL,
             yield        REAL NOT NULL,
-            defect_type  TEXT NOT NULL,
+            defect_type  TEXT,
             process_step TEXT,
             date         TEXT NOT NULL,
             root_lot_id  TEXT NOT NULL,
@@ -520,8 +526,8 @@ def _write_sqlite(rows, logs, steps, sensors):
         )
     """)
     conn.executemany(
-        "INSERT INTO yield VALUES (:wafer_id, :lot_id, :yield, :defect_type, "
-        ":process_step, :date, :root_lot_id, :lot_type)", rows)
+        "INSERT INTO yield VALUES (:wafer_id, :lot_id, :yield, NULL, NULL, "
+        ":date, :root_lot_id, :lot_type)", rows)
     conn.execute("""
         CREATE TABLE process_log (
             wafer_id     TEXT NOT NULL,
@@ -600,7 +606,8 @@ def _report(rows, vectors, wafer_ids):
     print(f"\n[{RECENT_LOT} 그룹 대조 시나리오]")
     for r in rows:
         if r["lot_id"] == RECENT_LOT:
-            print(f"  {r['wafer_id']}  yield={r['yield']}  defect={r['defect_type']}")
+            print(f"  {r['wafer_id']}  yield={r['yield']}  "
+                  f"defect={r['_truth_defect']} (정답지 — DB 에는 NULL)")
 
 
 if __name__ == "__main__":
