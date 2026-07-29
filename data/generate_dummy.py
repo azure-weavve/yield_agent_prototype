@@ -2,18 +2,20 @@
 
 설계 문서 3.1절 스키마를 따른다.
 - yield 테이블 (SQLite): wafer_id, lot_id, yield, defect_type, process_step, date
+  ⚠️ `defect_type`·`process_step` 은 **전 행 NULL** 이다 (실데이터에 이 라벨이 없다).
+     생성기가 어디에 이상을 심었는지는 `_truth_*` 로만 들고 있고 DB 에 안 나간다.
 - 512차원 맵 임베딩 인덱스 (hnswlib): wafer_id -> 512d 벡터
 
 핵심 = "유사 그룹 심기":
   정상 다수 + 몇 개의 패턴 그룹.
   각 패턴 그룹은
     (가) 임베딩 공간에서 서로 가깝다 (그룹 중심 벡터 + 작은 noise).
-    (나) 같은 defect_type 을 공유한다.
+    (나) 같은 불량 유형에서 나왔다 (생성기 내부 `_truth_defect` — 데이터에는 없다).
     (다) date 가 과거~최근에 분포 (그룹당 최근 1장 + 과거 4~5장).
   최근 1장은 시나리오 1에서 수율 낮게 잡힐 wafer,
   나머지 과거 장들은 시나리오 2의 유사 검색 결과가 된다.
-  추가로 RECENT_LOT 은 그룹 대조 시나리오 무대다: 짝수 번호 3장이 같은
-  defect(center_spot)·같은 이상 장비(ETCH-9)를 공유하고, 홀수 번호 3장은 정상.
+  추가로 RECENT_LOT 은 그룹 대조 시나리오 무대다: 짝수 번호 3장이 같은 임베딩 중심과
+  같은 이상 챔버(ETCH9_B)를 공유하고, 홀수 번호 3장은 그렇지 않다.
 """
 
 import json
@@ -44,11 +46,11 @@ CONTROL_WAFERS = ["W2406_01", "W2406_03", "W2406_05"]  # 대조 그룹 (정상)
 
 # 구멍 케이스: 더미가 너무 착해서 안 드러나던 설계 구멍을 데이터로 드러낸다
 # (docs/2026-07-18-status-node-review-and-redesign.md 2절·4절).
-# (가) UNLABELED_LOW_WAFER: 저수율인데 defect 라벨이 'none' — 대조군 선정에 수율
+# (가) UNLABELED_LOW_WAFER: 저수율인데 심어 둔 패턴이 없다 — 대조군 선정에 수율
 #     조건이 없으면 대조군에 섞인다. ETCH-9 를 '스펙 안으로' 통과시켜, 오염 시
 #     suspect_equipment(대조군 0명 조건)가 조용히 희석되는 것까지 재현한다.
-# (나) UNGROUPED_LOT: 저수율 lot 2개째 — 전 wafer 가 'none' 이라 defect 패턴으로
-#     그룹을 못 묶는 출구 B 의 무대. 평균 89.83 은 임계(90) 미만이되
+# (나) UNGROUPED_LOT: 저수율 lot 2개째 — 임베딩이 흩어져 있어 유사도로 그룹을
+#     못 묶는 출구 B 의 무대. 평균 89.83 은 임계(90) 미만이되
 #     LOT2406 평균의 최대치(89.4)보다 높아 lots[0] 자리는 LOT2406 이 유지한다.
 UNLABELED_LOW_WAFER = "W2406_07"
 UNLABELED_LOW_YIELD = 88.5
@@ -138,12 +140,6 @@ SPLIT_LOTS = {                       # lot_id -> (wafer 번호, lot_type)
 SPLIT_TARGETS = [f"{SPLIT_ROOT_LOT}_{i:02d}" for i in (1, 2, 3, 4)]
 SPLIT_CONTROLS = [f"{SPLIT_ROOT_LOT}_{i:02d}" for i in (5, 6, 7, 8)]
 SPLIT_WAFERS = set(SPLIT_TARGETS + SPLIT_CONTROLS)
-
-# ---------------------------------------------------------------- 정답지 (DB 에 안 들어감)
-# `_truth_*` 는 **생성기 내부 정답지**다. 어느 스텝에 이상을 심을지 정하는 데만 쓰고
-# yield 테이블에는 NULL 로 들어간다 (A-2·A-3: 실데이터에 이 두 값은 없다).
-# 키 이름을 DB 컬럼과 다르게 둔 이유는, 행을 읽는 사람이 "DB 에도 값이 있겠구나" 로
-# 오해하거나 _write_sqlite 가 실수로 쓰는 경로를 아예 없애기 위해서다.
 
 # ---------------------------------------------------------------- 센서 (2단 깔때기)
 # 트레이스가 아니라 **wafer 1장의 구간 통계값**이다. 구간·통계 종류는 센서 이름에
@@ -510,6 +506,10 @@ def _make_sensor_log(rows):
 
 
 def _write_sqlite(rows, logs, steps, sensors):
+    # 정답지는 DB 에 안 들어간다. rows 의 `_truth_*` 는 **생성기 내부 정답지**로,
+    # 어디에 이상을 심을지 정하는 데만 쓰고 yield 에는 아래 INSERT 의 리터럴 NULL 이
+    # 들어간다 (A-2·A-3: 실데이터에 이 두 값은 없다). 키 이름을 DB 컬럼과 다르게 둔 것도
+    # 행을 읽는 사람의 오해와, 여기서 실수로 쓰는 경로를 아예 없애기 위해서다.
     if DB_PATH.exists():
         DB_PATH.unlink()
     conn = sqlite3.connect(DB_PATH)

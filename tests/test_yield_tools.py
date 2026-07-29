@@ -86,7 +86,12 @@ def test_compare_process_logs_empty_inputs():
 
 
 def _make_db(tmp_path, monkeypatch, rows, logs):
-    """검사 시나리오용 임시 DB (실제 스키마와 동일). config.DB_PATH 를 바꿔치기한다."""
+    """검사 시나리오용 임시 DB. config.DB_PATH 를 바꿔치기한다.
+
+    라벨을 요구하는 축소 스키마다 — 여기서만 `defect_type` 이 NOT NULL 이고,
+    더미·로더는 nullable 이다(Stage 4). 라벨 기반 도구를 그 라벨이 있을 때
+    어떻게 도는지 보려고 fixture 가 직접 라벨을 넣는다.
+    """
     db = tmp_path / "test.db"
     conn = sqlite3.connect(db)
     conn.execute("""CREATE TABLE yield (

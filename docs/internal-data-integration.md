@@ -43,7 +43,8 @@ root_lot A45Z5 (물리 묶음, 거의 항상 25매)
 | `root_lot_id` (신규) | lot_id 의 `.` 앞 — wafer_id 의 `_` 앞과 교차 검증 (품질 체크) |
 | `lot_type` (신규) | `.1` → 양산, 그 외 → 평가. 격리 함수로 구현 |
 | `yield` | 0~100 스케일 확인 (YIELD_THRESHOLD=90.0 과 정합) |
-| `defect_type` | NOT NULL — 정상 wafer 는 `"none"` |
+| `defect_type` | **NULL 허용. 라벨이 없으면 NULL 로 두고 절대 `"none"` 을 채우지 않는다** — `"none"` 을 넣으면 라벨 없는 wafer 가 전부 '정상'으로 둔갑해 대조군에 조용히 섞인다 (`load_internal.py` 의 경고 참조). 더미도 전 행 NULL 이다 (Stage 4) |
+| `process_step` | **항상 NULL.** 원천에 있어도 넣지 않는다 — '어느 스텝이 원인인가'는 이 시스템이 추론할 결론이지 입력이 아니다(정답 누출). 컬럼은 기존 SQL 호환용으로만 남긴다 |
 | `spec_low`/`spec_high` | **NULL 허용으로 완화** (스펙 없는 아이템 존재) |
 
 - generate_dummy.py 는 더미 전용으로 그대로 둔다 (실행 시 DB 삭제·재생성 주의).
