@@ -14,7 +14,10 @@
 
 - 작업 디렉터리는 `prototype/`. 모든 명령은 여기서 실행한다.
 - 전체 테스트: `python -m pytest -q`. **착수 시점 기준선은 166 passed.**
-- **테스트 수가 줄어드는 것이 정상이다** (166 → 138 예상). 지워지는 코드를 검증하던 테스트다.
+- **테스트 수가 줄어드는 것이 정상이다** (166 → 139). 지워지는 코드를 검증하던 테스트다.
+  > **실행 중 보정 (Task 2):** 플랜은 `test_yield_tools.py` 를 26개로 셌으나 실제는 25개였다.
+  > 삭제는 21개가 아니라 20개이고, Task 2 이후 수치가 전부 1씩 올라간다
+  > (142 → 137 → 139). 아래 각 Task 의 Expected 는 보정된 값이다.
   각 Task 에 예상 증감을 적어 두었다. **실제와 다르면 멈추고 이유를 확인한 뒤 진행한다.**
 - **데모 경로는 한 글자도 바뀌지 않는다.** `process_log` 는 현재 분석 경로가 쓰지 않는다.
   `tests/test_e2e.py` 와 Task 3 의 DB 스냅샷 비교가 감시자다.
@@ -167,7 +170,7 @@ Expected: `False`
 - [ ] **Step 4: 검증**
 
 Run: `python -m pytest -q`
-Expected: **141 passed** (162 − 21)
+Expected: **142 passed** (162 − 20)
 
 - [ ] **Step 5: 커밋**
 
@@ -333,7 +336,7 @@ def test_control_shares_equipment_but_not_chamber():
 - [ ] **Step 7: 검증**
 
 Run: `python -m pytest -q`
-Expected: **136 passed** (141 − 7 + 2)
+Expected: **137 passed** (142 − 7 + 2)
 
 Run: `python main.py`
 Expected: 결론이 `Etch 공정 ETCH9_B 편중(분리 점수 1.0, 불량군 3장 전용)이 원인 —
@@ -450,7 +453,7 @@ Run: `python -m pytest tests/test_schema_contract.py -q`
 Expected: 5 passed (기존 3 + 신규 2)
 
 Run: `python -m pytest -q`
-Expected: **138 passed** (136 + 2)
+Expected: **139 passed** (137 + 2)
 
 - [ ] **Step 5: 커밋**
 
@@ -526,7 +529,7 @@ grep -rn "process_log\|spec_low\|spec_high\|param_value\|in_spec" \
 - [ ] **Step 5: 검증**
 
 Run: `python -m pytest -q`
-Expected: **138 passed** (문서만 고쳤으므로 변화 없음)
+Expected: **139 passed** (문서만 고쳤으므로 변화 없음)
 
 Run: Step 1 의 grep 재실행
 Expected: 남은 것이 **과거 plans/specs 와 사내 원천 스키마 설명뿐**임을 눈으로 확인
@@ -551,7 +554,7 @@ EOF
 
 ## 완료 확인 (전 Task 종료 후)
 
-- [ ] `python -m pytest -q` → **138 passed**
+- [ ] `python -m pytest -q` → **139 passed**
 - [ ] `python main.py` 출력이 `README.md` 데모 블록과 일치 (결론·형제 7장·대조군 78장)
 - [ ] 더미 DB 테이블이 정확히 `yield`·`step_history`·`sensor_log` 3개
 - [ ] `git log --oneline main..HEAD` → spec 1 + 플랜 1 + 구현 5 = 커밋 7개
