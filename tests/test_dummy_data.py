@@ -1,68 +1,19 @@
-"""process_log 더미 데이터 검증.
+"""더미 데이터 검증 — step_history·sensor_log·yield 가 데모 성립 조건을 만족하는지.
 
-데모 성립 조건: 패턴 그룹 wafer 는 자기 그룹의 공정 단계에서만
-'공유 이상 장비(-9) + 스펙 초과'를 갖고, 정상 wafer 는 전부 스펙 내.
+데모 성립 조건: 심어둔 챔버(ETCH9_B)는 불량 그룹 wafer 에만 있고, 대조군은 같은
+설비(ETCH9)를 쓰되 챔버가 다르다 → 설비 롤업은 눌리고 챔버에서만 갈린다.
 """
 
 import sqlite3
 
 import config
-from data.generate_dummy import GROUP_WAFERS, PATTERN_GROUPS
+from data.generate_dummy import CONTROL_WAFERS, GROUP_WAFERS
 
 
 def _conn():
     conn = sqlite3.connect(config.DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
-
-
-def test_process_log_table_exists_with_4_rows_per_wafer():
-    with _conn() as conn:
-        wafers = conn.execute("SELECT COUNT(*) FROM yield").fetchone()[0]
-        logs = conn.execute("SELECT COUNT(*) FROM process_log").fetchone()[0]
-        assert logs == wafers * 4
-
-
-def test_pattern_wafer_has_single_anomaly_at_its_step():
-    with _conn() as conn:
-        # 불량 그룹 wafer — 그룹 공정은 Etch
-        rows = conn.execute(
-            "SELECT * FROM process_log WHERE wafer_id = 'W2406_02'"
-        ).fetchall()
-        bad = [r for r in rows if not (r["spec_low"] <= r["param_value"] <= r["spec_high"])]
-        assert len(bad) == 1
-        assert bad[0]["process_step"] == "Etch"
-        assert bad[0]["equipment_id"] == "ETCH-9"
-
-
-def test_anomaly_equipment_is_always_the_shared_minus9():
-    """스펙 이탈은 항상 그룹 공유 이상 장비(-9)에서만 난다.
-
-    옛 버전은 defect_type='center_spot' 으로 그룹을 찾았다. 라벨이 사라졌으므로
-    '이상이 있는 wafer 는 전부 -9 를 거쳤다' 로 같은 성질을 라벨 없이 단언한다.
-    """
-    with _conn() as conn:
-        rows = conn.execute(
-            """
-            SELECT DISTINCT equipment_id FROM process_log
-            WHERE NOT (spec_low <= param_value AND param_value <= spec_high)
-            """
-        ).fetchall()
-    assert rows
-    assert all(r["equipment_id"].endswith("-9") for r in rows)
-
-
-def test_only_planted_pattern_wafers_have_anomalies():
-    """이상을 가진 wafer 수 = 심어둔 패턴 wafer 수. 그 밖은 전부 스펙 내다."""
-    expected = len(GROUP_WAFERS) + sum(g["n_past"] for g in PATTERN_GROUPS)
-    with _conn() as conn:
-        n = conn.execute(
-            """
-            SELECT COUNT(DISTINCT wafer_id) FROM process_log
-            WHERE NOT (spec_low <= param_value AND param_value <= spec_high)
-            """
-        ).fetchone()[0]
-    assert n == expected
 
 
 def test_recent_lot_has_group_and_control():
@@ -86,25 +37,6 @@ def test_recent_lot_has_group_and_control():
         assert avg < config.YIELD_THRESHOLD
 
 
-def test_hole_case_unlabeled_low_yield_wafer_passed_etch9_in_spec():
-    """구멍 (가): W2406_07 은 저수율인데 이상 장비 ETCH-9 를 '스펙 안으로' 통과했다.
-
-    라벨이 전원 없어진 지금은 "라벨이 없다" 가 이 wafer 만의 특징이 아니다. 남은
-    성질은 '수율은 낮은데 측정값은 스펙 내' 이고, 그것이 대조군에 섞였을 때
-    suspect_equipment 를 희석한다.
-    """
-    with _conn() as conn:
-        r = conn.execute(
-            "SELECT yield FROM yield WHERE wafer_id = 'W2406_07'"
-        ).fetchone()
-        assert r["yield"] < config.YIELD_THRESHOLD
-        etch = conn.execute(
-            "SELECT * FROM process_log WHERE wafer_id = 'W2406_07' AND process_step = 'Etch'"
-        ).fetchone()
-        assert etch["equipment_id"] == "ETCH-9"
-        assert etch["spec_low"] <= etch["param_value"] <= etch["spec_high"]
-
-
 def test_hole_case_ungrouped_low_yield_lot():
     """구멍 (나): LOT2407 은 평균이 임계 미만인 2번째 저수율 lot 인데,
     라벨이 없어 defect 패턴으로는 그룹을 못 묶는다 (출구 B 무대)."""
@@ -115,28 +47,6 @@ def test_hole_case_ungrouped_low_yield_lot():
         assert len(rows) == 3
         avg = sum(r["yield"] for r in rows) / len(rows)
         assert avg < config.YIELD_THRESHOLD
-
-
-def test_process_log_has_eq_chamber():
-    with _conn() as conn:
-        cols = {r["name"] for r in conn.execute("PRAGMA table_info(process_log)")}
-        assert "eq_chamber" in cols
-        # 진짜 원인: 불량군 3장 전부 Etch 에서 ETCH9_B
-        rows = conn.execute(
-            "SELECT eq_chamber FROM process_log "
-            "WHERE process_step='Etch' AND wafer_id IN ('W2406_02','W2406_04','W2406_06')"
-        ).fetchall()
-        assert {r["eq_chamber"] for r in rows} == {"ETCH9_B"}
-
-
-def test_control_shares_equipment_not_chamber():
-    with _conn() as conn:
-        rows = conn.execute(
-            "SELECT equipment_id, eq_chamber FROM process_log "
-            "WHERE process_step='Etch' AND wafer_id IN ('W2406_01','W2406_03','W2406_05')"
-        ).fetchall()
-        assert all(r["equipment_id"] == "ETCH-9" for r in rows)      # 같은 설비
-        assert all(r["eq_chamber"] != "ETCH9_B" for r in rows)       # 다른 챔버
 
 
 def test_yield_has_root_lot_and_lot_type():
@@ -181,6 +91,41 @@ def test_split_lot_signal_is_target_only_chamber():
     assert top["score"] == 1.0
     # lot_type 은 배제 대상이 아니라 meta 로 실린다
     assert res["meta"]["control_lot_types"] == {"eval": 2, "prod": 2}
+
+
+def test_planted_chamber_is_exclusive_to_the_group_wafers():
+    """심은 챔버(ETCH9_B)를 거친 wafer 는 더미 전체에서 GROUP_WAFERS 뿐이다.
+
+    옛 버전은 process_log 의 스펙 이탈로 '이상은 심은 곳에만' 을 단언했다. 파라미터가
+    사라졌으므로 step_history 로 표현 가능한 형태 — 챔버 배타성 — 으로 좁혔다.
+    과거 패턴 wafer 에는 애초에 step_history 신호가 없다 (데모가 타깃 7장 중
+    '불량군 3장 전용' 이라고 말하는 이유). 챔버 B 를 쓰는 다른 케이스는 설비가 다르다:
+    적대적 lot 은 ETCH1/2/3, 분할 lot 은 ETCH5.
+    """
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT wafer_id FROM step_history "
+            "WHERE eqp_id = 'ETCH9' AND ch_id = 'B'"
+        ).fetchall()
+    assert {r["wafer_id"] for r in rows} == set(GROUP_WAFERS)
+
+
+def test_control_shares_equipment_but_not_chamber():
+    """대조군은 Etch 에서 같은 설비(ETCH9)를 쓰되 챔버가 다르다.
+
+    설비 레벨 롤업이 눌리고 챔버 레벨에서만 갈리는 것이 이 시나리오의 핵심이다.
+    (옛 버전은 process_log 의 equipment_id/eq_chamber 로 같은 것을 봤다.)
+    """
+    ph = ",".join("?" * len(CONTROL_WAFERS))
+    with _conn() as conn:
+        rows = conn.execute(
+            f"SELECT eqp_id, ch_id FROM step_history "
+            f"WHERE process_step = 'Etch' AND wafer_id IN ({ph})",
+            CONTROL_WAFERS,
+        ).fetchall()
+    assert len(rows) == len(CONTROL_WAFERS)
+    assert all(r["eqp_id"] == "ETCH9" for r in rows)
+    assert all(r["ch_id"] != "B" for r in rows)
 
 
 def test_step_history_planted_eqp_ch_and_ppid_separation():

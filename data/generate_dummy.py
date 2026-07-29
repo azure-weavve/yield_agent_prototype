@@ -47,8 +47,7 @@ CONTROL_WAFERS = ["W2406_01", "W2406_03", "W2406_05"]  # 대조 그룹 (정상)
 # 구멍 케이스: 더미가 너무 착해서 안 드러나던 설계 구멍을 데이터로 드러낸다
 # (docs/2026-07-18-status-node-review-and-redesign.md 2절·4절).
 # (가) UNLABELED_LOW_WAFER: 저수율인데 심어 둔 패턴이 없다 — 대조군 선정에 수율
-#     조건이 없으면 대조군에 섞인다. ETCH-9 를 '스펙 안으로' 통과시켜, 오염 시
-#     suspect_equipment(대조군 0명 조건)가 조용히 희석되는 것까지 재현한다.
+#     조건이 없으면 대조군에 섞인다. 그 오염이 대조 결과를 희석하는 것을 재현한다.
 # (나) UNGROUPED_LOT: 저수율 lot 2개째 — 임베딩이 흩어져 있어 유사도로 그룹을
 #     못 묶는 출구 B 의 무대. 평균 89.83 은 임계(90) 미만이되
 #     LOT2406 평균의 최대치(89.4)보다 높아 lots[0] 자리는 LOT2406 이 유지한다.
@@ -70,22 +69,6 @@ RECENT_LOT = "LOT2406"  # "이번 배치" — 최근 패턴 wafer 들이 모이�
 RECENT_DATE = "2024-06-15"
 PAST_DATES = ["2024-01-15", "2024-02-12", "2024-03-18", "2024-04-22", "2024-05-09"]
 NORMAL_LOTS = ["LOT2401", "LOT2402", "LOT2403", "LOT2404", "LOT2405"]
-
-# 공정 로그: wafer 마다 4개 공정 단계 각 1행.
-# 패턴 그룹 wafer 는 자기 그룹의 process_step 에서 "공유 이상 장비(-9)" +
-# 스펙 상한 초과 값을 갖는다 → 루프가 원인을 공정/장비까지 좁히는 근거.
-PROCESS_FLOW = [
-    # (step, param, spec_low, spec_high)
-    ("Photo",     "focus_offset", 0.0,   10.0),
-    ("Etch",      "rf_power",     450.0, 550.0),
-    ("Diffusion", "furnace_temp", 950.0, 1000.0),
-    ("CMP",       "pad_pressure", 3.0,   5.0),
-]
-
-DECOY_STEP = "Photo"
-DECOY_CHAMBER = "PHOTO1_A"       # 불량군·대조군 공유 (미끼)
-REAL_CHAMBER = "ETCH9_B"         # 진짜 원인 (불량군 전용)
-CONTROL_ETCH_CHAMBER = "ETCH9_C" # 대조군: 같은 ETCH-9, 다른 챔버
 
 # ---------------------------------------------------------------- 적대적 케이스
 # 위 시나리오는 "정답을 심어둔 데이터" 라, 전부 green 이어도 그게 실력인지 데이터가
@@ -278,7 +261,7 @@ def generate():
                 "lot_id": lot,
                 "yield": ADV_TARGET_YIELD if is_target else ADV_CONTROL_YIELD,
                 "_truth_defect": "none",      # 라벨 없음 — 실데이터와 같은 조건
-                "_truth_step": "Normal",   # process_log 를 전부 스펙 내로 유지
+                "_truth_step": "Normal",   # 심어둔 이상 없음
                 "date": RECENT_DATE,
             })
             vectors.append(_make_member(adv_center, rng)
@@ -295,7 +278,7 @@ def generate():
                 "lot_id": lot,
                 "yield": ADV_TARGET_YIELD if wid in SPLIT_TARGETS else ADV_CONTROL_YIELD,
                 "_truth_defect": "none",       # 라벨 없음 — 실데이터와 같은 조건
-                "_truth_step": "Normal",    # process_log 를 전부 스펙 내로 유지
+                "_truth_step": "Normal",    # 심어둔 이상 없음
                 "date": RECENT_DATE,
                 "root_lot_id": SPLIT_ROOT_LOT,   # lot_id 와 다르다 (_augment_yield 가 보존)
                 "lot_type": lot_type,
@@ -303,54 +286,13 @@ def generate():
             vectors.append(_unit(rng.standard_normal(DIM)))
             wafer_ids.append(wid)
 
-    logs = _make_process_logs(rows, rng)
     _augment_yield(rows)
     steps = (_make_step_history(rows) + _make_adversarial_steps()
              + _make_split_lot_steps())
     sensors = _make_sensor_log(rows)
-    _write_sqlite(rows, logs, steps, sensors)
+    _write_sqlite(rows, steps, sensors)
     _write_index(vectors, wafer_ids)
     _report(rows, vectors, wafer_ids)
-
-
-def _make_process_logs(rows, rng):
-    """wafer 별 공정 로그. 패턴 wafer 의 원인 공정(r['_truth_step'])만 이상 처리.
-    정상 wafer 는 _truth_step='Normal' 이라 어떤 step 과도 일치하지 않는다."""
-    logs = []
-    for r in rows:
-        for step, param, lo, hi in PROCESS_FLOW:
-            if r["_truth_step"] == step:
-                equip = f"{step.upper()}-9"                # 그룹 공유 이상 장비
-                value = round(hi + (hi - lo) * 0.2, 2)     # 스펙 상한 20% 초과
-                chamber = REAL_CHAMBER if step == "Etch" else f"{equip}_A"
-            elif r["wafer_id"] == UNLABELED_LOW_WAFER and step == "Etch":
-                # 구멍 (가): 이상 장비를 거쳤지만 측정값은 스펙 내 — 라벨 없는 피해 wafer
-                equip = "ETCH-9"
-                value = round(hi - (hi - lo) * 0.02, 2)    # 상한 근처, 스펙 내
-                chamber = "ETCH9_D"
-            elif r["wafer_id"] in CONTROL_WAFERS and step == "Etch":
-                # 대조군: 같은 설비(ETCH-9) 다른 챔버 → equipment_commonality 억제
-                equip = "ETCH-9"
-                value = round(float(rng.uniform(lo, hi)), 2)
-                chamber = CONTROL_ETCH_CHAMBER
-            else:
-                equip = f"{step.upper()}-{int(rng.integers(1, 4))}"
-                value = round(float(rng.uniform(lo, hi)), 2)
-                chamber = f"{equip}_A"
-            # 미끼: RECENT_LOT 불량군+대조군이 Photo 에서 공유 챔버
-            if step == DECOY_STEP and r["wafer_id"] in (GROUP_WAFERS + CONTROL_WAFERS):
-                chamber = DECOY_CHAMBER
-            logs.append({
-                "wafer_id": r["wafer_id"],
-                "process_step": step,
-                "equipment_id": equip,
-                "eq_chamber": chamber,
-                "param_name": param,
-                "param_value": value,
-                "spec_low": lo,
-                "spec_high": hi,
-            })
-    return logs
 
 
 def _augment_yield(rows):
@@ -365,7 +307,7 @@ def _augment_yield(rows):
     return rows
 
 
-# step_history 용 설비/챔버/PPID (process_log 와 느슨하게 공존).
+# step_history 용 설비/챔버/PPID.
 SH_REAL_EQP, SH_REAL_CH, SH_REAL_PPID = "ETCH9", "B", "PPID_X"    # 불량군 전용
 SH_CTRL_EQP, SH_CTRL_PPID = "ETCH9", "PPID_Y"                     # 대조군: 같은 설비 다른 챔버/PPID
 SH_STEPS = ["Photo", "Etch", "Diffusion", "CMP"]                  # wafer 당 경로
@@ -505,7 +447,7 @@ def _make_sensor_log(rows):
     return out
 
 
-def _write_sqlite(rows, logs, steps, sensors):
+def _write_sqlite(rows, steps, sensors):
     # 정답지는 DB 에 안 들어간다. rows 의 `_truth_*` 는 **생성기 내부 정답지**로,
     # 어디에 이상을 심을지 정하는 데만 쓰고 yield 에는 아래 INSERT 의 리터럴 NULL 이
     # 들어간다 (A-2·A-3: 실데이터에 이 두 값은 없다). 키 이름을 DB 컬럼과 다르게 둔 것도
@@ -528,22 +470,6 @@ def _write_sqlite(rows, logs, steps, sensors):
     conn.executemany(
         "INSERT INTO yield VALUES (:wafer_id, :lot_id, :yield, NULL, NULL, "
         ":date, :root_lot_id, :lot_type)", rows)
-    conn.execute("""
-        CREATE TABLE process_log (
-            wafer_id     TEXT NOT NULL,
-            process_step TEXT NOT NULL,
-            equipment_id TEXT NOT NULL,
-            eq_chamber   TEXT,
-            param_name   TEXT NOT NULL,
-            param_value  REAL NOT NULL,
-            spec_low     REAL NOT NULL,
-            spec_high    REAL NOT NULL
-        )
-    """)
-    conn.executemany(
-        """INSERT INTO process_log VALUES
-           (:wafer_id, :process_step, :equipment_id, :eq_chamber, :param_name,
-            :param_value, :spec_low, :spec_high)""", logs)
     conn.execute("""
         CREATE TABLE step_history (
             wafer_id     TEXT NOT NULL,
