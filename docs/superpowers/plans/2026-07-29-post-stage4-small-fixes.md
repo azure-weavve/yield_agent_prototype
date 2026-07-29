@@ -10,6 +10,10 @@
 
 설계 문서: `docs/superpowers/specs/2026-07-29-post-stage4-small-fixes-design.md`
 
+> **실행 후 정정 (2026-07-29 리뷰):** 아래 Task 2 의 상태 이름 `eds_index_missing` 은
+> 최종적으로 **`eds_lookup_failed`** 가 되었다. 넓은 `except` 가 인덱스 미등재 말고
+> 서비스 장애·인덱스 손상까지 잡는데 이름이 사유를 단정하기 때문이다 — spec 의 ⚠️ 절 참조.
+
 ## Global Constraints
 
 - 작업 디렉터리는 `prototype/`. 모든 명령은 여기서 실행한다.

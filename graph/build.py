@@ -19,7 +19,7 @@ from graph.state import AgentState
 
 
 def _after_status(state: dict) -> str:
-    # 조기 출구(no_anomaly/unknown_target/isolated/control_insufficient)는 finalize_status 가
+    # 조기 출구(no_anomaly/unknown_target/eds_lookup_failed/isolated/control_insufficient)는 finalize_status 가
     # 이미 찍혀 있다 — 분석 루프를 건너뛰고 리포팅으로
     return "report" if state.get("finalize_status") else "analyze"
 

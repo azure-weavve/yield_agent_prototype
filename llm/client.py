@@ -137,9 +137,10 @@ class ScriptedMockLLMClient(LLMClient):
             conclusion = "이상 없음 — 수율 임계 미만 lot 이 없다."
         elif finalize_status == "unknown_target":
             conclusion = "분석 미수행 — 입력 wafer 를 데이터에서 찾을 수 없다. 입력을 확인하라."
-        elif finalize_status == "eds_index_missing":
-            conclusion = ("분석 미수행 — 입력 wafer 가 EDS 인덱스에 없다 "
-                          "(yield DB 에는 존재). 인덱스와 yield DB 동기화를 확인하라.")
+        elif finalize_status == "eds_lookup_failed":
+            conclusion = ("분석 미수행 — EDS 유사맵 조회 실패 (wafer 는 yield DB 에 존재). "
+                          "인덱스↔yield DB 동기화 또는 EDS 서비스 상태를 확인하라 "
+                          "— 구체 사유는 [현황] 참조.")
         elif finalize_status == "isolated":
             conclusion = ("분석 미수행 — 고립 패턴: 유사 형제 wafer 가 없어 그룹 대조가 "
                           "불가능하다. 추후 분석 필요.")
@@ -207,8 +208,8 @@ class OpenAILLMClient(LLMClient):
             "판정이 inconclusive 면 결론을 확정하지 말고 '미확정(루프 한계 도달)'과 "
             "유력 후보·추가 조사 필요 항목으로 서술하라. "
             "판정이 no_anomaly 면 '이상 없음'으로 서술하라. "
-            "판정이 isolated/control_insufficient/unknown_target 이면 '분석 미수행'과 그 사유를 "
-            "명시하고 확정 결론을 쓰지 마라."
+            "판정이 isolated/control_insufficient/unknown_target/eds_lookup_failed 이면 "
+            "'분석 미수행'과 그 사유를 명시하고 확정 결론을 쓰지 마라."
         )
         user = (
             f"분석 대상 입력 ({target_source}): {', '.join(target_wafers)}\n"

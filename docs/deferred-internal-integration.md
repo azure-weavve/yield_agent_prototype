@@ -29,16 +29,19 @@ git log·코드로 먼저 확인한다 (1·2·3번은 이미 구현 완료 — �
 - 문제: http 모드를 켜는 것만으로 인증서 검증 없이 사내 데이터 전송
 - 처방: 사내 루트 인증서(.pem) 확보 → `EDS_HTTP_VERIFY = "인증서경로"` 를 기본값으로, 우회는 개발 환경에서만 명시적으로
 
-## 5. finalize 승인 후 같은 메시지의 후속 tool 실행 중단 (codex 6번)
+## 5. ~~finalize 승인 후 같은 메시지의 후속 tool 실행 중단~~ (2026-07-29 구현 완료, 커밋 d5a33f5)
 
-- 위치: `graph/nodes.py` `tools_node` 의 for 루프
-- 문제: 한 AIMessage 에 finalize + 다른 tool 이 오면 승인 후에도 나머지가 실행되고, finalize 2개면 뒤가 앞을 덮어씀
-- 처방: 승인 즉시 루프 중단(잔여 call 은 "종료로 생략" ToolMessage 처리) 또는 finalize 는 단독 호출만 허용하도록 사전 검증
+- 구현: `tools_node` 가 `stopped` 플래그로 승인/한계 판정 즉시 루프를 중단하고, 잔여 call 에는
+  "분석 종료로 생략" ToolMessage 를 채워 응답한다(LangChain 은 모든 tool_call_id 에 응답을 요구).
+  **반려는 종료가 아니므로 뒤따르는 tool 은 그대로 실행한다** — 그 절반도 테스트로 고정했다
+  (`test_rejected_finalize_does_not_stop_following_calls`).
 
 ## 6. HTTP EDS 응답 스키마 실측 검증
 
 - 위치: `tools/eds_search.py` `HttpEDSSearcher` — 필드명(`wafer_id`/`score`)이 추정값
 - 처방: 사내 `/search` 실제 응답으로 매핑 확정 + 오류 응답(4xx/5xx, 타임아웃) 처리 방침 결정
+- 여기서 **9번의 `eds_lookup_failed` 라벨 세분화도 같이 결정한다** — 지금은 인덱스 미등재와
+  서비스 장애가 한 상태로 뭉쳐 있고, 실측 없이는 둘을 가를 수 없다
 
 ## 7. 실패 경로 테스트 확충 (codex 7번)
 
@@ -56,13 +59,16 @@ git log·코드로 먼저 확인한다 (1·2·3번은 이미 구현 완료 — �
 - `tools/eds_search.py` k+1 조회 버퍼는 필터로 제외되는 후보가 많으면 유효 후보가 더 있어도 k 미만을 반환할 수 있음 (Local 도 동일, 계약상 허용) — 6번 실측 검증 때 함께 확인
 - 빈 대조 그룹(`control_group=[]`) lot 에서는 `ScriptedMockLLMClient._groups` 정규식이 매칭 실패해 ValueError — 현재 시드 데이터에서는 도달 불가 경로라 미룸. 사내 실데이터 연동 시 seed 라인 파싱/그룹 부재 처리 필요. → 2026-07-19 status 입력 재설계에서 해소 (GROUPS_JSON 라인으로 대체)
 
-## 9. yield DB 에는 있으나 EDS 인덱스에 없는 wafer 입력 시 크래시
+## 9. ~~yield DB 에는 있으나 EDS 인덱스에 없는 wafer 입력 시 크래시~~ (2026-07-29 구현 완료, 커밋 21955b3)
 
-- 위치: `tools/grouping.py` `normalize_target` → `_searcher_lazy().search(wafers[0], ...)`
-- 문제: 한 장 입력 wafer 가 yield DB 에는 실재해 unknown 판정을 통과하지만 EDS 인덱스에는 없으면,
-  `LocalEDSSearcher` 는 `KeyError`(eds_search.py:45), `HttpEDSSearcher` 는 requests 예외로 그래프 전체가 예외 종료
-  (역방향은 이미 해소 — EDS 엔 있으나 DB 엔 없는 형제는 `unmatched_siblings` 로 분리)
-- 처방: 검색을 감싸 인덱스 미존재를 잡고 `unknown_target` 계열 조기 출구로 유도 (1번 tool 오류 복구와 같은 방침)
+- 구현: `normalize_target` 이 검색을 감싸 실패를 `eds_error` **사실로만 보고**하고(흐름 판단은
+  `status_node`), 전용 조기 출구 `eds_lookup_failed` 로 끝낸다.
+- ⚠️ **원래 처방(`unknown_target` 계열 재사용)은 의도적으로 뒤집었다** — 'wafer 가 없다'와
+  'EDS 조회가 실패했다'는 사람이 할 조치가 다르다. 근거는 spec `2026-07-29-post-stage4-small-fixes-design.md` §2.
+  되돌리지 말 것.
+- 남은 것: 예외를 넓게 잡으므로 **인덱스 미등재·서비스 장애·인덱스 손상이 한 상태로 뭉쳐 있다.**
+  라벨 세분화는 6번(HTTP 오류 응답 실측)과 함께 결정한다. 그때까지 결론 문구는 사유를 단정하지
+  않고 구체 오류는 `[현황]` 에 싣는다.
 
 ## 10. get_searcher 캐시를 grouping/agent_tools 간 통합
 

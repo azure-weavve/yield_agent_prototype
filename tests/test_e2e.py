@@ -60,11 +60,11 @@ def test_sensor_failure_is_not_reported_as_confirmed(monkeypatch):
     assert "ETCH9_B" in state["final_hypothesis"]    # 1단 후보는 후보로 남긴다
 
 
-def test_eds_index_miss_ends_with_report_not_crash(monkeypatch):
-    """EDS 인덱스에 없는 wafer 를 넣어도 그래프가 예외로 죽지 않는다.
+def test_eds_lookup_failure_ends_with_report_not_crash(monkeypatch):
+    """EDS 조회가 실패해도 그래프가 예외로 죽지 않는다.
 
-    '입력 wafer 가 없다(unknown_target)' 와 사유가 다르다 — 이쪽은 인덱스↔DB
-    동기화 문제라 사람이 할 조치가 다르다.
+    '입력 wafer 가 없다(unknown_target)' 와 사유가 다르다 — 이쪽은 EDS 쪽 문제라
+    사람이 할 조치가 다르다. 다만 사유를 '인덱스에 없다' 로 단정하지는 않는다.
     """
     from tools import grouping
 
@@ -76,10 +76,11 @@ def test_eds_index_miss_ends_with_report_not_crash(monkeypatch):
     state = build_graph().invoke(
         {"target_wafers": ["W2406_02"], "target_source": "manual"}
     )
-    assert state["finalize_status"] == "eds_index_missing"
+    assert state["finalize_status"] == "eds_lookup_failed"
     assert state["report"]
-    assert "EDS 인덱스" in state["report"]
-    assert state["findings"]                  # 감사 기록이 끊기지 않는다
+    assert "분석 미수행 — EDS 유사맵 조회 실패" in state["report"]   # 결론 문장
+    assert "KeyError" in state["report"]       # 구체 사유는 현황에 그대로 실린다
+    assert state["findings"]                   # 감사 기록이 끊기지 않는다
 
 
 def test_no_targets_short_circuits_to_report():

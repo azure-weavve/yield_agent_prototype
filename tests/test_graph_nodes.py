@@ -270,6 +270,27 @@ def test_tools_node_skips_calls_after_finalize_accepted():
     assert "thought" in skipped[0]                     # 감사 기록 형식은 유지
 
 
+def test_rejected_finalize_does_not_stop_following_calls():
+    """반려는 종료가 아니다 — 뒤따르는 tool 은 그대로 실행한다.
+
+    이 절반이 없으면 `stopped = bool(update.get("finalize_accepted"))` 를 무조건
+    True 로 단순화해도 스위트가 통과한다. 그러면 게이트가 "근거를 좁힐 tool 을 더
+    호출하라" 고 해 놓고 그 호출을 조용히 삼켜 루프가 헛돈다.
+    """
+    ai = AIMessage(content="근거를 더 모아 본다", tool_calls=[
+        {"name": "finalize",
+         "args": {"hypothesis": "아직 근거 없음", "confidence": 0.3}, "id": "cf"},
+        {"name": "get_wafer", "args": {"wafer_id": "W2406_02"}, "id": "c1"},
+    ])
+    out = nodes.tools_node({"messages": [ai], "loop_count": 2, "findings": []})
+
+    assert "finalize_accepted" not in out          # 반려
+    executed = [f for f in out["findings"] if f["tool"] == "get_wafer"]
+    assert len(executed) == 1
+    assert isinstance(executed[0]["result"], dict)   # 생략이 아니라 실제 조회 결과
+    assert executed[0]["result"]["wafer_id"] == "W2406_02"
+
+
 def test_second_finalize_does_not_overwrite_accepted_hypothesis():
     """한 메시지에 finalize 가 2개면 뒤가 앞의 승인 가설을 덮어썼다."""
     ai = AIMessage(content="종료 제안", tool_calls=[

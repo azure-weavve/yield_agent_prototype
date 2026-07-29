@@ -51,7 +51,7 @@ yield DB 에는 실재해 `unknown_wafers` 판정을 통과했지만 EDS 인덱�
 이쪽만 뚫려 있다.
 
 **처방:** 검색을 감싸 예외를 잡고 조기 출구로 유도한다. 상태 이름은
-**`unknown_target` 재사용이 아니라 전용 `eds_index_missing`** 을 쓴다.
+**`unknown_target` 재사용이 아니라 전용 `eds_lookup_failed`** 를 쓴다.
 
 - "wafer 가 데이터에 없다"와 "wafer 는 있는데 EDS 인덱스에 안 실렸다"는 사람이 할
   조치가 다르다. 후자는 입력 실수가 아니라 **인덱스와 yield DB 의 동기화 문제**다.
@@ -61,8 +61,14 @@ yield DB 에는 실재해 `unknown_wafers` 판정을 통과했지만 EDS 인덱�
 `normalize_target` 은 실패를 dict 로 보고하고(`eds_error` 키), 판단은 `status_node` 가
 한다 — 정규화 계층은 결정론적 계산만 하고 그래프 흐름을 모른다는 기존 분담을 지킨다.
 
-`generate_report` 에 분기 한 줄을 추가한다: "분석 미수행 — EDS 인덱스에 없는 wafer.
-인덱스와 yield DB 동기화를 확인하라."
+`generate_report` 에 분기 한 줄을 추가한다: "분석 미수행 — EDS 유사맵 조회 실패."
+
+**⚠️ 2026-07-29 리뷰 반영:** 처음에는 상태 이름을 `eds_index_missing` 으로, 결론 문구를
+"인덱스에 없다" 로 단정했다. 그러나 `except Exception` 은 인덱스 미등재뿐 아니라 서비스 장애·
+인덱스 손상까지 함께 잡는다 — 네트워크가 끊겼을 때 "이 wafer 는 인덱스에 없습니다" 라고
+말하는 것은 사실이 아니고 조치 방향도 틀리게 유도한다. 이름을 `eds_lookup_failed` 로 바꾸고
+결론은 관찰 서술로 두었다. 구체 오류(`type(e).__name__: e`)는 `[현황]` 에 그대로 싣는다.
+라벨 세분화는 미룸 6번(HTTP 오류 응답 실측)과 함께 결정한다.
 
 **테스트:** `_searcher_lazy` 를 인덱스에 없는 wafer 에서 `KeyError` 를 던지는 스텁으로
 바꿔치기하고 그래프를 돌려, 예외 없이 `finalize_status == "eds_index_missing"` 리포트로

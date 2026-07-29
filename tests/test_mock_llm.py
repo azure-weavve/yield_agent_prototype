@@ -90,7 +90,7 @@ def test_generate_report_handles_no_hypothesis():
 
 
 def test_generate_report_distinguishes_early_exits():
-    # 조기 출구 4종이 서로 뭉개지지 않는다 (문제 3 의 일반화)
+    # 조기 출구 5종이 서로 뭉개지지 않는다 (문제 3 의 일반화)
     llm = ScriptedMockLLMClient()
     kw = dict(target_wafers=["W2407_01"], target_source="manual",
               status_summary="s", findings=[], hypothesis=None, confidence=None)
@@ -99,11 +99,17 @@ def test_generate_report_distinguishes_early_exits():
                                 finalize_status="control_insufficient", **kw)
     unknown = llm.generate_report(target_group=[], finalize_status="unknown_target", **kw)
     no_anomaly = llm.generate_report(target_group=[], finalize_status="no_anomaly", **kw)
+    eds_failed = llm.generate_report(target_group=["W2407_01"],
+                                     finalize_status="eds_lookup_failed", **kw)
     assert "고립" in isolated and "추후 분석" in isolated       # 6절 4번 문구
     assert "대조군 부족" in short                               # 7절 3단계 문구
     assert "찾을 수 없" in unknown
     assert "이상 없음" in no_anomaly
     assert "이상 없음" not in isolated
+    assert "EDS 유사맵 조회 실패" in eds_failed
+    # '입력을 찾을 수 없다'(unknown_target)와 뭉개지지 않는다 — 조치가 다르다
+    assert "찾을 수 없" not in eds_failed
+    assert "고립" not in eds_failed
 
 
 def test_groups_parsed_from_machine_line_not_prose():
@@ -128,7 +134,7 @@ def test_scripted_survives_tool_error_string():
     msgs += [ai, _tm("finalize", "반려")]
     ai = llm.analyze_step(msgs)                      # 2) 1단 호출
     assert ai.tool_calls[0]["name"] == "hyp_eqp_ch_commonality"
-    # tools 노드는 오류 문자열도 json.dumps 로 감싸 담는다 (graph/nodes.py:150) —
+    # tools 노드는 오류 문자열도 json.dumps 로 감싸 담는다 (nodes.tools_node) —
     # 그래서 json.loads 결과가 dict 가 아니라 str 이 된다. 그 조건을 그대로 재현한다.
     msgs += [ai, _tm("hyp_eqp_ch_commonality",
                      json.dumps("오류: hyp_eqp_ch_commonality 실행 실패 "
@@ -137,7 +143,7 @@ def test_scripted_survives_tool_error_string():
 
     ai = llm.analyze_step(msgs)                      # 3) 죽지 않고 물러선다
     assert ai.tool_calls[0]["name"] == "finalize"
-    assert ai.tool_calls[0]["args"]["confidence"] < 0.8
+    assert ai.tool_calls[0]["args"]["confidence"] == 0.2   # '후보 없음' 후퇴 분기
     assert ai.content
 
 
