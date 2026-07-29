@@ -82,7 +82,7 @@ ETCH 챔버를 받습니다. 데모가 타깃 7장 중 "불량군 **3장** 전�
 
 | 지우는 테스트 | 후속 |
 |---|---|
-| `test_process_log_table_exists_with_4_rows_per_wafer` | 없음 (테이블이 사라진다) |
+| `test_process_log_table_exists_with_4_rows_per_wafer` | `test_every_wafer_has_the_full_step_path_except_the_planted_gap` (아래 신규 3) |
 | `test_pattern_wafer_has_single_anomaly_at_its_step` | 아래 신규 1 |
 | `test_anomaly_equipment_is_always_the_shared_minus9` | 아래 신규 1 |
 | `test_only_planted_pattern_wafers_have_anomalies` | 아래 신규 1 (대상이 3장으로 좁아진다) |
@@ -99,6 +99,16 @@ ETCH 챔버를 받습니다. 데모가 타깃 7장 중 "불량군 **3장** 전�
 다르다** — 적대적 lot 은 `ETCH1`·`ETCH2`·`ETCH3`, 분할 lot 은 `ETCH5`(`_make_split_lot_steps`).
 대조군은 같은 `ETCH9` 지만 챔버가 `"1"`~`"8"` 이고, 나머지 wafer 는 `else` 분기로 챔버 `"A"` 를
 받는다. 따라서 `(eqp_id='ETCH9' AND ch_id='B')` 인 wafer 집합은 정확히 `GROUP_WAFERS` 다.
+
+**신규 3 — 모든 wafer 가 전 공정 경로를 갖는다 (결측은 심어둔 1장뿐).**
+
+> **⚠️ 2026-07-29 리뷰 반영.** 처음에는 `test_process_log_table_exists_with_4_rows_per_wafer`
+> 의 후속을 "없음(테이블이 사라진다)" 으로 판정했는데, 이는 범주 오류였다. 그 테스트가
+> 지키던 성질은 *테이블의 존재*가 아니라 **경로 완전성**이고, 그것은 `step_history` 로
+> 그대로 표현된다. 이력이 조용히 빠지면 commonality 의 분모가 줄어 점수가 부풀지만 다른
+> 테스트는 초록이다 — 실데이터 쪽은 `load_internal.validate()` 검사 #4 가 같은 것을 막는데
+> **더미에는 가드가 없어진다.** `test_adversarial_dummy.py` 는 `ADV_MISSING_WAFER` 가
+> `missing_history` 에 든다는 것만 보고 "그 밖에 결측이 없다" 는 반대 방향을 보지 않는다.
 
 **신규 2 — 대조군은 같은 설비, 다른 챔버.**
 `CONTROL_WAFERS` 는 Etch 에서 `eqp_id == "ETCH9"` 이되 `ch_id != "B"` 다. 설비 레벨 롤업이

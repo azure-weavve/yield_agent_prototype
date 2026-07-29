@@ -93,6 +93,25 @@ def test_split_lot_signal_is_target_only_chamber():
     assert res["meta"]["control_lot_types"] == {"eval": 2, "prod": 2}
 
 
+def test_every_wafer_has_the_full_step_path_except_the_planted_gap():
+    """wafer 마다 공정 경로가 빠짐없이 있다 — 결측은 의도적으로 심은 1장뿐.
+
+    옛 `test_process_log_table_exists_with_4_rows_per_wafer` 가 지키던 성질이다
+    (테이블이 아니라 '경로 완전성'이 본체였다). step_history 로 그대로 표현된다.
+    이력이 조용히 빠지면 commonality 의 분모가 줄어 점수가 부풀지만 다른 테스트는
+    초록이다 — 실데이터 쪽은 load_internal.validate() 검사 #4 가 같은 것을 막는다.
+    """
+    from data.generate_dummy import ADV_MISSING_WAFER, SH_STEPS
+
+    with _conn() as conn:
+        counts = {r["wafer_id"]: r["n"] for r in conn.execute(
+            "SELECT wafer_id, COUNT(*) AS n FROM step_history GROUP BY wafer_id")}
+        all_wafers = {r["wafer_id"] for r in conn.execute("SELECT wafer_id FROM yield")}
+
+    assert all_wafers - set(counts) == {ADV_MISSING_WAFER}   # 결측은 심어둔 1장뿐
+    assert set(counts.values()) == {len(SH_STEPS)}           # 나머지는 전 스텝 보유
+
+
 def test_planted_chamber_is_exclusive_to_the_group_wafers():
     """심은 챔버(ETCH9_B)를 거친 wafer 는 더미 전체에서 GROUP_WAFERS 뿐이다.
 

@@ -25,7 +25,8 @@ Stage 5.5  ⬜ 구 Stage 1 — 실데이터 적재 · 검증 · 임계 튜닝
 전체 테스트 133 passed. **다음은 Stage 2(대조군) — 별도 spec/plan 부터.**
 
 Stage A 가 남긴 것: `test_schema_contract.py`(스키마 계약 동결)·`test_load_internal.py`
-(적재 왕복)·`test_adversarial_dummy.py`(적대적 케이스)·`LEGACY_TOOLS_ENABLED`·`docs/stages.md`.
+(적재 왕복)·`test_adversarial_dummy.py`(적대적 케이스)·`LEGACY_TOOLS_ENABLED`(Stage 5 에서
+삭제)·`docs/stages.md`.
 
 ---
 
@@ -151,6 +152,11 @@ commonality 2×2 의 `control_pass` 가, 파라미터 비교는 2단 센서가 �
 `compare_process_logs`·`compare_parameter_distribution` 은 tool 로 등록된 적도 없는 죽은
 코드였습니다. **결정적 근거: `load_internal.py` 는 `yield`·`step_history` 만 만듭니다 —
 `process_log` 테이블 자체가 실데이터에 없습니다.**
+
+한 곳은 등가가 아니라 **범위 축소**입니다: 옛 `find_counterexamples` 는 전수 데이터에서
+해당 장비를 거친 wafer 를 모두 훑었지만, `control_pass` 는 **선택된 같은 root_lot 대조군
+안**만 셉니다. 다른 root_lot 의 반례는 안 보입니다. 이는 Stage 2 의 층화 결정에서 나온
+의도된 축소이고, 라벨이 전 행 NULL 이라 옛 도구는 어차피 무력했으므로 실질 손실은 없습니다.
 
 **불변식 재작성이 이 Stage 의 유일한 실질 판단이었습니다.** 더미의 "심은 이상은 심은 곳에만"
 이 `process_log` 의 스펙 이탈로만 표현돼 있었는데, `_make_step_history` 는 **과거 패턴

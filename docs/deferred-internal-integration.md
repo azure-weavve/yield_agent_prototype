@@ -18,8 +18,10 @@ git log·코드로 먼저 확인한다 (1·2·3번은 이미 구현 완료 — �
 
 ## 3. ~~게이트에 결정론적 증거 조건 추가~~ (2026-07-13 구현 완료)
 
-- 구현: `_finalize_gate` 가 findings 의 `compare_process_logs` 결과(suspect_equipment,
-  group_spec_violations)에서 장비를 수집해, 가설의 장비와 일치해야 승인.
+- 구현: `_finalize_gate` 가 findings 에서 판별 통과 후보의 토큰을 모아, 가설이 그것을
+  포함해야 승인. (2026-07-13 당시에는 `compare_process_logs` 의 suspect_equipment 를 봤고,
+  Stage 0 에서 레지스트리 결과의 `candidates` 로, Stage 5 에서 그 도구 자체가 삭제됐다 —
+  현재 구현은 `graph/nodes.py` 의 `_collect_evidence`.)
   MAX_LOOPS 강제 종료는 `finalize_status="inconclusive"` 로 구분 기록되고
   리포트 결론도 "미확정(루프 한계 도달)" 톤으로 분기. 테스트: `tests/test_graph_nodes.py`
 

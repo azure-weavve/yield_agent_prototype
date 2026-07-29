@@ -96,8 +96,9 @@ root_lot A45Z5 (물리 묶음, 거의 항상 25매)
 
 1. ~~spec NULL 수정 3건 + 테스트~~ (3-1절) — ✅ 완료 (b45e61b)
 2. ~~미룸 문서 1~2번~~ (tool 오류 복구, confidence 방어) — ✅ 완료 (dd27cae)
-3. **ETL 적재 스크립트** (2절 규칙) → 정합성 검사 (validate_data_completeness 스모크,
-   find_low_yield_lots 직접 호출로 상식 검증)
+3. **ETL 적재** (2절 규칙, `data/load_internal.py`) → 정합성 검사
+   (`load_internal.validate()` 에 fatal 없음, `find_low_yield_lots` 직접 호출로 상식 검증)
+   — `validate_data_completeness` 는 Stage 5 에서 삭제됐고 그 역할을 `validate()` 가 가져갔다
 4. **lot_type 필터** (3-2절)
 5. **tool 단위 검증** (LLM 없이 실데이터 위에서 직접 호출)
 6. **`LLM_MODE=openai` E2E** — mock LLM 은 더미 시나리오 스크립트라 실데이터에서 동작 안 함
