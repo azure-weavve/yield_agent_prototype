@@ -124,8 +124,21 @@ def tools_node(state: dict) -> dict:
     ai = state["messages"][-1]
     loop = state["loop_count"]
     out_msgs, findings, update = [], [], {}
+    stopped = False   # finalize 승인/한계 이후의 잔여 호출은 실행하지 않는다
 
     for call in ai.tool_calls:
+        if stopped:
+            # 실행은 건너뛰되 응답은 채운다 — LangChain 은 모든 tool_call_id 에
+            # 대응하는 ToolMessage 를 요구한다. 감사 기록에도 생략 사실을 남긴다.
+            skipped = "분석 종료로 생략 (finalize 판정 뒤의 잔여 호출)"
+            out_msgs.append(ToolMessage(skipped, tool_call_id=call["id"],
+                                        name=call["name"]))
+            findings.append({
+                "loop": loop, "tool": call["name"], "args": call["args"],
+                "result": skipped, "thought": ai.content or "",
+            })
+            continue
+
         if call["name"] == "finalize":
             # 증거는 누적 findings + 이번 메시지에서 방금 실행된 tool 결과(findings)까지 포함
             verdict = _finalize_gate(call["args"], loop, update,
@@ -135,6 +148,7 @@ def tools_node(state: dict) -> dict:
                 "loop": loop, "tool": "finalize", "args": call["args"],
                 "result": verdict, "thought": ai.content or "",
             })
+            stopped = bool(update.get("finalize_accepted"))   # 반려는 종료가 아니다
         else:
             tool = TOOLS_BY_NAME.get(call["name"])
             if tool is None:

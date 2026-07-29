@@ -249,6 +249,43 @@ def test_finalize_gate_handles_non_numeric_confidence():
     assert "숫자" in out["messages"][0].content
 
 
+def test_tools_node_skips_calls_after_finalize_accepted():
+    """승인 뒤 같은 메시지의 잔여 tool 은 실행되지 않는다 — 종료 판정 뒤에 생긴 증거가
+    감사 기록에 섞이면 안 된다. 단 ToolMessage 는 tool_call 수만큼 채운다(LangChain 계약)."""
+    ai = AIMessage(content="종료 제안", tool_calls=[
+        {"name": "finalize",
+         "args": {"hypothesis": "Etch 공정 ETCH9_B 챔버 편중이 원인", "confidence": 0.9},
+         "id": "cf"},
+        {"name": "get_wafer", "args": {"wafer_id": "W2406_02"}, "id": "c1"},
+    ])
+    out = nodes.tools_node({"messages": [ai], "loop_count": 4,
+                            "findings": [EVIDENCE_FINDING_NEW]})
+
+    assert out["finalize_accepted"] is True
+    assert len(out["messages"]) == 2                   # 모든 tool_call 에 응답이 있다
+    assert "생략" in out["messages"][1].content
+    skipped = [f for f in out["findings"] if f["tool"] == "get_wafer"]
+    assert len(skipped) == 1
+    assert "생략" in skipped[0]["result"]              # 조회 결과(dict)가 아니라 생략 기록
+    assert "thought" in skipped[0]                     # 감사 기록 형식은 유지
+
+
+def test_second_finalize_does_not_overwrite_accepted_hypothesis():
+    """한 메시지에 finalize 가 2개면 뒤가 앞의 승인 가설을 덮어썼다."""
+    ai = AIMessage(content="종료 제안", tool_calls=[
+        {"name": "finalize",
+         "args": {"hypothesis": "Etch 공정 ETCH9_B 챔버 편중이 원인", "confidence": 0.9},
+         "id": "cf1"},
+        {"name": "finalize",
+         "args": {"hypothesis": "ETCH9_B 와 무관한 다른 가설", "confidence": 0.95},
+         "id": "cf2"},
+    ])
+    out = nodes.tools_node({"messages": [ai], "loop_count": 4,
+                            "findings": [EVIDENCE_FINDING_NEW]})
+    assert out["final_hypothesis"] == "Etch 공정 ETCH9_B 챔버 편중이 원인"
+    assert len(out["messages"]) == 2
+
+
 def test_tools_node_falls_back_to_reason_when_content_empty():
     # 실제 LLM 은 tool call 시 content 를 비우므로 reason 인자가 감사 기록을 채운다
     ai = AIMessage(content="", tool_calls=[
