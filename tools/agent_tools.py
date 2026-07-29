@@ -10,7 +10,6 @@ TOOLS_BY_NAME 에는 넣지 않는다.
 
 from langchain_core.tools import tool
 
-import config
 from domain import registry
 from tools import sensor_compare as sc
 from tools import yield_tools as yt
@@ -43,33 +42,6 @@ def search_similar(wafer_id: str, k: int = 5, reason: str = "") -> list[dict]:
 
 
 @tool
-def get_process_log(wafer_id: str, reason: str = "") -> list[dict]:
-    """wafer 의 공정 단계별 장비·파라미터 로그를 조회한다.
-    in_spec=False 인 행이 스펙 이탈. 원인을 특정 공정/장비까지 좁히려면 반드시 확인.
-    reason: 이 tool 을 호출하는 판단 이유를 한 문장으로 기술한다 (감사 기록에 남는다)."""
-    return yt.get_process_log(wafer_id)
-
-
-@tool
-def validate_data_completeness(wafer_ids: list[str], reason: str = "") -> dict:
-    """분석 대상 wafer 들의 수율 행 누락·공정 로그 단계 누락·중복 로그를 검사한다.
-    그룹 대조(hyp_*) 전에 호출해 데이터가 결론에 쓸 만큼 완전한지 확인.
-    status=blocked 면 비교 결과를 신뢰하지 말고 리포트에 품질 경고를 남겨야 한다.
-    reason: 이 tool 을 호출하는 판단 이유를 한 문장으로 기술한다 (감사 기록에 남는다)."""
-    return yt.validate_data_completeness(wafer_ids)
-
-
-@tool
-def find_counterexamples(equipment_id: str, process_step: str,
-                         defect_type: str, reason: str = "") -> dict:
-    """가설 '(공정, 장비)가 defect 의 원인'에 반하는 사례를 전수 데이터에서 찾는다:
-    해당 장비를 거쳤지만 정상인 wafer, 장비 없이 같은 defect 가 난 wafer.
-    finalize 전에 호출해 가설의 특이성(반례 유무)을 확인하고 리포트에 인용.
-    reason: 이 tool 을 호출하는 판단 이유를 한 문장으로 기술한다 (감사 기록에 남는다)."""
-    return yt.find_counterexamples(equipment_id, process_step, defect_type)
-
-
-@tool
 def compare_sensor_distribution(process_step: str, group_ids: list[str],
                                 control_ids: list[str], reason: str = "") -> dict:
     """가설 도구(hyp_*)가 지목한 공정 스텝에서 두 그룹의 센서 통계값 분포를 비교한다.
@@ -89,15 +61,8 @@ def finalize(hypothesis: str, confidence: float) -> str:
 
 _HYPOTHESIS_TOOLS = registry.build_tools(registry.load_hypotheses())
 
-# 옛 process_log 스키마에 묶인 도구들 — 실데이터(step_history)에서는 못 돈다.
-# 삭제(Stage 5)까지는 노출만 막는다.
-_LEGACY_TOOLS = [get_process_log, validate_data_completeness, find_counterexamples]
 _BASE_TOOLS = [get_wafer, search_similar, compare_sensor_distribution]
 
-ANALYSIS_TOOLS = [
-    *_BASE_TOOLS,
-    *(_LEGACY_TOOLS if config.LEGACY_TOOLS_ENABLED else []),
-    *_HYPOTHESIS_TOOLS,
-]
+ANALYSIS_TOOLS = [*_BASE_TOOLS, *_HYPOTHESIS_TOOLS]
 ALL_TOOLS = ANALYSIS_TOOLS + [finalize]
 TOOLS_BY_NAME = {t.name: t for t in ANALYSIS_TOOLS}

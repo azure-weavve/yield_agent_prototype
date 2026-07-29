@@ -18,41 +18,6 @@ def test_docstrings_exist():
     assert all(t.description for t in at.ALL_TOOLS)
 
 
-def test_get_process_log_tool_invokes(monkeypatch):
-    """레거시 도구는 코드에 남아 있다 — 플래그를 켜면 여전히 돈다 (삭제는 Stage 5)."""
-    import importlib
-
-    import config
-    from tools import agent_tools
-
-    monkeypatch.setattr(config, "LEGACY_TOOLS_ENABLED", True)
-    importlib.reload(agent_tools)
-    try:
-        rows = agent_tools.TOOLS_BY_NAME["get_process_log"].invoke({"wafer_id": "W2406_02"})
-        assert len(rows) == 4
-    finally:
-        monkeypatch.undo()
-        importlib.reload(agent_tools)
-
-
-def test_validate_data_completeness_tool_invokes(monkeypatch):
-    """레거시 도구는 코드에 남아 있다 — 플래그를 켜면 여전히 돈다 (삭제는 Stage 5)."""
-    import importlib
-
-    import config
-    from tools import agent_tools
-
-    monkeypatch.setattr(config, "LEGACY_TOOLS_ENABLED", True)
-    importlib.reload(agent_tools)
-    try:
-        res = agent_tools.TOOLS_BY_NAME["validate_data_completeness"].invoke(
-            {"wafer_ids": ["W2406_02"]})
-        assert res["status"] == "good"
-    finally:
-        monkeypatch.undo()
-        importlib.reload(agent_tools)
-
-
 def test_hyp_eqp_ch_commonality_tool_invokes():
     res = at.TOOLS_BY_NAME["hyp_eqp_ch_commonality"].invoke({
         "group_ids": ["W2406_02", "W2406_04", "W2406_06"],
@@ -61,43 +26,6 @@ def test_hyp_eqp_ch_commonality_tool_invokes():
     keys = {c["key"] for c in res["candidates"]}
     assert "ETCH9_B" in keys
     assert any(c["passes"] for c in res["candidates"] if c["key"] == "ETCH9_B")
-
-
-def test_legacy_tools_hidden_when_flag_off(monkeypatch):
-    """실데이터 모드에서는 process_log 기반 레거시 도구가 LLM 에 노출되지 않는다.
-
-    reload 로 모듈 상태를 갈아끼우므로, 플래그가 꺼진 창(window) 안에서 다른 모듈이
-    agent_tools 를 처음 import 하면 그쪽은 줄어든 목록을 붙든 채로 남는다.
-    graph/nodes.py 가 `from tools.agent_tools import TOOLS_BY_NAME` 로 이름을 직접
-    바인딩하는데, 수집 시점에 이미 import 되므로 지금은 안전하다.
-    """
-    import importlib
-
-    import config
-    from tools import agent_tools
-
-    monkeypatch.setattr(config, "LEGACY_TOOLS_ENABLED", False)
-    importlib.reload(agent_tools)
-    try:
-        names = {t.name for t in agent_tools.ANALYSIS_TOOLS}
-        assert not (names & {"get_process_log", "find_counterexamples",
-                             "validate_data_completeness"})
-        assert any(n.startswith("hyp_") for n in names)      # 가설 도구는 남는다
-        assert "finalize" in {t.name for t in agent_tools.ALL_TOOLS}
-    finally:
-        monkeypatch.undo()                                   # 원래 값으로 (True 고정 아님)
-        importlib.reload(agent_tools)                        # 다른 테스트에 누수 방지
-
-
-def test_legacy_tools_are_off_by_default():
-    """기본값이 OFF 다 — 라벨 없는 데이터에서 find_counterexamples 는 '반례 없음' 을
-    조용히 참으로 보고한다(데이터가 없어서 빈 것을 특이성으로 읽는다). 삭제는 Stage 5.
-    """
-    import config
-
-    assert config.LEGACY_TOOLS_ENABLED is False
-    assert not ({t.name for t in at.ANALYSIS_TOOLS}
-                & {"get_process_log", "find_counterexamples", "validate_data_completeness"})
 
 
 def test_reason_is_optional_and_ignored():

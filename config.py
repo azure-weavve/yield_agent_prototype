@@ -38,12 +38,6 @@ CONFIDENCE_THRESHOLD = 0.8 # finalize 승인 임계 확신도
 COMMONALITY_PASS_MIN_SCORE = float(os.getenv("COMMONALITY_PASS_MIN_SCORE", "0.5"))
 COMMONALITY_PASS_MIN_TARGET = int(os.getenv("COMMONALITY_PASS_MIN_TARGET", "2"))
 
-# 옛 process_log 스키마에 묶인 레거시 도구를 LLM 에 노출할지. **기본 꺼짐.**
-# find_counterexamples 는 defect_type 으로 '정상' 을 판정하는데, 라벨이 없으면 반례
-# 목록이 비고 그것이 "특이성 확인됨" 으로 읽힌다 — 조용히 틀리느니 안 도는 게 낫다.
-# 도구와 이 플래그의 삭제는 Stage 5.
-LEGACY_TOOLS_ENABLED = os.getenv("LEGACY_TOOLS_ENABLED", "0") == "1"
-
 # 센서(2단): "local" = yield.db 의 sensor_log, "http" = 사내 FDC
 SENSOR_MODE = os.getenv("SENSOR_MODE", "local")
 SENSOR_HTTP_URL = os.getenv("SENSOR_HTTP_URL", "https://<사내-fdc-호스트>/sensor")
