@@ -11,6 +11,11 @@
   2) data/generate_dummy.py — 더미 스키마 (개발·테스트가 실제로 밟는 것)
   3) domain/hypotheses.yaml — legend 가 요구하는 컬럼
 계약: 3 ⊆ 1  AND  3 ⊆ 2  (가설이 요구하는 컬럼은 양쪽 스키마에 다 있어야 한다)
+
+Stage 5 에서 `yield` 도 같은 방식으로 얼렸다 — Stage 4 때 더미(defect_type NOT NULL)와
+로더(nullable)가 조용히 갈려 NULL 기록이 한동안 실패했기 때문이다.
+`sensor_log` 는 얼리지 않는다: load_internal.py 에 대응물이 없다(사내는 FDC HTTP 조회)
+— 비교 대상이 성립하지 않는다.
 """
 
 import sqlite3
@@ -39,6 +44,19 @@ def _dummy_step_cols() -> set[str]:
     conn = sqlite3.connect(config.DB_PATH)
     try:
         return {r[1] for r in conn.execute("PRAGMA table_info(step_history)")}
+    finally:
+        conn.close()
+
+
+def _internal_yield_cols() -> set[str]:
+    from data import load_internal
+    return _cols_from_ddl(load_internal.DDL, "yield")
+
+
+def _dummy_yield_cols() -> set[str]:
+    conn = sqlite3.connect(config.DB_PATH)
+    try:
+        return {r[1] for r in conn.execute("PRAGMA table_info(yield)")}
     finally:
         conn.close()
 
@@ -82,3 +100,32 @@ def test_internal_and_dummy_step_history_do_not_diverge_silently():
         f"step_history 스키마가 두 곳에서 갈렸다: {sorted(diff - ALLOWED)}. "
         f"의도된 차이면 ALLOWED 에 이유와 함께 추가하라."
     )
+
+
+def test_internal_and_dummy_yield_do_not_diverge_silently():
+    """yield 스키마도 두 곳에서 갈리지 않는다 (Stage 5).
+
+    Stage 4 에서 더미의 yield 는 defect_type NOT NULL 인데 로더만 nullable 이라
+    NULL 기록이 한동안 실패했다. step_history 만 얼려 두면 이 부류가 또 숨는다.
+    """
+    ALLOWED: set[str] = set()      # 알려진 차이 (없는 것이 목표)
+    diff = _internal_yield_cols() ^ _dummy_yield_cols()
+    assert diff <= ALLOWED, (
+        f"yield 스키마가 두 곳에서 갈렸다: {sorted(diff - ALLOWED)}. "
+        f"의도된 차이면 ALLOWED 에 이유와 함께 추가하라."
+    )
+
+
+def test_dummy_db_has_exactly_the_three_tables():
+    """단일 스키마 완성 (Stage 5): 더미 테이블은 yield·step_history·sensor_log 뿐이다.
+
+    process_log 가 되살아나면 여기서 먼저 걸린다.
+    """
+    conn = sqlite3.connect(config.DB_PATH)
+    try:
+        names = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name NOT LIKE 'sqlite_%'")}
+    finally:
+        conn.close()
+    assert names == {"yield", "step_history", "sensor_log"}
