@@ -124,7 +124,6 @@ def test_status_respects_user_specified_target():
 
 
 def test_tools_node_executes_and_records_finding():
-    # get_process_log 는 레거시(기본 OFF) 라 기본 노출 도구인 get_wafer 로 대체 —
     # 검증 대상은 tools_node 의 실행·기록 메커니즘이지 특정 도구가 아니다.
     ai = AIMessage(
         content="유사 사례 확인",
@@ -310,7 +309,7 @@ def test_second_finalize_does_not_overwrite_accepted_hypothesis():
 def test_tools_node_falls_back_to_reason_when_content_empty():
     # 실제 LLM 은 tool call 시 content 를 비우므로 reason 인자가 감사 기록을 채운다
     ai = AIMessage(content="", tool_calls=[
-        {"name": "get_process_log",
-         "args": {"wafer_id": "W2406_02", "reason": "스펙 이탈 확인"}, "id": "c1"}])
+        {"name": "get_wafer",
+         "args": {"wafer_id": "W2406_02", "reason": "대상 수율 확인"}, "id": "c1"}])
     out = nodes.tools_node({"messages": [ai], "loop_count": 1})
-    assert out["findings"][0]["thought"] == "스펙 이탈 확인"
+    assert out["findings"][0]["thought"] == "대상 수율 확인"

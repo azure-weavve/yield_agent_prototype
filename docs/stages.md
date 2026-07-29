@@ -17,7 +17,7 @@ Stage A    ✅ 완료 (2026-07-25) — 안전장치 + 계약 동결 + 적대적 
 Stage 2    ✅ 완료 (2026-07-25) — 대조군을 같은 root_lot 의 비타깃 전원으로
 Stage 3    ✅ 완료 (2026-07-28) — sensor_log + SensorStore + 2단 센서 비교
 Stage 4    ✅ 완료 (2026-07-28) — 더미에서 정답지 컬럼(defect_type·process_step) 제거
-Stage 5    ⬜ process_log · 레거시 도구 삭제 = 단일 스키마 완성
+Stage 5    ✅ 완료 (2026-07-29) — process_log · 레거시 도구 삭제 = 단일 스키마 완성
 Stage 5.5  ⬜ 구 Stage 1 — 실데이터 적재 · 검증 · 임계 튜닝
 ```
 
@@ -137,18 +137,39 @@ mock 각본을 라벨 없이 재작성하며 2단을 데모에 넣었다.
 **`SIBLING_MIN_SIMILARITY` 컷오프는 여전히 미검증** — 실데이터 분포가 필요하다
 (Stage 5.5). 컷오프를 못 정한 채 구조만 두는 것을 계속 감수한다.
 
-### Stage 5 — 삭제
+### Stage 5 — 삭제 (완료)
 
-**삭제 전 대체 매핑을 명시적으로 확인합니다.** 레거시 도구 중
-`validate_data_completeness`·`find_counterexamples` 는 레거시가 아니라 **기능**입니다.
-설계상 반례는 commonality 2×2 의 b·c 셀이, 품질 검사는 `load_internal.validate()` +
-`missing_history`/`no_paired_stratum` 이 흡수한 것으로 보이지만, 확인 없이 지우면 기능이
-조용히 빠집니다.
+spec `superpowers/specs/2026-07-29-stage5-legacy-removal-design.md`,
+플랜 `superpowers/plans/2026-07-29-stage5-legacy-removal.md`.
 
-**`test_schema_contract.py` 는 `step_history` 만 얼립니다.** `yield` 테이블 DDL 은 계약
-테스트가 보지 않아 더미와 `load_internal.py` 가 조용히 갈라질 수 있습니다 — 실제로 이번
-브랜치에서 더미의 `yield` 는 `defect_type TEXT NOT NULL` 로 남아 있었고 로더만 NULL 허용이라
-NULL 기록이 한동안 실패했습니다.
+**구현 완료 (2026-07-29, 139 passed).** 스키마가 `yield`·`step_history`·`sensor_log`
+3개로 확정됐습니다.
+
+**대체 매핑을 먼저 확인했고, 기능 유실은 없었습니다.** 품질 검사는 `load_internal.validate()`
+(적재 시점)와 commonality 의 `missing_history`·`no_paired_stratum`(분석 시점)이, 반례는
+commonality 2×2 의 `control_pass` 가, 파라미터 비교는 2단 센서가 이미 흡수하고 있었습니다.
+`compare_process_logs`·`compare_parameter_distribution` 은 tool 로 등록된 적도 없는 죽은
+코드였습니다. **결정적 근거: `load_internal.py` 는 `yield`·`step_history` 만 만듭니다 —
+`process_log` 테이블 자체가 실데이터에 없습니다.**
+
+**불변식 재작성이 이 Stage 의 유일한 실질 판단이었습니다.** 더미의 "심은 이상은 심은 곳에만"
+이 `process_log` 의 스펙 이탈로만 표현돼 있었는데, `_make_step_history` 는 **과거 패턴
+wafer 에 신호를 심지 않습니다**(데모가 타깃 7장 중 "불량군 3장 전용"이라고 말하는 이유).
+과거 wafer 에 신호를 심으면 `target_pass` 가 3→7 로 바뀌어 데모가 깨지므로, 손실을 받아들이고
+**챔버 배타성**(`ETCH9_B` 를 거친 wafer 는 `GROUP_WAFERS` 뿐)과 **"같은 설비 다른 챔버"**
+전수 단언으로 좁혀 다시 썼습니다. 구멍 케이스 (가)의 "스펙 안으로 통과"는 측정값이 사라져
+후속이 없습니다 — 그 wafer 가 지금 하는 일(저수율 무라벨이 대조군에 섞임)은
+`test_grouping`·`test_e2e` 가 고정합니다.
+
+**`yield` DDL 계약 동결을 함께 넣었습니다.** Stage 4 에서 더미의 `yield` 는
+`defect_type TEXT NOT NULL` 인데 로더만 NULL 허용이라 NULL 기록이 한동안 실패했습니다.
+이제 `step_history` 와 같은 방식으로 `yield` 도 얼리고, 더미 테이블이 정확히 3개임을
+고정해 `process_log` 부활을 막습니다. **`sensor_log` 는 얼리지 않습니다** —
+`load_internal.py` 에 대응물이 없어(사내는 FDC HTTP) 비교 대상이 성립하지 않습니다.
+
+**남은 것:** '스펙 이탈' 개념이 프로토타입에서 사라졌습니다. 사내 `step_history` 에는
+파라미터가 없고 값 비교는 센서가 맡으므로 정합하지만, 사내 원천에 파라미터 이력이 따로
+있다면 그때 다시 볼 축입니다.
 
 ### Stage 5.5 — 구 Stage 1 (실데이터)
 

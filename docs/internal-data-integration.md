@@ -34,7 +34,12 @@ root_lot A45Z5 (물리 묶음, 거의 항상 25매)
 
 ## 2. ETL 적재 규칙 (`data/load_internal.py` 신규 — 미작성)
 
-목표 스키마: `yield`·`process_log` 2테이블 (generate_dummy.py 의 CREATE TABLE 참조) + 확장.
+목표 스키마: `yield`·`step_history` 2테이블 (`data/load_internal.py` 의 `DDL` 이 정본).
+
+> ⚠️ **2026-07-29 (Stage 5) 갱신.** 이 절은 원래 `yield`·`process_log` 2테이블을 목표로
+> 적혀 있었다. `process_log` 는 **삭제됐다** — 사내 원천에 대응물이 없고(파라미터·스펙은
+> `step_history` 에 없다), 값 비교는 FDC 센서(`sensor_log`, 2단)가 맡는다. 아래 표의
+> `spec_low`/`spec_high` 행도 그래서 무효다.
 
 | 컬럼 | 규칙 |
 |------|------|
@@ -45,7 +50,7 @@ root_lot A45Z5 (물리 묶음, 거의 항상 25매)
 | `yield` | 0~100 스케일 확인 (YIELD_THRESHOLD=90.0 과 정합) |
 | `defect_type` | **NULL 허용. 라벨이 없으면 NULL 로 두고 절대 `"none"` 을 채우지 않는다** — `"none"` 을 넣으면 라벨 없는 wafer 가 전부 '정상'으로 둔갑해 대조군에 조용히 섞인다 (`load_internal.py` 의 경고 참조). 더미도 전 행 NULL 이다 (Stage 4) |
 | `process_step` | **항상 NULL.** 원천에 있어도 넣지 않는다 — '어느 스텝이 원인인가'는 이 시스템이 추론할 결론이지 입력이 아니다(정답 누출). 컬럼은 기존 SQL 호환용으로만 남긴다 |
-| `spec_low`/`spec_high` | **NULL 허용으로 완화** (스펙 없는 아이템 존재) |
+| ~~`spec_low`/`spec_high`~~ | **무효 (Stage 5)** — 이 컬럼이 있던 `process_log` 를 삭제했다 |
 
 - generate_dummy.py 는 더미 전용으로 그대로 둔다 (실행 시 DB 삭제·재생성 주의).
 - EDS `/search` 응답의 wafer 식별자도 `{root_lot_id}_{wafer_no}` 체계인지 확인
@@ -64,13 +69,9 @@ root_lot A45Z5 (물리 묶음, 거의 항상 25매)
 - **`compare_process_logs`** (violations SQL): `spec_low IS NOT NULL` / `spec_high IS NOT NULL`
   명시 조건으로 편측 spec 도 의도대로 동작.
 
-남은 것: `data/generate_dummy.py` 의 `CREATE TABLE` 은 여전히 `spec_low/high REAL NOT NULL`.
-함수는 NULL 을 받아도 안전하지만, 실제 NULL 값은 ETL 적재 스크립트(2절)가 nullable
-스키마로 넣어야 나온다 — 즉 스키마 완화는 ETL 쪽 작업.
-
-참고: finalize 게이트는 통과 이력 기반 suspect 라 spec 과 무관하게 동작 — 당장 수정 불요.
-spec 없는 파라미터가 원인일 땐 group_spec_violations 가 비므로,
-compare_parameter_distribution 의 효과 크기가 보완 근거.
+> ⚠️ **2026-07-29 (Stage 5) 갱신.** 위 세 함수는 **전부 삭제됐다.** 스펙 이탈 개념 자체가
+> 프로토타입에서 사라졌으므로 이 절은 역사 기록으로만 읽는다. 값 비교의 후속은
+> `tools/sensor_compare.py`(2단)이고, 그쪽은 spec 이 아니라 두 그룹의 분포 차이를 본다.
 
 ### 3-2. 평가랏 오탐 방지 — ETL 과 함께 (lot_type 컬럼 생긴 뒤)
 
