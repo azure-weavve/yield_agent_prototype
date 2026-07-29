@@ -75,7 +75,7 @@ class ScriptedMockLLMClient(LLMClient):
                 "종료 제안이 반려됐다. 챔버 편중 가설로 두 그룹을 대조한다.")
 
         res = self._result(tool_msgs, "hyp_eqp_ch_commonality")
-        passing = [c for c in res["candidates"] if c["passes"]]
+        passing = [c for c in res.get("candidates", []) if c["passes"]]
         if not passing:
             # 분리되는 후보가 없다 — **원인 없음이 아니라 lot 내부 대조로는 안 보인다**는 뜻.
             # 억지로 후보를 집으면 허위 확정이므로 낮은 확신도로 물러선다(게이트가 반려하고,
@@ -166,7 +166,10 @@ class ScriptedMockLLMClient(LLMClient):
     @staticmethod
     def _result(tool_msgs, name):
         msg = next(m for m in reversed(tool_msgs) if m.name == name)
-        return json.loads(msg.content)
+        res = json.loads(msg.content)
+        # tools 노드는 실행 실패 시 오류 '문자열' 을 담는다 (dict 가정이 깨지는 유일한 경로).
+        # 각본이 죽는 대신 '결과 없음' 으로 취급해 낮은 확신도 후퇴 분기를 타게 한다.
+        return res if isinstance(res, dict) else {}
 
     def _call(self, name, args, thought) -> AIMessage:
         self._seq += 1

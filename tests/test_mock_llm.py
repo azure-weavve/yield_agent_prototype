@@ -117,6 +117,30 @@ def test_groups_parsed_from_machine_line_not_prose():
     assert ai.tool_calls[0]["args"]["control_ids"] == ["B"]
 
 
+def test_scripted_survives_tool_error_string():
+    """tools 노드는 실행 실패 시 오류 '문자열' 을 담는다 — 각본이 거기서 죽으면 안 된다.
+
+    도구가 실패하면 '분리되는 후보가 없다' 와 같은 경로를 타 낮은 확신도로 물러선다.
+    """
+    llm = ScriptedMockLLMClient()
+    msgs = [HUMAN]
+    ai = llm.analyze_step(msgs)                      # 1) 조기 finalize
+    msgs += [ai, _tm("finalize", "반려")]
+    ai = llm.analyze_step(msgs)                      # 2) 1단 호출
+    assert ai.tool_calls[0]["name"] == "hyp_eqp_ch_commonality"
+    # tools 노드는 오류 문자열도 json.dumps 로 감싸 담는다 (graph/nodes.py:150) —
+    # 그래서 json.loads 결과가 dict 가 아니라 str 이 된다. 그 조건을 그대로 재현한다.
+    msgs += [ai, _tm("hyp_eqp_ch_commonality",
+                     json.dumps("오류: hyp_eqp_ch_commonality 실행 실패 "
+                                "(KeyError: 'legend'). 인자를 확인하고 다시 호출하라.",
+                                ensure_ascii=False))]
+
+    ai = llm.analyze_step(msgs)                      # 3) 죽지 않고 물러선다
+    assert ai.tool_calls[0]["name"] == "finalize"
+    assert ai.tool_calls[0]["args"]["confidence"] < 0.8
+    assert ai.content
+
+
 def test_generate_report_renders_inconclusive_status():
     # 한계 도달(inconclusive) 종료: 결론을 "미확정 + 유력 가설(후보)" 톤으로 표기
     llm = ScriptedMockLLMClient()
