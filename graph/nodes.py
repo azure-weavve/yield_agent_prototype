@@ -46,6 +46,13 @@ def status_node(state: dict) -> dict:
         summary = f"입력 wafer 미존재: {', '.join(norm['unknown_wafers'])}"
         return {"target_group": [], "control_group": [], "status_summary": summary,
                 "findings": findings, "finalize_status": "unknown_target"}
+    if norm["eds_error"]:
+        summary = (f"분석 대상 입력 ({source}): {', '.join(targets)}\n"
+                   f"EDS 인덱스 조회 실패: {norm['eds_error']} — "
+                   f"wafer 는 yield DB 에 있으나 유사맵 인덱스에 없다.")
+        return {"target_group": norm["target_group"], "control_group": [],
+                "status_summary": summary, "findings": findings,
+                "finalize_status": "eds_index_missing"}
     if norm["isolated"]:
         summary = (f"분석 대상 입력 ({source}): {', '.join(targets)}\n"
                    f"형제 묶기 (EDS, 컷오프 {config.SIBLING_MIN_SIMILARITY}): 형제 없음 — "

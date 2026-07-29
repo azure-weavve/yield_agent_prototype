@@ -28,8 +28,14 @@ def normalize_target(wafers: list[str]) -> dict:
     target, siblings, isolated = list(wafers), [], False
 
     unmatched = []
+    eds_error = None
     if mode == "single" and not unknown:
-        cands = _searcher_lazy().search(wafers[0], k=config.SIBLING_SEARCH_K)
+        try:
+            cands = _searcher_lazy().search(wafers[0], k=config.SIBLING_SEARCH_K)
+        except Exception as e:
+            # yield DB 엔 있으나 EDS 인덱스엔 없는 wafer (local=KeyError, http=요청 예외).
+            # 입력 실수가 아니라 인덱스↔DB 동기화 문제다 — 흐름 판단은 status_node 가 한다.
+            cands, eds_error = [], f"{type(e).__name__}: {e}"
         raw = [c for c in cands if c["similarity"] >= config.SIBLING_MIN_SIMILARITY]
         # EDS 인덱스와 yield DB 는 별도 시스템이라 동기화가 어긋날 수 있다.
         # yield DB 에 실재하는 형제만 분석 대상에 넣고, 미확인분은 unmatched_siblings 로 분리한다
@@ -38,7 +44,7 @@ def normalize_target(wafers: list[str]) -> dict:
         siblings = [c for c in raw if c["wafer_id"] in confirmed]
         unmatched = [c["wafer_id"] for c in raw if c["wafer_id"] not in confirmed]
         target = wafers + [s["wafer_id"] for s in siblings]   # 입력 선두 + 유사도 내림차순
-        isolated = not siblings
+        isolated = not siblings and eds_error is None         # 조회 실패는 '고립' 이 아니다
 
     return {
         "mode": mode,
@@ -47,6 +53,7 @@ def normalize_target(wafers: list[str]) -> dict:
         "unmatched_siblings": unmatched,
         "unknown_wafers": unknown,
         "isolated": isolated,
+        "eds_error": eds_error,
     }
 
 

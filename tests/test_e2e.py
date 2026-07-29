@@ -60,6 +60,28 @@ def test_sensor_failure_is_not_reported_as_confirmed(monkeypatch):
     assert "ETCH9_B" in state["final_hypothesis"]    # 1단 후보는 후보로 남긴다
 
 
+def test_eds_index_miss_ends_with_report_not_crash(monkeypatch):
+    """EDS 인덱스에 없는 wafer 를 넣어도 그래프가 예외로 죽지 않는다.
+
+    '입력 wafer 가 없다(unknown_target)' 와 사유가 다르다 — 이쪽은 인덱스↔DB
+    동기화 문제라 사람이 할 조치가 다르다.
+    """
+    from tools import grouping
+
+    class _Missing:
+        def search(self, wafer_id, k):
+            raise KeyError(wafer_id)
+
+    monkeypatch.setattr(grouping, "_searcher", _Missing())
+    state = build_graph().invoke(
+        {"target_wafers": ["W2406_02"], "target_source": "manual"}
+    )
+    assert state["finalize_status"] == "eds_index_missing"
+    assert state["report"]
+    assert "EDS 인덱스" in state["report"]
+    assert state["findings"]                  # 감사 기록이 끊기지 않는다
+
+
 def test_no_targets_short_circuits_to_report():
     """자동 선정이 빈손(이상 lot 없음)이면 크래시 없이 '이상 없음' 리포트로 조기 종료."""
     state = build_graph().invoke({"target_wafers": [], "target_source": "auto"})

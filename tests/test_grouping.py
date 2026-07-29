@@ -108,3 +108,27 @@ def test_control_insufficient_reported_honestly():
     res = grouping.select_control(["W2407_01", "W2407_02"])
     assert res["control_group"] == ["W2407_03"]
     assert res["insufficient"] is True
+
+
+def test_eds_index_miss_is_reported_not_raised(monkeypatch):
+    """yield DB 엔 있지만 EDS 인덱스엔 없는 wafer — 예외가 아니라 사실로 보고한다.
+
+    LocalEDSSearcher 는 KeyError, HttpEDSSearcher 는 requests 예외를 던진다.
+    정규화 계층은 흐름을 정하지 않는다(판단은 status_node).
+    """
+    class _Missing:
+        def search(self, wafer_id, k):
+            raise KeyError(wafer_id)
+
+    monkeypatch.setattr(grouping, "_searcher", _Missing())
+    res = grouping.normalize_target(["W2406_02"])
+    assert res["eds_error"] is not None
+    assert "KeyError" in res["eds_error"]
+    assert res["siblings"] == []
+    assert res["isolated"] is False        # '형제 없음' 과 '조회 실패' 는 다르다
+    assert res["target_group"] == ["W2406_02"]
+
+
+def test_normal_path_reports_no_eds_error():
+    res = grouping.normalize_target(["W2406_02"])
+    assert res["eds_error"] is None

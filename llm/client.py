@@ -137,6 +137,9 @@ class ScriptedMockLLMClient(LLMClient):
             conclusion = "이상 없음 — 수율 임계 미만 lot 이 없다."
         elif finalize_status == "unknown_target":
             conclusion = "분석 미수행 — 입력 wafer 를 데이터에서 찾을 수 없다. 입력을 확인하라."
+        elif finalize_status == "eds_index_missing":
+            conclusion = ("분석 미수행 — 입력 wafer 가 EDS 인덱스에 없다 "
+                          "(yield DB 에는 존재). 인덱스와 yield DB 동기화를 확인하라.")
         elif finalize_status == "isolated":
             conclusion = ("분석 미수행 — 고립 패턴: 유사 형제 wafer 가 없어 그룹 대조가 "
                           "불가능하다. 추후 분석 필요.")
