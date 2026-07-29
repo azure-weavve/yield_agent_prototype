@@ -99,9 +99,18 @@ class ScriptedMockLLMClient(LLMClient):
         val = top["value"][-1]
         hyp = (f"{top['value'][0]} 공정 {val} 편중(분리 점수 {top.get('score')}, "
                f"불량군 {top['target_pass']}장 전용)이 원인")
-        if sensor.get("candidates"):
-            c = sensor["candidates"][0]
-            hyp += f" — {c['sensor_name']} 효과크기 {c['effect_size']}"
+        if sensor.get("status") != "ok":
+            # 2단이 갈리지 않았거나(no_signal) 아예 못 돌았다(fetch_failed/insufficient_sample).
+            # 1단 근거는 그대로 남기되 확신도를 낮춰 물러선다 — 센서 결과를 안 보고 0.9 를
+            # 내면 없는 근거를 있다고 말하는 꼴이라, 이 Stage 가 없앤 조용한 오확증이 된다.
+            return self._call(
+                "finalize",
+                {"hypothesis": hyp + " — 다만 2단 센서 근거는 확보하지 못했다",
+                 "confidence": 0.5},
+                f"1단은 갈렸지만 2단이 근거를 못 냈다(status={sensor.get('status')}). "
+                f"'왜' 없이 확정하지 않는다.")
+        c = sensor["candidates"][0]
+        hyp += f" — {c['sensor_name']} 효과크기 {c['effect_size']}"
         return self._call(
             "finalize", {"hypothesis": hyp, "confidence": 0.9},
             "챔버 편중에 센서 근거까지 붙었다. 근거 충분.")

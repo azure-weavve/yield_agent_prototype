@@ -1,5 +1,6 @@
 """End-to-End: mock 그룹 대조 루프가 현황→순환(반려 포함)→승인→리포트까지 완주하는지."""
 
+import config
 from graph.build import build_graph
 
 
@@ -25,12 +26,38 @@ def test_full_loop_reaches_report_with_audit_trail():
     assert state["finalize_accepted"] is True
     assert "ETCH9_B" in state["final_hypothesis"]        # ETCH-9 → 챔버로 좁혀진 결론
 
+    # 2단은 '불렀다' 가 아니라 '근거를 냈다' 로 고정한다 — 호출만 보면 센서가 통째로
+    # 실패해도 초록이 된다 (test_sensor_failure_is_not_reported_as_confirmed)
+    sensor = next(f["result"] for f in state["findings"]
+                  if f["tool"] == "compare_sensor_distribution")
+    assert sensor["status"] == "ok"
+    assert "rf_power_steady_avg" in state["final_hypothesis"]   # 2단 근거가 결론에 실린다
+
     tools_used = [f["tool"] for f in state["findings"]]
     assert tools_used[:2] == ["normalize_target", "select_control"]   # loop 0 골격
-    assert "compare_sensor_distribution" in tools_used
     assert any(t.startswith("hyp_") for t in tools_used)  # 레지스트리 도구가 실제 호출됨
     assert state["loop_count"] <= 6
     assert all("thought" in f for f in state["findings"])   # 모든 실행에 감사용 사고 기록
+
+
+def test_sensor_failure_is_not_reported_as_confirmed(monkeypatch):
+    """2단을 못 돌면(fetch_failed) 1단 근거만으로 확정하지 않는다.
+
+    센서 결과를 보지 않고 확신도 0.9 를 내면 이 Stage 가 없앤 조용한 오확증이
+    2단에서 되살아난다 — 없는 근거를 있다고 말하는 감사 기록이 남는다.
+    """
+    monkeypatch.setattr(config, "SENSOR_MODE", "bogus")   # get_store() 가 죽어 fetch_failed
+    state = build_graph().invoke(
+        {"target_wafers": ["W2406_02"], "target_source": "manual"}
+    )
+    sensor = next(f["result"] for f in state["findings"]
+                  if f["tool"] == "compare_sensor_distribution")
+    assert sensor["status"] == "fetch_failed"
+    assert state["finalize_status"] != "confirmed"
+    assert state["final_confidence"] < config.CONFIDENCE_THRESHOLD
+    # 감사 기록도 없는 근거를 있다고 말하지 않는다
+    assert not any("센서 근거까지" in f["thought"] for f in state["findings"])
+    assert "ETCH9_B" in state["final_hypothesis"]    # 1단 후보는 후보로 남긴다
 
 
 def test_no_targets_short_circuits_to_report():
