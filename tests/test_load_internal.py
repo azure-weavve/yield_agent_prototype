@@ -110,6 +110,26 @@ def test_ppid_grain_accepts_a_single_counterexample_as_proof(tmp_path):
     assert not any("마스터 단위 조인 의심" in i for i in report["issues"])
 
 
+def test_uniform_equipment_means_the_source_never_proved_wafer_granularity(tmp_path):
+    """한 lot 이 한 챔버·한 PPID 로 돈 것은 정상이다 — 여기서 경고하면 오경보다.
+
+    판정 대상은 **설비·챔버가 wafer 마다 갈리는 군**으로 좁힌다. 그런 군에서는 원천이
+    그 스텝에서 wafer 단위 세부를 실제로 주고 있음이 증명되므로, "챔버는 갈리는데
+    ppid 는 한 번도 안 갈린다" 가 비로소 의심스러운 조건이 된다. 설비·챔버도 안 갈리는
+    군에서는 원천이 wafer 단위를 주는지 자체가 안 보이므로 할 말이 없다.
+    """
+    ys = [{"root_lot_id": "G44D4", "wafer_id": f"{i:02d}", "lot_id": "G44D4.1",
+           "yield": 80.0, "date": "d"} for i in (1, 2, 3)]
+    # lot 전원이 같은 설비·챔버·PPID (정상 운영에서 흔하다)
+    st = [{"root_lot_id": "G44D4", "wafer_id": f"{i:02d}", "process_step": "Etch",
+           "eqp_id": "E9", "ch_id": "A", "ppid": "PPID_L", "timestamp": "t"}
+          for i in (1, 2, 3)]
+    report = li.load(ys, st, tmp_path / "t.db", verbose=False)
+
+    assert report["ppid_grain"] == {"checkable": 0, "varying": 0}
+    assert not any("마스터 단위 조인 의심" in i for i in report["issues"])
+
+
 def test_rework_rows_are_not_mistaken_for_wafer_level_variation(tmp_path):
     """재작업 행 1건이 검사를 꺼뜨리면 안 된다.
 
@@ -119,12 +139,12 @@ def test_rework_rows_are_not_mistaken_for_wafer_level_variation(tmp_path):
     """
     ys = [{"root_lot_id": "D11A1", "wafer_id": f"{i:02d}", "lot_id": "D11A1.1",
            "yield": 80.0, "date": "d"} for i in (1, 2, 3)]
-    # 전 데이터가 lot 마스터 grain(틀림)
+    # 챔버는 wafer 마다 갈리고(= 판정 대상) ppid 만 전원 동일 = lot 마스터 grain(틀림)
     st = [{"root_lot_id": "D11A1", "wafer_id": f"{i:02d}", "process_step": "Etch",
-           "eqp_id": "E9", "ch_id": "A", "ppid": "PPID_L", "timestamp": "t"}
-          for i in (1, 2, 3)]
+           "eqp_id": "E9", "ch_id": ch, "ppid": "PPID_L", "timestamp": "t"}
+          for i, ch in zip((1, 2, 3), "ABC")]
     rework = dict(st[0])
-    rework["ppid"] = "PPID_M"                 # 같은 wafer×스텝, 다른 ppid
+    rework["ppid"] = "PPID_M"                 # 같은 wafer×스텝·같은 챔버, 다른 ppid
     report = li.load(ys, st + [rework], tmp_path / "t.db", verbose=False)
 
     # wafer 간 변이는 0 이다 — 한 wafer 안의 재작업 차이는 반례가 아니다
@@ -142,10 +162,12 @@ def test_ppid_grain_needs_a_counterexample_somewhere_not_in_every_lot(tmp_path):
             "yield": 80.0, "date": "d"} for i in (1, 2)] +
           [{"root_lot_id": "E22B2", "wafer_id": f"{i:02d}", "lot_id": "E22B2.2",
             "yield": 80.0, "date": "d"} for i in (3, 4)])
-    st = ([{"root_lot_id": "E22B2", "wafer_id": f"{i:02d}", "process_step": "Etch",
-            "eqp_id": "E9", "ch_id": "A", "ppid": "PPID_L", "timestamp": "t"}
-           for i in (1, 2)] +                  # lot .1 — 안 갈린다
-          [{"root_lot_id": "E22B2", "wafer_id": "03", "process_step": "Etch",
+    # 두 lot 모두 챔버는 갈린다(= 둘 다 판정 대상). ppid 는 lot .2 에서만 갈린다.
+    st = ([{"root_lot_id": "E22B2", "wafer_id": "01", "process_step": "Etch",
+            "eqp_id": "E9", "ch_id": "A", "ppid": "PPID_L", "timestamp": "t"},
+           {"root_lot_id": "E22B2", "wafer_id": "02", "process_step": "Etch",
+            "eqp_id": "E9", "ch_id": "B", "ppid": "PPID_L", "timestamp": "t"},
+           {"root_lot_id": "E22B2", "wafer_id": "03", "process_step": "Etch",
             "eqp_id": "E9", "ch_id": "A", "ppid": "PPID_L", "timestamp": "t"},
            {"root_lot_id": "E22B2", "wafer_id": "04", "process_step": "Etch",
             "eqp_id": "E9", "ch_id": "B", "ppid": "PPID_M", "timestamp": "t"}])
@@ -163,8 +185,11 @@ def test_ppid_grain_ignores_wafers_whose_ppid_is_missing(tmp_path):
     """
     ys = [{"root_lot_id": "F33C3", "wafer_id": f"{i:02d}", "lot_id": "F33C3.1",
            "yield": 80.0, "date": "d"} for i in (1, 2, 3)]
+    # 챔버는 갈린다 — 그래서 checkable 이 0 인 유일한 이유가 ppid 결측이 된다
+    # (챔버까지 같으면 이 테스트는 NULL 필터 삭제를 못 잡는다)
     st = [{"root_lot_id": "F33C3", "wafer_id": f"{i:02d}", "process_step": "Etch",
-           "eqp_id": "E9", "ch_id": "A", "timestamp": "t"} for i in (1, 2, 3)]
+           "eqp_id": "E9", "ch_id": ch, "timestamp": "t"}
+          for i, ch in zip((1, 2, 3), "ABC")]
     st[0]["ppid"] = "PPID_L"                  # 3장 중 1장만 ppid 보유
     report = li.load(ys, st, tmp_path / "t.db", verbose=False)
 
