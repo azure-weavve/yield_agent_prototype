@@ -110,21 +110,88 @@ def test_ppid_grain_accepts_a_single_counterexample_as_proof(tmp_path):
     assert not any("마스터 단위 조인 의심" in i for i in report["issues"])
 
 
+def test_rework_rows_are_not_mistaken_for_wafer_level_variation(tmp_path):
+    """재작업 행 1건이 검사를 꺼뜨리면 안 된다.
+
+    판정이 전역(반례 1건이면 침묵)이라, 행 단위로 ppid 를 세면 **전 데이터에 이런 행이
+    하나만 있어도** 검사가 통째로 무력화된다. 수백만 행 실데이터에서 중복 이력은
+    예상되는 상태다(검사 #6 이 "재작업인지 확인" 이라고 말하는 이유).
+    """
+    ys = [{"root_lot_id": "D11A1", "wafer_id": f"{i:02d}", "lot_id": "D11A1.1",
+           "yield": 80.0, "date": "d"} for i in (1, 2, 3)]
+    # 전 데이터가 lot 마스터 grain(틀림)
+    st = [{"root_lot_id": "D11A1", "wafer_id": f"{i:02d}", "process_step": "Etch",
+           "eqp_id": "E9", "ch_id": "A", "ppid": "PPID_L", "timestamp": "t"}
+          for i in (1, 2, 3)]
+    rework = dict(st[0])
+    rework["ppid"] = "PPID_M"                 # 같은 wafer×스텝, 다른 ppid
+    report = li.load(ys, st + [rework], tmp_path / "t.db", verbose=False)
+
+    # wafer 간 변이는 0 이다 — 한 wafer 안의 재작업 차이는 반례가 아니다
+    assert report["ppid_grain"] == {"checkable": 1, "varying": 0}
+    assert any("마스터 단위 조인 의심" in i for i in report["issues"])
+
+
+def test_ppid_grain_needs_a_counterexample_somewhere_not_in_every_lot(tmp_path):
+    """반례가 한 lot 에만 있어도 전역 침묵이어야 한다.
+
+    lot 개별 판정(`varying < checkable`)으로 바꾸면 이 테스트가 실패한다. 한 lot 이 한
+    PPID 로 도는 건 정상인 스텝도 많아 개별 판정은 오경보이므로, 금지된 설계다.
+    """
+    ys = ([{"root_lot_id": "E22B2", "wafer_id": f"{i:02d}", "lot_id": "E22B2.1",
+            "yield": 80.0, "date": "d"} for i in (1, 2)] +
+          [{"root_lot_id": "E22B2", "wafer_id": f"{i:02d}", "lot_id": "E22B2.2",
+            "yield": 80.0, "date": "d"} for i in (3, 4)])
+    st = ([{"root_lot_id": "E22B2", "wafer_id": f"{i:02d}", "process_step": "Etch",
+            "eqp_id": "E9", "ch_id": "A", "ppid": "PPID_L", "timestamp": "t"}
+           for i in (1, 2)] +                  # lot .1 — 안 갈린다
+          [{"root_lot_id": "E22B2", "wafer_id": "03", "process_step": "Etch",
+            "eqp_id": "E9", "ch_id": "A", "ppid": "PPID_L", "timestamp": "t"},
+           {"root_lot_id": "E22B2", "wafer_id": "04", "process_step": "Etch",
+            "eqp_id": "E9", "ch_id": "B", "ppid": "PPID_M", "timestamp": "t"}])
+    report = li.load(ys, st, tmp_path / "t.db", verbose=False)                # lot .2 — 갈린다
+
+    assert report["ppid_grain"] == {"checkable": 2, "varying": 1}
+    assert not any("마스터 단위 조인 의심" in i for i in report["issues"])
+
+
+def test_ppid_grain_ignores_wafers_whose_ppid_is_missing(tmp_path):
+    """ppid 있는 wafer 가 1장뿐인 군은 판정 대상이 아니다.
+
+    `WHERE h.ppid IS NOT NULL` 을 빼면 checkable 이 1 로 올라가 오경보가 난다.
+    ppid 부분 결측은 실데이터 1차 추출의 전형적 상태다(DDL 이 nullable 인 이유).
+    """
+    ys = [{"root_lot_id": "F33C3", "wafer_id": f"{i:02d}", "lot_id": "F33C3.1",
+           "yield": 80.0, "date": "d"} for i in (1, 2, 3)]
+    st = [{"root_lot_id": "F33C3", "wafer_id": f"{i:02d}", "process_step": "Etch",
+           "eqp_id": "E9", "ch_id": "A", "timestamp": "t"} for i in (1, 2, 3)]
+    st[0]["ppid"] = "PPID_L"                  # 3장 중 1장만 ppid 보유
+    report = li.load(ys, st, tmp_path / "t.db", verbose=False)
+
+    assert report["ppid_grain"] == {"checkable": 0, "varying": 0}
+    assert not any("마스터 단위 조인 의심" in i for i in report["issues"])
+
+
 def test_report_prints_on_a_console_that_cannot_encode_every_character(tmp_path,
                                                                       monkeypatch):
     """cp949 콘솔에서 리포트가 죽으면 안 된다.
 
-    한국어 코드페이지에는 em-dash(U+2014)가 없다. 경고 문구에 그 글자가 하나 있으면
-    print 가 UnicodeEncodeError 로 죽는데, `_print` 는 os.replace **뒤에** 불리므로
-    DB 는 교체된 채 traceback 만 남고 **사람이 봐야 할 경고 문구가 사라진다** —
-    빈 추출·중복 이력처럼 리포트가 가장 필요한 순간이 정확히 이 경로다.
+    `_print` 는 os.replace **뒤에** 불린다. 한 줄이 UnicodeEncodeError 로 죽으면 DB 는
+    교체된 채 traceback 만 남고 **사람이 봐야 할 경고 문구가 사라진다** — 리포트가
+    가장 필요한 순간이 정확히 이 경로다.
+
+    이 저장소가 직접 쓰는 문구는 전부 cp949 안으로 맞췄으므로(그래야 '?' 로도 안 깨진다),
+    남은 위험은 **데이터에서 오는 문자열**이다. 리포트는 DB 경로·wafer_id 예시 같은
+    외부 값을 그대로 싣는데 그 안에 무엇이 들어올지는 이 저장소가 통제하지 못한다.
+    여기서는 경로에 em-dash(U+2014, 한국어 코드페이지에 없다)를 넣어 그 경우를 만든다.
     """
-    steps = STEPS + [dict(STEPS[0])]          # wafer×스텝 중복 → em-dash 들어간 경고
+    steps = STEPS + [dict(STEPS[0])]          # wafer×스텝 중복 → 경고 1건 발생
     buf = io.TextIOWrapper(io.BytesIO(), encoding="cp949")
     monkeypatch.setattr(sys, "stdout", buf)
-    li.load(YIELDS, steps, tmp_path / "t.db", verbose=True)
+    li.load(YIELDS, steps, tmp_path / "t—.db", verbose=True)   # 경로에 cp949 밖 글자
     buf.flush()
     out = buf.buffer.getvalue().decode("cp949")
 
     assert "재작업" in out                     # 경고 내용이 남아야 한다
     assert "[교체]" in out                     # 경고 뒤 줄까지 끝까지 찍혀야 한다
+    assert "[grain]" in out                    # grain 진단 줄이 사라지면 안 된다

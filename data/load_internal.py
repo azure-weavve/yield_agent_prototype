@@ -263,7 +263,7 @@ def validate(conn: sqlite3.Connection, n_yield: int, n_steps: int) -> dict:
 
     # 0. 빈 추출 — 그대로 교체하면 멀쩡한 DB 를 빈 DB 로 덮어쓴다
     if n_yield == 0:
-        fatal.append("yield 0행 — 추출 결과가 비었다 (교체 중단)")
+        fatal.append("yield 0행: 추출 결과가 비었다 (교체 중단)")
 
     # 1. 조인 키 형식 (…_NN)
     bad = [r["wafer_id"] for r in q("SELECT wafer_id FROM yield")
@@ -286,7 +286,7 @@ def validate(conn: sqlite3.Connection, n_yield: int, n_steps: int) -> dict:
                   WHERE y.wafer_id IS NULL""")
     if orphan:
         msg = (f"step_history 고아 wafer {len(orphan)}/{n_hist_wafers}건 "
-               f"(예: {[r['wafer_id'] for r in orphan[:3]]}) — 조인 키 불일치 의심")
+               f"(예: {[r['wafer_id'] for r in orphan[:3]]}): 조인 키 불일치 의심")
         (fatal if len(orphan) > n_hist_wafers * ORPHAN_FATAL_RATE else issues).append(msg)
 
     # 4. 이력 없는 wafer — commonality 가 분모에서 제외하므로 표본이 조용히 줄어든다.
@@ -296,7 +296,7 @@ def validate(conn: sqlite3.Connection, n_yield: int, n_steps: int) -> dict:
                    WHERE s.wafer_id IS NULL""")
     if no_hist:
         msg = (f"step_history 없는 wafer {len(no_hist)}/{n_yield}건 "
-               f"(예: {[r['wafer_id'] for r in no_hist[:3]]}) — commonality 분모에서 빠짐")
+               f"(예: {[r['wafer_id'] for r in no_hist[:3]]}): commonality 분모에서 빠짐")
         (fatal if len(no_hist) > n_yield * NO_HISTORY_FATAL_RATE else issues).append(msg)
 
     # 5. yield 범위
@@ -308,31 +308,39 @@ def validate(conn: sqlite3.Connection, n_yield: int, n_steps: int) -> dict:
     dup = one("""SELECT COUNT(*) FROM (SELECT wafer_id, process_step
                  FROM step_history GROUP BY 1,2 HAVING COUNT(*) > 1)""")
     if dup:
-        issues.append(f"wafer×스텝 중복 이력 {dup}건 — 재작업(rework)인지 확인 필요")
+        issues.append(f"wafer×스텝 중복 이력 {dup}건: 재작업(rework)인지 확인 필요")
 
     # 7. ppid grain — 결측률이 못 보는 실패. ppid 를 lot/recipe 마스터에서 조인해 오면
     #    결측률 0.0(초록)인데 lot 전원이 같은 값이 되어 hyp_ppid_commonality 가 에러 없이
     #    틀린 집계를 낸다. 한 lot 이 한 PPID 로 도는 건 정상인 스텝도 많으므로 lot 개별
     #    판정은 오경보가 잦다 — 반례(한 군에서 ppid 2값) 1건이면 wafer 단위가 증명되니
     #    "전 데이터에 반례 0건" 이라는 전역 조건으로만 의심한다.
+    #    ppid 는 **wafer 단위로 먼저 접는다**(안쪽 GROUP BY). 행 단위로 세면 한 wafer 의
+    #    재작업 2행이 ppid 만 다를 때 wafer 간 변이가 0인데도 반례로 잡히고, 판정이
+    #    전역이라 그런 행 하나로 검사 전체가 조용히 꺼진다 (검사 #6 참조: 실데이터에
+    #    중복 이력은 예상되는 상태다).
     gr = q("""SELECT COUNT(*) checkable, COALESCE(SUM(nd > 1), 0) varying FROM (
-                  SELECT COUNT(DISTINCT h.ppid) nd
-                  FROM step_history h JOIN yield y USING (wafer_id)
-                  WHERE h.ppid IS NOT NULL
-                  GROUP BY y.lot_id, h.process_step
-                  HAVING COUNT(DISTINCT h.wafer_id) > 1)""")[0]
+                  SELECT COUNT(DISTINCT p) nd
+                  FROM (SELECT y.lot_id lot, h.process_step step,
+                               h.wafer_id w, MIN(h.ppid) p
+                        FROM step_history h JOIN yield y USING (wafer_id)
+                        WHERE h.ppid IS NOT NULL
+                        GROUP BY 1, 2, 3)
+                  GROUP BY lot, step
+                  HAVING COUNT(*) > 1)""")[0]
     ppid_grain = {"checkable": gr["checkable"], "varying": gr["varying"]}
     if ppid_grain["checkable"] and ppid_grain["varying"] == 0:
-        # 메시지에 em-dash 를 쓰지 않는다: cp949 콘솔에서 `_say` 가 '?' 로 바꿔 버린다
-        # (죽지는 않는다 — `_say` 가 막는다)
+        # 확정 판정이 아니라는 것을 **문구 안에** 적는다. 콘솔에서 이 줄을 보는 사람은
+        # 이 파일의 docstring 을 읽지 않으므로, 여기 없으면 없는 조인 버그를 쫓게 된다.
         issues.append(
             f"ppid 가 lot×스텝 안에서 한 번도 안 갈린다 (검사 가능 {ppid_grain['checkable']}군). "
-            "lot/recipe 마스터 단위 조인 의심 (ppid 는 wafer×스텝 단위여야 한다)")
+            "lot/recipe 마스터 단위 조인 의심 (ppid 는 wafer×스텝 단위여야 한다). "
+            "단 전 스텝이 lot 단위 PPID 로 운영되면 정상 데이터도 같은 모양이니 확정은 아니다")
 
     lot_types = {r["lot_type"]: r["c"] for r in
                  q("SELECT lot_type, COUNT(*) c FROM yield GROUP BY 1")}
     if lot_types.get(PROD, 0) == 0:
-        issues.append(f"양산({PROD}) lot 0건 — classify_lot_type 규칙 확인 필요")
+        issues.append(f"양산({PROD}) lot 0건: classify_lot_type 규칙 확인 필요")
 
     steps = q("""SELECT MIN(c) lo, MAX(c) hi, AVG(c) avg FROM
                  (SELECT COUNT(*) c FROM step_history GROUP BY wafer_id)""")
@@ -386,7 +394,7 @@ def _print(r: dict) -> None:
     # 경고가 안 뜬 이유를 구분하려면 숫자가 보여야 한다 (wafer 단위 확인됨 vs 판정 불가)
     g = r["ppid_grain"]
     _say(f"[grain] ppid wafer 단위 증거 {g['varying']}/{g['checkable']}군"
-         f"{' (판정 불가: lot×스텝당 wafer 1장)' if not g['checkable'] else ''}")
+         f"{' (판정 불가: ppid 있는 wafer 가 2장 이상인 lot×스텝 군이 없다)' if not g['checkable'] else ''}")
     _say(f"[라벨] defect_type 보유 {r['defect_labeled']}건 (없으면 EDS 로 그룹을 만든다)")
     if r["issues"]:
         _say("[정합성 경고]")
@@ -422,15 +430,17 @@ def _extract():
 
 def main():
     ap = argparse.ArgumentParser(description="사내 실데이터 → yield + step_history 적재")
+    # help 문구는 argparse 가 직접 찍는다 — `_say` 가 못 덮으므로 cp949 밖 글자를 쓰면
+    # `--help` 자체가 UnicodeEncodeError 로 죽는다 (em-dash·⚠️ 금지)
     ap.add_argument("--db", default=str(config.DB_PATH),
-                    help=f"적재 대상 DB (기본 {config.DB_PATH} — 더미와 동일, 덮어씀 주의)")
+                    help=f"적재 대상 DB (기본 {config.DB_PATH}: 더미와 동일, 덮어씀 주의)")
     ap.add_argument("--force", action="store_true",
                     help="치명적 정합성 오류가 있어도 기존 DB 를 교체한다")
     args = ap.parse_args()
 
     db = Path(args.db)
     if db == Path(config.DB_PATH):
-        print(f"⚠️  {db} 는 더미 DB 와 같은 경로입니다. 기존 내용이 대체됩니다.")
+        _say(f"[주의] {db} 는 더미 DB 와 같은 경로입니다. 기존 내용이 대체됩니다.")
 
     yield_records, step_records = _extract()
     report = load(yield_records, step_records, db, force=args.force)
