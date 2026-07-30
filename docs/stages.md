@@ -198,6 +198,12 @@ wafer 에 신호를 심지 않습니다**(데모가 타깃 7장 중 "불량군 3
 Stage 축은 **"실데이터에서 돌게 만든다"** 이고, `evidence_based_analysis_roadmap.md` 의 Phase
 축은 **"믿을 만하게 만든다"** 입니다. 서로를 참조하지 않습니다.
 
+> ⚠️ Phase 축에 착수하기 전에 그 문서 상단의 **상태 블록**을 먼저 읽으십시오. 본문이
+> 만들라고 처방하는 도구 3개(`validate_data_completeness`·`compare_parameter_distribution`
+> ·`find_counterexamples`)는 만들어졌다가 **Stage 5 에서 삭제**됐고, 스키마 서술도
+> 낡았습니다. 방향은 유효하지만 세부를 그대로 따르면 없는 토대 위에 쌓게 됩니다.
+> 문서 전반의 유효성 판정은 [`README.md`](README.md) 색인에 있습니다.
+
 **Stage 5 를 다 끝내도 결론 정확도를 측정할 수단은 없습니다.** Stage A Task 4 의 적대적
 케이스가 Phase 축으로 넘어가는 첫 다리입니다.
 

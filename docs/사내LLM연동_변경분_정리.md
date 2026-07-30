@@ -1,5 +1,19 @@
 # 사내 LLM 연동 — 변경분 전체 정리 (2026-07-16)
 
+> ## ⚠️ 이 문서의 상태 (2026-07-30 확인)
+>
+> **이 작업은 끝났다. 할 일 목록이 아니라 완료 기록이다.** 아래 "작업 목록" 은
+> 2026-07-16 에 재현을 마친 항목들이므로 다시 실행하지 말 것.
+>
+> 그 뒤로 저장소가 많이 달라졌다 — 기준선 **63 passed → 152 passed**(2026-07-30),
+> 스키마는 `yield`·`step_history`·`sensor_log` 3개, 본문이 언급하는
+> `compare_process_logs`·`aggregate_defects`·`find_counterexamples`·
+> `validate_data_completeness`·`compare_parameter_distribution` 은 **Stage 4·5 에서
+> 전부 삭제**됐다. 본문의 파일·함수 위치는 그대로 믿지 말고 코드로 확인할 것.
+>
+> `LLM_MODE=openai` 경로의 **현재** 주의사항은 `docs/deferred-internal-integration.md`
+> 와 `docs/stages.md` 에 있다.
+
 > **목적:** 회사에서 진행한 `LLM_MODE=openai` 연동 작업을 집에서 손으로 재현하기 위한 작업 목록.
 > **범위:** 사내 LLM + 더미 데이터로 End-to-End 정상 동작 확인까지. EDS 는 `local` 유지, 실데이터 연동은 미착수.
 > **결과:** 테스트 58 → 63 passed (0.89s, mock 기본값). `main.py` 실제 사내 LLM 완주 + 수치 검증 통과.

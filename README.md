@@ -214,3 +214,5 @@ LLM은 데이터를 만들지 않고 도구 결과를 표현만 하므로, 식�
   [docs/deferred-internal-integration.md](docs/deferred-internal-integration.md) 참고.
 - 실데이터로 가기까지의 작업 순서와 각 단계 진입 조건은 [docs/stages.md](docs/stages.md) 가
   단일 출처입니다.
+- `docs/` 에 문서가 31개 있는데 **일부는 과거 기록이라 그대로 따르면 안 됩니다.**
+  어느 것이 살아 있는 지침인지는 [docs/README.md](docs/README.md) 색인이 판정해 줍니다.

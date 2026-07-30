@@ -1,5 +1,30 @@
 # 근거 기반 수율 분석 고도화 로드맵
 
+> ## ⚠️ 이 문서의 상태 (2026-07-30 확인)
+>
+> **작성일 2026-07-13. 방향(§목적·Phase 축)은 여전히 유효하고 `stages.md:198` 이
+> "다음 축" 으로 이 문서를 가리킨다. 그러나 아래 본문의 도구·스키마 세부는 낡았다.**
+> 착수 전 이 블록을 먼저 읽고, 본문은 **당시 판단의 기록**으로 읽을 것.
+>
+> **사라진 것 — 본문이 만들라고 처방하는 도구 3개는 만들어졌다가 Stage 5 에서 삭제됐다:**
+> `validate_data_completeness` · `compare_parameter_distribution` ·
+> `find_counterexamples` (그리고 §30행이 "현재 제공" 이라 서술하는
+> `compare_process_logs` 는 tool 로 등록된 적조차 없는 죽은 코드였다).
+> 특히 **§317~319 의 `~~구현 완료~~` 취소선은 오해를 부른다** — 구현됐다가 삭제됐다.
+> 그 역할의 현재 담당:
+>
+> | 삭제된 것 | 지금 그 일을 하는 것 |
+> |---|---|
+> | `validate_data_completeness` | `load_internal.validate()`(적재 시점) + commonality 의 `missing_history`·`no_paired_stratum`(분석 시점) |
+> | `compare_parameter_distribution` | `tools/sensor_compare.py`(2단) — spec 이탈이 아니라 **두 그룹의 분포 차이**를 본다 |
+> | `find_counterexamples` | commonality 2×2 의 `control_pass` (단 **범위 축소**: 같은 root_lot 대조군 안만 셈) |
+>
+> **스키마도 다르다.** §232 는 `yield`·`process_log` 라고 쓰지만 현재는
+> **`yield`·`step_history`·`sensor_log` 3개**이고 `process_log` 는 삭제됐다.
+> '스펙 이탈' 개념 자체가 프로토타입에 없다 — 사내 `step_history` 에 파라미터가 없다.
+>
+> 현재 상태의 정본은 `stages.md`(Stage 축)와 `README.md`(구조)다.
+
 ## 목적
 
 이 문서는 현재 Yield Agent가 제공하는 "불량군 탐지 → 정상군 비교 → 공정 로그 조사 → 원인 가설 → 리포트" 흐름을, 현업 의사결정에 사용할 수 있는 근거 기반 분석 체계로 발전시키기 위한 설계안이다.

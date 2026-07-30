@@ -1,7 +1,15 @@
 # 분석 루프 설계 — 하이브리드 Agent (현황 파악 → 원인 분석 → 리포팅)
 
-> 현재 프로토타입(고정 경로)에서 **하이브리드 자율 분석 Agent**로 진화하기 위한 설계 메모.
-> 나중에 이어서 구현하기 위한 참고 문서입니다. 아직 코드로는 미구현.
+> ## ⚠️ 이 문서의 상태 (2026-07-30 확인)
+>
+> **작성일 2026-07-13. 아래 원문의 "아직 코드로는 미구현" 은 이제 사실이 아니다 —
+> 이 루프는 구현되어 있다.** `graph/build.py`(그래프 조립) · `graph/nodes.py`(노드) ·
+> `graph/state.py`(`loop_count` 가드레일, `findings` 감사 기록)를 볼 것.
+> 구현 경과는 `docs/superpowers/plans/2026-07-10-hybrid-analysis-loop.md` 에 있다.
+>
+> 이 문서는 **착수 전 설계 메모의 기록**으로만 읽는다. 현재 동작의 정본은 코드와
+> `README.md` 이고, 남은 고도화 방향은 `evidence_based_analysis_roadmap.md`(Phase 축)다.
+> 본문의 도구 이름 일부(`aggregate_defects` 등)는 Stage 4·5 에서 삭제됐다.
 
 ## 1. 목표
 

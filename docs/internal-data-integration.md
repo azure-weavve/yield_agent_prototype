@@ -19,7 +19,7 @@ root_lot A45Z5 (물리 묶음, 거의 항상 25매)
 - `wafer_no` = **두 자리 순번 그 자체**(예 `01`). 사내 원천에선 이 값이 `wafer_id`
   라는 컬럼명으로 올 수 있으나, root_lot/lot 정보를 담지 않는다.
 - **조인 키** = `root_lot_id` + `_` + `zero-pad(wafer_no, 2)` = 예 `A45Z5_01`.
-  전 시스템 공통 키 — 타깃 DB 의 `wafer_id` 컬럼, process_log, EDS 인덱스 모두 이 형태.
+  전 시스템 공통 키 — 타깃 DB 의 `wafer_id` 컬럼, `step_history`, EDS 인덱스 모두 이 형태.
 - 결론: **타깃 `wafer_id` 컬럼 = 합성 조인 키**, **원천 `wafer_id` = 두 자리 순번**.
   이름이 겹치니 ETL 에서 반드시 구분해 합성한다.
 
@@ -32,7 +32,7 @@ root_lot A45Z5 (물리 묶음, 거의 항상 25매)
 - 현재 코드는 ID 를 파싱하지 않고 합성 키를 문자열로 그대로 사용 →
   ID 형식은 코드 수정 없이 수용. 단 **조인 키 합성(패딩 포함)은 ETL 책임**.
 
-## 2. ETL 적재 규칙 (`data/load_internal.py` 신규 — 미작성)
+## 2. ETL 적재 규칙 (`data/load_internal.py` — **작성 완료**)
 
 목표 스키마: `yield`·`step_history` 2테이블 (`data/load_internal.py` 의 `DDL` 이 정본).
 
@@ -43,7 +43,7 @@ root_lot A45Z5 (물리 묶음, 거의 항상 25매)
 
 | 컬럼 | 규칙 |
 |------|------|
-| `wafer_id` | **원천 그대로 아님** — `root_lot_id + "_" + f"{int(wafer_no):02d}"` 로 합성한 조인 키. 원천 `wafer_id`(두 자리 순번)와 이름이 겹치므로 ETL 에서 구분. yield·process_log·EDS 3곳 바이트 일치 필수 |
+| `wafer_id` | **원천 그대로 아님** — `root_lot_id + "_" + f"{int(wafer_no):02d}"` 로 합성한 조인 키. 원천 `wafer_id`(두 자리 순번)와 이름이 겹치므로 ETL 에서 구분. yield·step_history·EDS 3곳 바이트 일치 필수 |
 | `lot_id` | 원천의 분할 lot ID (파생 불가, 매핑 필수) |
 | `root_lot_id` (신규) | lot_id 의 `.` 앞 — wafer_id 의 `_` 앞과 교차 검증 (품질 체크) |
 | `lot_type` (신규) | `.1` → 양산, 그 외 → 평가. 격리 함수로 구현 |
