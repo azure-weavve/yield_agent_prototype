@@ -7,7 +7,9 @@
 """
 
 import io
+import os
 import sqlite3
+import subprocess
 import sys
 
 from data import load_internal as li
@@ -86,7 +88,11 @@ def test_ppid_that_never_varies_within_lot_and_step_is_flagged(tmp_path):
 
 
 def test_ppid_grain_is_silent_when_variation_is_structurally_impossible(tmp_path):
-    """lot×스텝마다 wafer 가 1장뿐이면 갈릴 수가 없다 — 경고하면 100% 오경보다."""
+    """군 안에 설비·챔버가 갈리는 wafer 짝이 없으면 판정 대상이 아니다.
+
+    여기서는 lot×스텝마다 wafer 가 1장씩이라 그렇다. 단일 wafer 를 위한 별도 가드가
+    있는 게 아니라 `COUNT(DISTINCT tool) > 1` 하나가 두 경우를 함께 처리한다.
+    """
     yields = [{"root_lot_id": "C31K8", "wafer_id": "01", "lot_id": "C31K8.1",
                "yield": 90.0, "date": "2026-07-03"},
               {"root_lot_id": "C31K8", "wafer_id": "02", "lot_id": "C31K8.2",
@@ -128,6 +134,70 @@ def test_uniform_equipment_means_the_source_never_proved_wafer_granularity(tmp_p
 
     assert report["ppid_grain"] == {"checkable": 0, "varying": 0}
     assert not any("마스터 단위 조인 의심" in i for i in report["issues"])
+
+
+def test_equipment_alone_can_prove_wafer_granularity_without_any_chamber(tmp_path):
+    """설비만 갈리고 `ch_id` 가 아예 없는 스텝도 판정 대상이다.
+
+    `ch_id` 는 nullable 이고(단일 챔버 설비·챔버 개념 없는 스텝) 결측률이 높을 수 있어
+    리포트가 `ch_id_null_rate` 를 따로 싣는다. `tool` 을 `ch_id` 만으로 잡거나
+    `IFNULL` 을 빼면 그런 스텝 전부에서 검사가 조용히 꺼진다.
+    """
+    ys = [{"root_lot_id": "P11A1", "wafer_id": f"{i:02d}", "lot_id": "P11A1.1",
+           "yield": 80.0, "date": "d"} for i in (1, 2, 3)]
+    # 설비는 wafer 마다 갈리고 ch_id 는 원천에 없음. ppid 는 전원 동일(lot 마스터 grain)
+    st = [{"root_lot_id": "P11A1", "wafer_id": f"{i:02d}", "process_step": "Etch",
+           "eqp_id": f"E{i}", "ppid": "PPID_L", "timestamp": "t"} for i in (1, 2, 3)]
+    report = li.load(ys, st, tmp_path / "t.db", verbose=False)
+
+    assert report["ch_id_null_rate"] == 1.0        # 챔버 정보가 전혀 없는 상태
+    assert report["ppid_grain"] == {"checkable": 1, "varying": 0}
+    assert any("마스터 단위 조인 의심" in i for i in report["issues"])
+
+
+def test_equipment_and_chamber_are_joined_with_a_separator(tmp_path):
+    """설비·챔버를 이어붙일 때 구분자가 없으면 서로 다른 장비가 같은 값이 된다.
+
+    `E1`+`2A` 와 `E12`+`A` 는 구분자가 없으면 둘 다 `E12A` 로 뭉쳐 판정 대상에서
+    빠진다(항상 침묵 방향이라 오경보는 안 나지만, 검사가 조용히 꺼진다).
+    """
+    ys = [{"root_lot_id": "R33C3", "wafer_id": f"{i:02d}", "lot_id": "R33C3.1",
+           "yield": 80.0, "date": "d"} for i in (1, 2)]
+    st = [{"root_lot_id": "R33C3", "wafer_id": "01", "process_step": "Etch",
+           "eqp_id": "E1", "ch_id": "2A", "ppid": "PPID_L", "timestamp": "t"},
+          {"root_lot_id": "R33C3", "wafer_id": "02", "process_step": "Etch",
+           "eqp_id": "E12", "ch_id": "A", "ppid": "PPID_L", "timestamp": "t"}]
+    report = li.load(ys, st, tmp_path / "t.db", verbose=False)
+
+    assert report["ppid_grain"] == {"checkable": 1, "varying": 0}
+    assert any("마스터 단위 조인 의심" in i for i in report["issues"])
+
+
+def test_grain_is_judged_per_step_not_per_lot(tmp_path, monkeypatch):
+    """군은 (lot, 스텝) 이다 — 스텝 축을 빼면 실데이터에서 검사가 통째로 침묵한다.
+
+    바깥 GROUP BY 에서 스텝을 빼면 한 lot 의 여러 스텝이 한 군으로 뭉친다. 스텝마다
+    PPID 가 다른 건 당연하므로 `varying > 0` 이 항상 성립하고, 판정이 전역이라 전체가
+    침묵한다 — 그런데 `[grain]` 줄은 0 아닌 숫자를 찍어 사람을 안심시킨다.
+    """
+    ys = [{"root_lot_id": "Q22B2", "wafer_id": f"{i:02d}", "lot_id": "Q22B2.1",
+           "yield": 80.0, "date": "d"} for i in (1, 2)]
+    # 2개 스텝, 둘 다 lot 마스터 grain (스텝끼리는 ppid 가 다르다 — 정상)
+    st = [{"root_lot_id": "Q22B2", "wafer_id": f"{i:02d}", "process_step": step,
+           "eqp_id": "E9", "ch_id": ch, "ppid": f"PPID_{step}", "timestamp": "t"}
+          for step in ("Etch", "CMP") for i, ch in zip((1, 2), "AB")]
+
+    buf = io.TextIOWrapper(io.BytesIO(), encoding="cp949")
+    monkeypatch.setattr(sys, "stdout", buf)
+    report = li.load(ys, st, tmp_path / "t.db", verbose=True)
+    buf.flush()
+    out = buf.buffer.getvalue().decode("cp949")
+
+    assert report["ppid_grain"] == {"checkable": 2, "varying": 0}
+    assert any("마스터 단위 조인 의심" in i for i in report["issues"])
+    # 비율의 **순서**까지 고정한다 — 체크리스트가 사람에게 이 줄에서 `0/N군` 을 읽으라고
+    # 지시하므로, 뒤집히면(2/0) 판단을 정반대로 오도한다
+    assert "0/2군" in out
 
 
 def test_rework_rows_are_not_mistaken_for_wafer_level_variation(tmp_path):
@@ -220,3 +290,17 @@ def test_report_prints_on_a_console_that_cannot_encode_every_character(tmp_path,
     assert "재작업" in out                     # 경고 내용이 남아야 한다
     assert "[교체]" in out                     # 경고 뒤 줄까지 끝까지 찍혀야 한다
     assert "[grain]" in out                    # grain 진단 줄이 사라지면 안 된다
+
+
+def test_help_text_survives_a_cp949_console():
+    """`--help` 는 argparse 가 직접 찍으므로 `_say` 가 못 덮는다.
+
+    help·description 문구에 cp949 밖 글자(em-dash·⚠️)를 하나 넣으면 `--help` 자체가
+    UnicodeEncodeError 로 죽는다. 코드에는 그러지 말라는 주석이 있지만 주석은 강제력이
+    없어서, 이 저장소에서 `_say` 가 구조적으로 보호할 수 없는 유일한 경로를 여기서 고정한다.
+    """
+    env = {**os.environ, "PYTHONIOENCODING": "cp949"}
+    proc = subprocess.run([sys.executable, "-m", "data.load_internal", "--help"],
+                          capture_output=True, env=env,
+                          cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    assert proc.returncode == 0, proc.stderr.decode("utf-8", "replace")
