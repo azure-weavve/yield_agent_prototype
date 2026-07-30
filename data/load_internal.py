@@ -19,6 +19,8 @@
   ⚠️ ppid 는 **그 wafer 가 그 스텝을 돌 때 쓴 PPID** — wafer×스텝 단위다.
       lot 단위나 recipe 마스터 단위로 넣으면 에러 없이 틀린 집계가 나온다.
       hyp_ppid_commonality(2차 legend)가 이 컬럼 위에서 돈다.
+      `validate()` 가 이걸 실제로 검사한다(리포트의 `ppid_grain`, `[grain]` 줄) —
+      단 "전 데이터에 반례 0건" 일 때만 의심하는 전역 조건이므로 확정 판정은 아니다.
 
   ⚠️ **이름 겹침 주의 (이 스크립트에서 가장 헷갈리는 지점)**
       원천의 `wafer_id`  = 두 자리 **순번** ("01", "13", "25")
@@ -35,6 +37,7 @@ import argparse
 import os
 import re
 import sqlite3
+import sys
 from pathlib import Path
 
 import config
@@ -307,6 +310,25 @@ def validate(conn: sqlite3.Connection, n_yield: int, n_steps: int) -> dict:
     if dup:
         issues.append(f"wafer×스텝 중복 이력 {dup}건 — 재작업(rework)인지 확인 필요")
 
+    # 7. ppid grain — 결측률이 못 보는 실패. ppid 를 lot/recipe 마스터에서 조인해 오면
+    #    결측률 0.0(초록)인데 lot 전원이 같은 값이 되어 hyp_ppid_commonality 가 에러 없이
+    #    틀린 집계를 낸다. 한 lot 이 한 PPID 로 도는 건 정상인 스텝도 많으므로 lot 개별
+    #    판정은 오경보가 잦다 — 반례(한 군에서 ppid 2값) 1건이면 wafer 단위가 증명되니
+    #    "전 데이터에 반례 0건" 이라는 전역 조건으로만 의심한다.
+    gr = q("""SELECT COUNT(*) checkable, COALESCE(SUM(nd > 1), 0) varying FROM (
+                  SELECT COUNT(DISTINCT h.ppid) nd
+                  FROM step_history h JOIN yield y USING (wafer_id)
+                  WHERE h.ppid IS NOT NULL
+                  GROUP BY y.lot_id, h.process_step
+                  HAVING COUNT(DISTINCT h.wafer_id) > 1)""")[0]
+    ppid_grain = {"checkable": gr["checkable"], "varying": gr["varying"]}
+    if ppid_grain["checkable"] and ppid_grain["varying"] == 0:
+        # 메시지에 em-dash 를 쓰지 않는다: cp949 콘솔에서 `_say` 가 '?' 로 바꿔 버린다
+        # (죽지는 않는다 — `_say` 가 막는다)
+        issues.append(
+            f"ppid 가 lot×스텝 안에서 한 번도 안 갈린다 (검사 가능 {ppid_grain['checkable']}군). "
+            "lot/recipe 마스터 단위 조인 의심 (ppid 는 wafer×스텝 단위여야 한다)")
+
     lot_types = {r["lot_type"]: r["c"] for r in
                  q("SELECT lot_type, COUNT(*) c FROM yield GROUP BY 1")}
     if lot_types.get(PROD, 0) == 0:
@@ -333,33 +355,54 @@ def validate(conn: sqlite3.Connection, n_yield: int, n_steps: int) -> dict:
         "ppid_null_rate": round(
             one("SELECT COUNT(*) FROM step_history WHERE ppid IS NULL")
             / max(n_steps, 1), 3),
+        # grain 진단 — checkable 0 이면 판정 불가(ppid 있는 wafer 가 2장 이상인 군이 없다)
+        "ppid_grain": ppid_grain,
         "fatal": fatal,
         "issues": issues,
     }
 
 
+def _say(line: str) -> None:
+    """콘솔 인코딩이 못 싣는 글자가 있어도 리포트를 잃지 않는다.
+
+    한국어 코드페이지(cp949)에는 em-dash(U+2014)가 없다. 경고 문구에 그 글자가 하나
+    있으면 print 가 UnicodeEncodeError 로 죽는데, `_print` 는 os.replace **뒤에**
+    불리므로 DB 는 교체된 채 traceback 만 남고 사람이 봐야 할 경고가 사라진다.
+    빈 추출·중복 이력처럼 리포트가 가장 필요한 순간이 정확히 이 경로다.
+    """
+    try:
+        print(line)
+    except UnicodeEncodeError:
+        enc = getattr(sys.stdout, "encoding", None) or "utf-8"
+        print(line.encode(enc, "replace").decode(enc, "replace"))
+
+
 def _print(r: dict) -> None:
-    print(f"[적재] yield {r['n_yield']}행 / step_history {r['n_steps']}행")
-    print(f"[구성] root_lot {r['n_root_lots']}개 · 이력 보유 wafer {r['n_wafers_with_history']}장 "
-          f"· lot_type {r['lot_types']}")
-    print(f"[이력] wafer 당 스텝 {r['steps_per_wafer']} · ch_id 결측률 {r['ch_id_null_rate']}"
-          f" · ppid 결측률 {r['ppid_null_rate']}")
-    print(f"[라벨] defect_type 보유 {r['defect_labeled']}건 (없으면 EDS 로 그룹을 만든다)")
+    _say(f"[적재] yield {r['n_yield']}행 / step_history {r['n_steps']}행")
+    _say(f"[구성] root_lot {r['n_root_lots']}개 · 이력 보유 wafer {r['n_wafers_with_history']}장 "
+         f"· lot_type {r['lot_types']}")
+    _say(f"[이력] wafer 당 스텝 {r['steps_per_wafer']} · ch_id 결측률 {r['ch_id_null_rate']}"
+         f" · ppid 결측률 {r['ppid_null_rate']}")
+    # 경고가 안 뜬 이유를 구분하려면 숫자가 보여야 한다 (wafer 단위 확인됨 vs 판정 불가)
+    g = r["ppid_grain"]
+    _say(f"[grain] ppid wafer 단위 증거 {g['varying']}/{g['checkable']}군"
+         f"{' (판정 불가: lot×스텝당 wafer 1장)' if not g['checkable'] else ''}")
+    _say(f"[라벨] defect_type 보유 {r['defect_labeled']}건 (없으면 EDS 로 그룹을 만든다)")
     if r["issues"]:
-        print("[정합성 경고]")
+        _say("[정합성 경고]")
         for i in r["issues"]:
-            print(f"  - {i}")
+            _say(f"  - {i}")
     if r["fatal"]:
-        print("[치명적 오류]")
+        _say("[치명적 오류]")
         for i in r["fatal"]:
-            print(f"  - {i}")
+            _say(f"  - {i}")
     if not r["issues"] and not r["fatal"]:
-        print("[정합성] 이상 없음")
+        _say("[정합성] 이상 없음")
     if r.get("swapped"):
-        print(f"[교체] {r['db_path']} 갱신 완료")
+        _say(f"[교체] {r['db_path']} 갱신 완료")
     else:
-        print(f"[교체 안 함] {r['db_path']} 는 기존 상태 유지 "
-              f"(--force 로 무시 가능)")
+        _say(f"[교체 안 함] {r['db_path']} 는 기존 상태 유지 "
+             f"(--force 로 무시 가능)")
 
 
 # --------------------------------------------------------------------------- #
