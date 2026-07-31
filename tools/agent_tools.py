@@ -13,16 +13,7 @@ from langchain_core.tools import tool
 from domain import registry
 from tools import sensor_compare as sc
 from tools import yield_tools as yt
-from tools.eds_search import get_searcher
-
-_searcher = None  # hnswlib 인덱스 로드는 무거우므로 최초 사용 시 1회만
-
-
-def _searcher_lazy():
-    global _searcher
-    if _searcher is None:
-        _searcher = get_searcher()
-    return _searcher
+from tools.eds_search import get_searcher    # 캐시는 그쪽 모듈에 하나만 있다
 
 
 @tool
@@ -38,7 +29,7 @@ def search_similar(wafer_id: str, k: int = 5, reason: str = "") -> list[dict]:
     """불량 맵 패턴이 유사한 과거 wafer 를 찾는다.
     과거 사례와 비교해 원인 단서를 얻으려면 가장 먼저 사용.
     reason: 이 tool 을 호출하는 판단 이유를 한 문장으로 기술한다 (감사 기록에 남는다)."""
-    return _searcher_lazy().search(wafer_id, k=k)
+    return get_searcher().search(wafer_id, k=k)
 
 
 @tool

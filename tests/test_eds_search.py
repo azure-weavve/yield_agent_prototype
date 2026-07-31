@@ -8,6 +8,7 @@ LocalEDSSearcher 는 hnswlib 인덱스 생성물이 필요하므로 여기서는
 
 import requests
 
+from tools import agent_tools, eds_search, grouping
 from tools.eds_search import HttpEDSSearcher
 
 
@@ -45,3 +46,29 @@ def test_http_search_truncates_to_k(monkeypatch):
     out = HttpEDSSearcher().search("W1", k=3)
     assert len(out) == 3
     assert [r["wafer_id"] for r in out] == ["W2", "W3", "W4"]
+
+
+def test_both_call_paths_share_one_searcher(monkeypatch):
+    """두 호출 경로가 인덱스를 한 번만 로드한다 (미룸 10번).
+
+    예전에는 `grouping` 과 `agent_tools` 가 각자 lazy singleton 을 들고 있어 같은
+    hnswlib 인덱스가 두 번 올라갔다(메모리·기동시간 낭비).
+
+    이 테스트가 잡는 것은 **`eds_search` 의 공유 캐시가 사라지는 것**이다. 변이로 확인:
+    캐시를 없애면 build 가 2회 불려 죽는다. 반대로 호출부가 자기 캐시를 **되살리는**
+    변이는 이 테스트로 못 잡는다 — 공유 캐시가 살아 있는 한 로드는 여전히 1회라
+    낭비가 생기지 않기 때문이다(그 경우는 중복 코드지 이중 로드가 아니다).
+    """
+    class _Stub:
+        def search(self, wafer_id, k):
+            return []
+
+    builds = []
+    monkeypatch.setattr(eds_search, "_searcher", None)      # 캐시 비우고 시작
+    monkeypatch.setattr(eds_search, "_build_searcher",
+                        lambda: (builds.append(1), _Stub())[1])
+
+    grouping.normalize_target(["W2406_02"])                 # 경로 1
+    agent_tools.search_similar.invoke({"wafer_id": "W2406_02", "k": 2})   # 경로 2
+
+    assert builds == [1]

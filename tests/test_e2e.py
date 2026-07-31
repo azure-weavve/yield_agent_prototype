@@ -66,13 +66,13 @@ def test_eds_lookup_failure_ends_with_report_not_crash(monkeypatch):
     '입력 wafer 가 없다(unknown_target)' 와 사유가 다르다 — 이쪽은 EDS 쪽 문제라
     사람이 할 조치가 다르다. 다만 사유를 '인덱스에 없다' 로 단정하지는 않는다.
     """
-    from tools import grouping
+    from tools import eds_search
 
     class _Missing:
         def search(self, wafer_id, k):
             raise KeyError(wafer_id)
 
-    monkeypatch.setattr(grouping, "_searcher", _Missing())
+    monkeypatch.setattr(eds_search, "_searcher", _Missing())
     state = build_graph().invoke(
         {"target_wafers": ["W2406_02"], "target_source": "manual"}
     )

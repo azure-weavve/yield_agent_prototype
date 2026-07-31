@@ -1,6 +1,6 @@
 """정규화 계층 검증 — 형제 묶기(EDS)와 대조군 선정(형제 lot 합집합). 더미 DB seed 42 고정."""
 
-from tools import grouping
+from tools import eds_search, grouping
 
 CEN_SIBLINGS = ["W2410_cen1", "W2411_cen2", "W2412_cen3", "W2413_cen4"]
 
@@ -34,7 +34,7 @@ def test_eds_siblings_absent_from_yield_db_go_to_unmatched(monkeypatch):
             return [{"wafer_id": "W2406_04", "similarity": 0.95},
                     {"wafer_id": "W_GHOST", "similarity": 0.90}]
 
-    monkeypatch.setattr(grouping, "_searcher", _Stub())
+    monkeypatch.setattr(eds_search, "_searcher", _Stub())
     res = grouping.normalize_target(["W2406_02"])
     assert "W_GHOST" not in res["target_group"]
     assert res["unmatched_siblings"] == ["W_GHOST"]
@@ -120,7 +120,7 @@ def test_eds_index_miss_is_reported_not_raised(monkeypatch):
         def search(self, wafer_id, k):
             raise KeyError(wafer_id)
 
-    monkeypatch.setattr(grouping, "_searcher", _Missing())
+    monkeypatch.setattr(eds_search, "_searcher", _Missing())
     res = grouping.normalize_target(["W2406_02"])
     assert res["eds_error"] is not None
     assert "KeyError" in res["eds_error"]

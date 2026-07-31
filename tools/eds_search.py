@@ -100,7 +100,26 @@ class HttpEDSSearcher(EDSSearcher):
         return out
 
 
+_searcher: EDSSearcher | None = None    # hnswlib 인덱스 로드가 무거워 1회만
+
+
 def get_searcher() -> EDSSearcher:
+    """검색기 획득 지점 — **이 저장소에 한 곳뿐이다.**
+
+    예전에는 `grouping` 과 `agent_tools` 가 각자 lazy singleton 을 들고 있어 같은
+    hnswlib 인덱스를 두 번 로드했다(메모리·기동시간 낭비). 캐시를 여기 하나로 모은다.
+
+    캐시가 생긴 뒤로는 `config.EDS_MODE` 를 런타임에 바꿔도 반영되지 않는다 — 원래도
+    호출부가 각자 캐시해서 그랬고, 모드는 실행 중 불변이다(결정론 원칙). 테스트에서
+    구현을 갈아끼울 때는 이 모듈의 `_searcher` 를 monkeypatch 한다.
+    """
+    global _searcher
+    if _searcher is None:
+        _searcher = _build_searcher()
+    return _searcher
+
+
+def _build_searcher() -> EDSSearcher:
     """config.EDS_MODE 에 따라 구현 선택."""
     if config.EDS_MODE == "local":
         return LocalEDSSearcher()

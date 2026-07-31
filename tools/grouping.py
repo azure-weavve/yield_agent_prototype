@@ -9,16 +9,7 @@ status 입력 재설계(2026-07-18 문서 3절)의 두 입력 형태를 한 형�
 
 import config
 from tools import yield_tools as yt
-from tools.eds_search import get_searcher
-
-_searcher = None  # hnswlib 인덱스 로드는 무거우므로 최초 사용 시 1회만
-
-
-def _searcher_lazy():
-    global _searcher
-    if _searcher is None:
-        _searcher = get_searcher()
-    return _searcher
+from tools.eds_search import get_searcher    # 캐시는 그쪽 모듈에 하나만 있다
 
 
 def normalize_target(wafers: list[str]) -> dict:
@@ -31,7 +22,7 @@ def normalize_target(wafers: list[str]) -> dict:
     eds_error = None
     if mode == "single" and not unknown:
         try:
-            cands = _searcher_lazy().search(wafers[0], k=config.SIBLING_SEARCH_K)
+            cands = get_searcher().search(wafers[0], k=config.SIBLING_SEARCH_K)
         except Exception as e:
             # yield DB 엔 있으나 EDS 인덱스엔 없는 wafer (local=KeyError, http=요청 예외).
             # 입력 실수가 아니라 인덱스↔DB 동기화 문제다 — 흐름 판단은 status_node 가 한다.
