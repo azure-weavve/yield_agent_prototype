@@ -55,9 +55,9 @@ git log·코드로 먼저 확인한다 (1·2·3번은 이미 구현 완료 — �
 
 - `config.py` 상수의 환경변수 오버라이드 (`os.getenv`) — 코드 수정 없는 모드 전환
 - `tools/yield_tools.py` `find_low_yield_lots` 기본 인자가 import 시점 바인딩 — 런타임 threshold 변경이 기본값에 반영 안 됨 → 2026-07-19 status 입력 재설계에서 해소
-- `graph/nodes.py` 모듈 레벨 `_llm = get_llm()` — import 시점에 구현 고정, 지연 획득으로 전환하면 테스트·모드 전환 유연
+- ~~`graph/nodes.py` 모듈 레벨 `_llm = get_llm()` — import 시점에 구현 고정, 지연 획득으로 전환하면 테스트·모드 전환 유연~~ — **2026-07-31 완료.** `_llm_lazy()` 로 전환. `tests/test_graph_nodes.py::test_importing_nodes_does_not_acquire_the_llm` 이 별도 프로세스에서 "import 만으로는 안 잡힌다" 를 고정한다
 - `llm/client.py` 리포트 결론 fallback "원인 미확정"이 원인(수율 이상 lot 없음 vs 루프 한계 도달)을 구분하지 않음 — 이상 없음 경로는 "이상 없음" 문구로 분기하고, 한계 도달은 3번 항목의 "미확정(한계 도달)" 구분 기록과 함께 처리
-- `README.md` 아키텍처 다이어그램에 status→(대상 없음)→report 분기 미표기 (graph/build.py docstring 다이어그램과 불일치) — 동기화
+- ~~`README.md` 아키텍처 다이어그램에 status→(대상 없음)→report 분기 미표기 (graph/build.py docstring 다이어그램과 불일치) — 동기화~~ — **2026-07-31 완료.** 다이어그램에 조기 출구 엣지를 넣고, 사유 5종(`no_anomaly`·`unknown_target`·`eds_lookup_failed`·`isolated`·`control_insufficient`)과 "사람이 할 일" 을 표로 추가했다 (README "조기 출구" 절)
 - `tools/eds_search.py` k+1 조회 버퍼는 필터로 제외되는 후보가 많으면 유효 후보가 더 있어도 k 미만을 반환할 수 있음 (Local 도 동일, 계약상 허용) — 6번 실측 검증 때 함께 확인
 - 빈 대조 그룹(`control_group=[]`) lot 에서는 `ScriptedMockLLMClient._groups` 정규식이 매칭 실패해 ValueError — 현재 시드 데이터에서는 도달 불가 경로라 미룸. 사내 실데이터 연동 시 seed 라인 파싱/그룹 부재 처리 필요. → 2026-07-19 status 입력 재설계에서 해소 (GROUPS_JSON 라인으로 대체)
 
@@ -72,11 +72,16 @@ git log·코드로 먼저 확인한다 (1·2·3번은 이미 구현 완료 — �
   라벨 세분화는 6번(HTTP 오류 응답 실측)과 함께 결정한다. 그때까지 결론 문구는 사유를 단정하지
   않고 구체 오류는 `[현황]` 에 싣는다.
 
-## 10. get_searcher 캐시를 grouping/agent_tools 간 통합
+## 10. ~~get_searcher 캐시를 grouping/agent_tools 간 통합~~ (2026-07-31 완료)
 
 - 위치: `tools/grouping.py` `_searcher_lazy` 와 `tools/agent_tools.py` `_searcher_lazy` — 각자 별도 lazy-singleton
 - 문제: hnswlib 인덱스를 두 번 로드(메모리·기동시간 낭비), 각 전역이 스레드 비안전(Task 3 리뷰 Minor 와 동일 뿌리)
 - 처방: 검색기 획득을 한 모듈(예: `eds_search.get_searcher` 자체 캐시)로 단일화하고 양쪽이 공유
+- **구현**: 처방대로 캐시를 `eds_search._searcher` 하나로 모으고 양쪽 lazy-singleton 을 삭제했다.
+  `tests/test_eds_search.py::test_both_call_paths_share_one_searcher` 가 "두 경로가 돌아도 로드 1회"
+  를 고정한다. **스레드 안전은 손대지 않았다** — 락을 걸지 않았으므로 동시 최초 호출이 겹치면
+  검색기가 두 번 만들어질 수 있다(둘 다 정상 동작하고 하나는 버려진다). 그래프가 단일 스레드라
+  실행 경로가 없어서 미뤘고, 멀티스레드로 돌릴 일이 생기면 그때 락을 건다.
 
 ## 11. SIBLING_SEARCH_K=50 이 실제 인덱스 규모에서 형제를 잘라내지 않는지 검증
 

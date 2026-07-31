@@ -1,8 +1,29 @@
 """노드 단위 검증 — 특히 tools 노드의 finalize 게이트(승인/반려)와 감사 기록."""
 
+import os
+import subprocess
+import sys
+
 from langchain_core.messages import AIMessage, ToolMessage
 
 from graph import nodes
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def test_importing_nodes_does_not_acquire_the_llm():
+    """import 만으로 LLM 구현이 고정되면 안 된다 (미룸 8번).
+
+    모듈 레벨에서 `get_llm()` 을 부르면 `config.LLM_MODE` 를 바꾸거나 테스트에서
+    구현을 갈아끼우는 일이 **import 순서**에 좌우된다. 별도 프로세스로 확인하는 이유:
+    같은 세션의 다른 테스트가 이미 `_llm` 을 채웠을 수 있다.
+    """
+    proc = subprocess.run(
+        [sys.executable, "-c", "import graph.nodes as n; print(n._llm)"],
+        capture_output=True, cwd=ROOT)
+
+    assert proc.returncode == 0, proc.stderr.decode("utf-8", "replace")
+    assert proc.stdout.decode().strip() == "None"
 
 
 def _ai_finalize(confidence, hypothesis="Etch ETCH-9 원인"):

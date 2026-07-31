@@ -18,7 +18,20 @@ from tools import grouping
 from tools import yield_tools as yt
 from tools.agent_tools import TOOLS_BY_NAME
 
-_llm = get_llm()
+_llm = None
+
+
+def _llm_lazy():
+    """LLM 획득을 첫 사용까지 미룬다 (미룸 8번).
+
+    모듈 레벨에서 잡으면 **import 시점에** 구현이 고정된다. `config.LLM_MODE` 를
+    바꾸거나 테스트에서 구현을 갈아끼우려면 그보다 먼저 import 되지 않았기를 빌어야
+    했다 — import 순서에 좌우되는 동작이다. 여기서 잡으면 그 의존이 사라진다.
+    """
+    global _llm
+    if _llm is None:
+        _llm = get_llm()
+    return _llm
 
 ANALYZE_SYSTEM_PROMPT = """너는 반도체 수율 분석 전문가다. 불량 그룹(유사 불량 wafer 들)과 대조 그룹(같은 lot 의 정상 wafer 들)을 비교해, 불량 그룹만의 공통 원인을 특정 공정 단계(가능하면 장비)까지 좁혀라.
 
@@ -124,7 +137,7 @@ def _summarize_target(source: str, targets: list[str], norm: dict, ctrl: dict) -
 
 # ------------------------------------------------ 자유 루프: 분석 (LLM)
 def analyze_node(state: dict) -> dict:
-    ai = _llm.analyze_step(state["messages"])
+    ai = _llm_lazy().analyze_step(state["messages"])
     return {"messages": [ai], "loop_count": state.get("loop_count", 0) + 1}
 
 
@@ -245,7 +258,7 @@ def _collect_evidence(findings: list[dict]) -> set[str]:
 
 # ------------------------------------------------ 고정 골격: 리포팅
 def report_node(state: dict) -> dict:
-    report = _llm.generate_report(
+    report = _llm_lazy().generate_report(
         target_wafers=state.get("target_wafers", []),
         target_source=state.get("target_source", "manual"),
         target_group=state["target_group"],
