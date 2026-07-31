@@ -15,9 +15,9 @@ import sys
 from data import load_internal as li
 
 YIELDS = [{"root_lot_id": "A45Z5", "wafer_id": "01", "lot_id": "A45Z5.1",
-           "lot_type": "P1", "yield": 91.2, "date": "2026-07-01"},
+           "lot_type": "PP", "yield": 91.2, "date": "2026-07-01"},
           {"root_lot_id": "A45Z5", "wafer_id": "02", "lot_id": "A45Z5.1",
-           "lot_type": "P1", "yield": 62.0, "date": "2026-07-01"}]
+           "lot_type": "PP", "yield": 62.0, "date": "2026-07-01"}]
 
 STEPS = [{"root_lot_id": "A45Z5", "wafer_id": "01", "step_seq": "CC002000",
           "area": "Etch", "eqp_id": "ETCH9", "ch_id": "A", "ppid": "PPID_Y",
@@ -64,9 +64,9 @@ def test_lot_type_comes_from_the_source_code_not_from_the_lot_id(tmp_path):
     아래 두 행은 접미와 코드가 서로 반대라 옛 규칙이면 값이 뒤집힌다.
     """
     ys = [{"root_lot_id": "Z99Z9", "wafer_id": "01", "lot_id": "Z99Z9.1",
-           "lot_type": "E1", "yield": 80.0, "date": "d"},
+           "lot_type": "ES", "yield": 80.0, "date": "d"},
           {"root_lot_id": "Z99Z9", "wafer_id": "02", "lot_id": "Z99Z9.2",
-           "lot_type": "P1", "yield": 80.0, "date": "d"}]
+           "lot_type": "PP", "yield": 80.0, "date": "d"}]
     st = [{"root_lot_id": "Z99Z9", "wafer_id": f"{i:02d}", "step_seq": "CC002000",
            "eqp_id": "E9", "timestamp": "t"} for i in (1, 2)]
     report = li.load(ys, st, tmp_path / "t.db", verbose=False)
@@ -135,9 +135,9 @@ def test_padded_step_seq_does_not_split_one_step_into_two(tmp_path):
 # 증명되므로, "전 데이터에 반례 0건" 일 때만 의심한다.
 # --------------------------------------------------------------------------- #
 LOT_GRAIN_YIELDS = [{"root_lot_id": "B77Q2", "wafer_id": "01", "lot_id": "B77Q2.1",
-                     "lot_type": "P1", "yield": 88.0, "date": "2026-07-02"},
+                     "lot_type": "PP", "yield": 88.0, "date": "2026-07-02"},
                     {"root_lot_id": "B77Q2", "wafer_id": "02", "lot_id": "B77Q2.1",
-                     "lot_type": "P1", "yield": 55.0, "date": "2026-07-02"}]
+                     "lot_type": "PP", "yield": 55.0, "date": "2026-07-02"}]
 
 # lot 마스터 조인의 서명: 같은 lot×스텝의 두 wafer 가 챔버는 갈리는데 ppid 는 같다
 LOT_GRAIN_STEPS = [{"root_lot_id": "B77Q2", "wafer_id": "01", "step_seq": "CC002000",
@@ -163,9 +163,9 @@ def test_ppid_grain_is_silent_when_variation_is_structurally_impossible(tmp_path
     있는 게 아니라 `COUNT(DISTINCT tool) > 1` 하나가 두 경우를 함께 처리한다.
     """
     yields = [{"root_lot_id": "C31K8", "wafer_id": "01", "lot_id": "C31K8.1",
-               "lot_type": "P1", "yield": 90.0, "date": "2026-07-03"},
+               "lot_type": "PP", "yield": 90.0, "date": "2026-07-03"},
               {"root_lot_id": "C31K8", "wafer_id": "02", "lot_id": "C31K8.2",
-               "lot_type": "E1", "yield": 70.0, "date": "2026-07-03"}]
+               "lot_type": "ES", "yield": 70.0, "date": "2026-07-03"}]
     steps = [{"root_lot_id": "C31K8", "wafer_id": "01", "step_seq": "CC002000",
               "eqp_id": "ETCH9", "ch_id": "A", "ppid": "PPID_L", "timestamp": "t"},
              {"root_lot_id": "C31K8", "wafer_id": "02", "step_seq": "CC002000",
@@ -194,7 +194,7 @@ def test_uniform_equipment_means_the_source_never_proved_wafer_granularity(tmp_p
     군에서는 원천이 wafer 단위를 주는지 자체가 안 보이므로 할 말이 없다.
     """
     ys = [{"root_lot_id": "G44D4", "wafer_id": f"{i:02d}", "lot_id": "G44D4.1",
-           "lot_type": "P1", "yield": 80.0, "date": "d"} for i in (1, 2, 3)]
+           "lot_type": "PP", "yield": 80.0, "date": "d"} for i in (1, 2, 3)]
     # lot 전원이 같은 설비·챔버·PPID (정상 운영에서 흔하다)
     st = [{"root_lot_id": "G44D4", "wafer_id": f"{i:02d}", "step_seq": "CC002000",
            "eqp_id": "E9", "ch_id": "A", "ppid": "PPID_L", "timestamp": "t"}
@@ -213,7 +213,7 @@ def test_equipment_alone_can_prove_wafer_granularity_without_any_chamber(tmp_pat
     `IFNULL` 을 빼면 그런 스텝 전부에서 검사가 조용히 꺼진다.
     """
     ys = [{"root_lot_id": "P11A1", "wafer_id": f"{i:02d}", "lot_id": "P11A1.1",
-           "lot_type": "P1", "yield": 80.0, "date": "d"} for i in (1, 2, 3)]
+           "lot_type": "PP", "yield": 80.0, "date": "d"} for i in (1, 2, 3)]
     # 설비는 wafer 마다 갈리고 ch_id 는 원천에 없음. ppid 는 전원 동일(lot 마스터 grain)
     st = [{"root_lot_id": "P11A1", "wafer_id": f"{i:02d}", "step_seq": "CC002000",
            "eqp_id": f"E{i}", "ppid": "PPID_L", "timestamp": "t"} for i in (1, 2, 3)]
@@ -231,7 +231,7 @@ def test_equipment_and_chamber_are_joined_with_a_separator(tmp_path):
     빠진다(항상 침묵 방향이라 오경보는 안 나지만, 검사가 조용히 꺼진다).
     """
     ys = [{"root_lot_id": "R33C3", "wafer_id": f"{i:02d}", "lot_id": "R33C3.1",
-           "lot_type": "P1", "yield": 80.0, "date": "d"} for i in (1, 2)]
+           "lot_type": "PP", "yield": 80.0, "date": "d"} for i in (1, 2)]
     st = [{"root_lot_id": "R33C3", "wafer_id": "01", "step_seq": "CC002000",
            "eqp_id": "E1", "ch_id": "2A", "ppid": "PPID_L", "timestamp": "t"},
           {"root_lot_id": "R33C3", "wafer_id": "02", "step_seq": "CC002000",
@@ -250,7 +250,7 @@ def test_grain_is_judged_per_step_not_per_lot(tmp_path, monkeypatch):
     침묵한다 — 그런데 `[grain]` 줄은 0 아닌 숫자를 찍어 사람을 안심시킨다.
     """
     ys = [{"root_lot_id": "Q22B2", "wafer_id": f"{i:02d}", "lot_id": "Q22B2.1",
-           "lot_type": "P1", "yield": 80.0, "date": "d"} for i in (1, 2)]
+           "lot_type": "PP", "yield": 80.0, "date": "d"} for i in (1, 2)]
     # 2개 스텝, 둘 다 lot 마스터 grain (스텝끼리는 ppid 가 다르다 — 정상)
     st = [{"root_lot_id": "Q22B2", "wafer_id": f"{i:02d}", "step_seq": step,
            "eqp_id": "E9", "ch_id": ch, "ppid": f"PPID_{step}", "timestamp": "t"}
@@ -277,7 +277,7 @@ def test_rework_rows_are_not_mistaken_for_wafer_level_variation(tmp_path):
     예상되는 상태다(검사 #6 이 "재작업인지 확인" 이라고 말하는 이유).
     """
     ys = [{"root_lot_id": "D11A1", "wafer_id": f"{i:02d}", "lot_id": "D11A1.1",
-           "lot_type": "P1", "yield": 80.0, "date": "d"} for i in (1, 2, 3)]
+           "lot_type": "PP", "yield": 80.0, "date": "d"} for i in (1, 2, 3)]
     # 챔버는 wafer 마다 갈리고(= 판정 대상) ppid 만 전원 동일 = lot 마스터 grain(틀림)
     st = [{"root_lot_id": "D11A1", "wafer_id": f"{i:02d}", "step_seq": "CC002000",
            "eqp_id": "E9", "ch_id": ch, "ppid": "PPID_L", "timestamp": "t"}
@@ -298,9 +298,9 @@ def test_ppid_grain_needs_a_counterexample_somewhere_not_in_every_lot(tmp_path):
     PPID 로 도는 건 정상인 스텝도 많아 개별 판정은 오경보이므로, 금지된 설계다.
     """
     ys = ([{"root_lot_id": "E22B2", "wafer_id": f"{i:02d}", "lot_id": "E22B2.1",
-            "lot_type": "P1", "yield": 80.0, "date": "d"} for i in (1, 2)] +
+            "lot_type": "PP", "yield": 80.0, "date": "d"} for i in (1, 2)] +
           [{"root_lot_id": "E22B2", "wafer_id": f"{i:02d}", "lot_id": "E22B2.2",
-            "lot_type": "E1", "yield": 80.0, "date": "d"} for i in (3, 4)])
+            "lot_type": "ES", "yield": 80.0, "date": "d"} for i in (3, 4)])
     # 두 lot 모두 챔버는 갈린다(= 둘 다 판정 대상). ppid 는 lot .2 에서만 갈린다.
     st = ([{"root_lot_id": "E22B2", "wafer_id": "01", "step_seq": "CC002000",
             "eqp_id": "E9", "ch_id": "A", "ppid": "PPID_L", "timestamp": "t"},
@@ -323,7 +323,7 @@ def test_ppid_grain_ignores_wafers_whose_ppid_is_missing(tmp_path):
     ppid 부분 결측은 실데이터 1차 추출의 전형적 상태다(DDL 이 nullable 인 이유).
     """
     ys = [{"root_lot_id": "F33C3", "wafer_id": f"{i:02d}", "lot_id": "F33C3.1",
-           "lot_type": "P1", "yield": 80.0, "date": "d"} for i in (1, 2, 3)]
+           "lot_type": "PP", "yield": 80.0, "date": "d"} for i in (1, 2, 3)]
     # 챔버는 갈린다 — 그래서 checkable 이 0 인 유일한 이유가 ppid 결측이 된다
     # (챔버까지 같으면 이 테스트는 NULL 필터 삭제를 못 잡는다)
     st = [{"root_lot_id": "F33C3", "wafer_id": f"{i:02d}", "step_seq": "CC002000",
