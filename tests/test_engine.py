@@ -18,8 +18,8 @@ def fx_db(tmp_path, monkeypatch):
     db = tmp_path / "fx.db"
     conn = sqlite3.connect(db)
     conn.execute("""CREATE TABLE yield (wafer_id TEXT PRIMARY KEY, lot_id TEXT, yield REAL,
-        defect_type TEXT, process_step TEXT, date TEXT, root_lot_id TEXT, lot_type TEXT)""")
-    conn.execute("""CREATE TABLE step_history (wafer_id TEXT, process_step TEXT, eqp_id TEXT,
+        defect_type TEXT, step_seq TEXT, date TEXT, root_lot_id TEXT, lot_type TEXT)""")
+    conn.execute("""CREATE TABLE step_history (wafer_id TEXT, step_seq TEXT, eqp_id TEXT,
         ch_id TEXT, ppid TEXT, timestamp TEXT)""")
     group, control = ["G1", "G2", "G3"], ["C1", "C2", "C3"]
     for w in group:
@@ -71,7 +71,7 @@ def test_evaluate_passes_false_below_threshold(fx_db, monkeypatch):
 def test_evaluate_no_signal_status(fx_db, monkeypatch):
     # 대조군도 ETCH9_B 를 거치면 분리 없음 → no_signal, 후보 빈 리스트
     conn = sqlite3.connect(fx_db)
-    conn.execute("UPDATE step_history SET eqp_id='ETCH9', ch_id='B' WHERE process_step='Etch'")
+    conn.execute("UPDATE step_history SET eqp_id='ETCH9', ch_id='B' WHERE step_seq='Etch'")
     conn.commit(); conn.close()
     res = engine.evaluate({"id": "eqp_ch", "legend": EQP_CH}, ["G1", "G2", "G3"], ["C1", "C2", "C3"])
     assert res["status"] == "no_signal"
@@ -83,7 +83,7 @@ def test_evaluate_passes_requires_status_ok(fx_db, monkeypatch):
     # passes 는 status 를 AND 조건으로 봐야 한다 (스펙 §7).
     monkeypatch.setattr(engine.cm, "find_commonality", lambda *a, **k: {
         "status": "no_paired_stratum",
-        "candidates": [{"level": "chamber", "process_step": "Etch", "key": "ETCH9_B",
+        "candidates": [{"level": "chamber", "step_seq": "Etch", "key": "ETCH9_B",
                         "score": 1.0, "target_pass": 3, "target_total": 3,
                         "control_pass": 0, "control_total": 3,
                         "coverage_target": 1.0, "coverage_control": 0.0}],

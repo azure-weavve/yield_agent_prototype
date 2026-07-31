@@ -44,13 +44,13 @@ def test_scripted_sequence():
     assert ai.tool_calls[0]["args"]["control_ids"] == CONTROL
     msgs += [ai, _tm("hyp_eqp_ch_commonality", {"candidates": [
         {"level": "chamber", "key": "ETCH9_B", "value": ["Etch", "ETCH9_B"],
-         "process_step": "Etch", "score": 1.0, "target_pass": 3, "passes": True},
+         "step_seq": "Etch", "score": 1.0, "target_pass": 3, "passes": True},
     ]})]
 
     # 3) 2단 — 지목된 스텝의 센서 분포
     ai = llm.analyze_step(msgs)
     assert ai.tool_calls[0]["name"] == "compare_sensor_distribution"
-    assert ai.tool_calls[0]["args"]["process_step"] == "Etch"
+    assert ai.tool_calls[0]["args"]["step_seq"] == "Etch"
     msgs += [ai, _tm("compare_sensor_distribution", {"status": "ok", "candidates": [
         {"sensor_name": "rf_power_steady_avg", "effect_size": 14.99},
     ]})]

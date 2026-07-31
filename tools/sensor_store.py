@@ -16,14 +16,14 @@ from abc import ABC, abstractmethod
 
 import config
 
-COLUMNS = ("wafer_id", "process_step", "sensor_name", "value", "tkout_time")
+COLUMNS = ("wafer_id", "step_seq", "sensor_name", "value", "tkout_time")
 
 
 class SensorStore(ABC):
     """센서 조회 인터페이스. 2단 계산은 이 타입에만 의존한다."""
 
     @abstractmethod
-    def fetch(self, process_step: str, wafer_ids: list[str]) -> list[dict]:
+    def fetch(self, step_seq: str, wafer_ids: list[str]) -> list[dict]:
         """지목된 스텝에서 주어진 wafer 들의 센서 통계값 전부.
 
         fetch 단위가 (스텝 × wafer 전원)인 이유: 1단이 챔버를 지목한 근거는
@@ -36,7 +36,7 @@ class SensorStore(ABC):
 class LocalSensorStore(SensorStore):
     """데모용. yield.db 의 sensor_log 에서 조회."""
 
-    def fetch(self, process_step: str, wafer_ids: list[str]) -> list[dict]:
+    def fetch(self, step_seq: str, wafer_ids: list[str]) -> list[dict]:
         if not wafer_ids:
             return []
         ph = ",".join("?" * len(wafer_ids))
@@ -45,8 +45,8 @@ class LocalSensorStore(SensorStore):
         try:
             rows = conn.execute(
                 f"SELECT {', '.join(COLUMNS)} FROM sensor_log "
-                f"WHERE process_step = ? AND wafer_id IN ({ph})",
-                [process_step, *wafer_ids]).fetchall()
+                f"WHERE step_seq = ? AND wafer_id IN ({ph})",
+                [step_seq, *wafer_ids]).fetchall()
         finally:
             conn.close()
         return [dict(r) for r in rows]
@@ -55,14 +55,14 @@ class LocalSensorStore(SensorStore):
 class HttpSensorStore(SensorStore):
     """운영용. 사내 FDC 호출. 응답 스키마는 실측 후 매핑을 맞춘다."""
 
-    def fetch(self, process_step: str, wafer_ids: list[str]) -> list[dict]:
+    def fetch(self, step_seq: str, wafer_ids: list[str]) -> list[dict]:
         import requests
 
         if not wafer_ids:
             return []
         resp = requests.post(
             config.SENSOR_HTTP_URL,
-            json={"process_step": process_step, "wafer_ids": wafer_ids},
+            json={"step_seq": step_seq, "wafer_ids": wafer_ids},
             verify=config.EDS_HTTP_VERIFY,      # 같은 사내 인증서 정책
             timeout=30,
         )

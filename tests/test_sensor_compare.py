@@ -45,7 +45,7 @@ def test_refetch_key_reproduces_the_same_numbers():
     res = _run()
     k = res["refetch_key"]
     again = sc.compare_sensor_distribution(
-        k["process_step"], k["target_wafers"], k["control_wafers"])
+        k["step_seq"], k["target_wafers"], k["control_wafers"])
     assert again["candidates"] == res["candidates"]
 
 

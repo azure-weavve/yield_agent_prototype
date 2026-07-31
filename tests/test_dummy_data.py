@@ -4,10 +4,11 @@
 설비(ETCH9)를 쓰되 챔버가 다르다 → 설비 롤업은 눌리고 챔버에서만 갈린다.
 """
 
+import re
 import sqlite3
 
 import config
-from data.generate_dummy import CONTROL_WAFERS, GROUP_WAFERS
+from data.generate_dummy import CONTROL_WAFERS, ETCH_SEQ, GROUP_WAFERS
 
 
 def _conn():
@@ -112,6 +113,23 @@ def test_every_wafer_has_the_full_step_path_except_the_planted_gap():
     assert set(counts.values()) == {len(SH_STEPS)}           # 나머지는 전 스텝 보유
 
 
+def test_step_seq_is_a_sequence_code_and_area_holds_the_process_name():
+    """`step_seq` 는 공정명이 아니라 사내 순번 코드다 — 문자 2자리 + 숫자 6자리.
+
+    더미가 `"Etch"` 같은 이름을 그 컬럼에 담던 시절로 되돌아가면 여기서 잡힌다.
+    이름이 담긴 더미로는 리포트가 실데이터와 다르게 읽혀, 데모는 초록인데 사내에서만
+    읽히지 않는 상태가 된다. 공정명은 `area` 에 있고 스텝 하나에 하나씩 대응한다.
+    """
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT step_seq, area FROM step_history").fetchall()
+
+    assert rows
+    assert all(re.fullmatch(r"[A-Z]{2}\d{6}", r["step_seq"]) for r in rows)
+    assert all(r["area"] for r in rows)                      # 공정명 결측 없음
+    assert len({r["step_seq"] for r in rows}) == len(rows)   # step_seq 1개 = area 1개
+
+
 def test_planted_chamber_is_exclusive_to_the_group_wafers():
     """심은 챔버(ETCH9_B)를 거친 wafer 는 더미 전체에서 GROUP_WAFERS 뿐이다.
 
@@ -139,8 +157,8 @@ def test_control_shares_equipment_but_not_chamber():
     with _conn() as conn:
         rows = conn.execute(
             f"SELECT eqp_id, ch_id FROM step_history "
-            f"WHERE process_step = 'Etch' AND wafer_id IN ({ph})",
-            CONTROL_WAFERS,
+            f"WHERE step_seq = ? AND wafer_id IN ({ph})",
+            [ETCH_SEQ, *CONTROL_WAFERS],
         ).fetchall()
     assert len(rows) == len(CONTROL_WAFERS)
     assert all(r["eqp_id"] == "ETCH9" for r in rows)
@@ -169,6 +187,6 @@ def test_ground_truth_columns_are_null():
     with _conn() as conn:
         n = conn.execute(
             "SELECT COUNT(*) FROM yield "
-            "WHERE defect_type IS NOT NULL OR process_step IS NOT NULL"
+            "WHERE defect_type IS NOT NULL OR step_seq IS NOT NULL"
         ).fetchone()[0]
     assert n == 0

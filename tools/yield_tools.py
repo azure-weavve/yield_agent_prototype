@@ -42,7 +42,7 @@ def find_low_yield_lots(threshold: float | None = None) -> list[dict]:
         for lot in lots:
             worst = conn.execute(
                 """
-                SELECT wafer_id, yield, defect_type, process_step, date
+                SELECT wafer_id, yield, defect_type, step_seq, date
                 FROM yield WHERE lot_id = ? ORDER BY yield ASC LIMIT 1
                 """,
                 (lot["lot_id"],),

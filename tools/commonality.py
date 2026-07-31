@@ -23,7 +23,7 @@ score = 1.0 이면 타깃 전원이 거쳤고 대조군은 아무도 안 거친 
   배제하면 단서를 버린다. 분포만 meta 에 싣는다.
  
 의존 테이블 (ETL 선적재 대상):
-    step_history(wafer_id, process_step, eqp_id, ch_id·ppid NULL 허용, timestamp)
+    step_history(wafer_id, step_seq, eqp_id, ch_id·ppid NULL 허용, timestamp)
     yield(wafer_id, ..., root_lot_id, lot_type)
 """
  
@@ -86,7 +86,7 @@ def _history(conn, wafer_ids: list[str], legend) -> list[sqlite3.Row]:
     if missing:
         raise ValueError(f"legend 컬럼 {missing} 이 step_history 에 없음. "
                          f"가능한 컬럼: {', '.join(sorted(table_cols))}")
-    sel = ", ".join(["wafer_id", "process_step", "timestamp", *need])
+    sel = ", ".join(["wafer_id", "step_seq", "timestamp", *need])
     ph = ",".join("?" * len(wafer_ids))
     return conn.execute(
         f"SELECT {sel} FROM step_history WHERE wafer_id IN ({ph})", wafer_ids
@@ -99,7 +99,7 @@ def _keys(row, legend) -> list[tuple]:
     레벨 컬럼이 하나라도 NULL/빈문자열이면 그 레벨은 건너뛴다(가짜 키 금지 —
     ch_id 없는 단일 챔버 설비/챔버 개념 없는 스텝의 챔버 레벨이 자연히 빠진다).
     """
-    step = row["process_step"]
+    step = row["step_seq"]
     out = []
     for lvl in legend:
         vals = [row[col] for col in lvl["columns"]]
@@ -237,7 +237,7 @@ def find_commonality(target_wafers: list[str], control_wafers: list[str],
         colvals = colmap_all.get((level, step, keystr), {})
         cand = {
             "level": level,
-            "process_step": step,
+            "step_seq": step,
             "key": keystr,
             # 원시 카운트 — score 만 보면 6/6 과 2/2 를 구분할 수 없다
             "target_pass": e["a"], "target_total": nt_tot,
@@ -252,7 +252,7 @@ def find_commonality(target_wafers: list[str], control_wafers: list[str],
         candidates.append(cand)
  
     candidates.sort(key=lambda r: (-r["score"], -r["coverage_target"],
-                                   -r["target_pass"], r["process_step"], r["key"]))
+                                   -r["target_pass"], r["step_seq"], r["key"]))
     truncated = max(0, len(candidates) - top_k)
     candidates = candidates[:top_k]
  

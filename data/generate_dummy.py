@@ -1,8 +1,8 @@
 """더미 데이터 생성 스크립트.
 
 설계 문서 3.1절 스키마를 따른다.
-- yield 테이블 (SQLite): wafer_id, lot_id, yield, defect_type, process_step, date
-  ⚠️ `defect_type`·`process_step` 은 **전 행 NULL** 이다 (실데이터에 이 라벨이 없다).
+- yield 테이블 (SQLite): wafer_id, lot_id, yield, defect_type, step_seq, date
+  ⚠️ `defect_type`·`step_seq` 은 **전 행 NULL** 이다 (실데이터에 이 라벨이 없다).
      생성기가 어디에 이상을 심었는지는 `_truth_*` 로만 들고 있고 DB 에 안 나간다.
 - 512차원 맵 임베딩 인덱스 (hnswlib): wafer_id -> 512d 벡터
 
@@ -40,7 +40,15 @@ GROUP_NOISE = 0.30
 # 홀수 번호 3장은 정상(대조 그룹) — "유사 불량을 묶어 정상과 대조"의 데모 무대.
 # 수율 범위는 lot 평균 < YIELD_THRESHOLD(90) 를 난수와 무관하게 보장한다: (82+97)/2 = 89.5.
 FEATURED_DEFECT = "center_spot"
-FEATURED_PROCESS = "Etch"
+FEATURED_PROCESS = "Etch"      # 정답지용 공정명 (DB 에 안 나간다 — `_truth_step`)
+
+# 공정 경로. 사내 `step_seq` 는 **문자 2자리(제품군) + 숫자 6자리(스텝 순서)** 다
+# ("CC001000"). 공정명은 원천에서 별개 컬럼 `area` 로 오므로 더미도 둘을 짝으로 든다.
+# 순번에 여유(1000 단위)를 두는 것은 중간 스텝이 끼어도 순서가 유지되게 하는 관행이다.
+# 시나리오 코드는 `area`(사람이 읽는 공정명)로 분기하고, DB 에 실리는 스텝 값은 `seq` 다.
+ETCH_SEQ = "CC002000"          # 신호를 심는 스텝 (ETCH9_B·PPID_X 가 여기 있다)
+SH_STEPS = [("CC001000", "Photo"), (ETCH_SEQ, "Etch"),
+            ("CC003000", "Diffusion"), ("CC004000", "CMP")]     # wafer 당 경로
 GROUP_WAFERS = ["W2406_02", "W2406_04", "W2406_06"]    # 불량 그룹 (수율 낮음)
 CONTROL_WAFERS = ["W2406_01", "W2406_03", "W2406_05"]  # 대조 그룹 (정상)
 
@@ -129,7 +137,7 @@ SPLIT_WAFERS = set(SPLIT_TARGETS + SPLIT_CONTROLS)
 # 들어 있다(rf_power_steady_avg) — 사내 FDC 추출물 형태.
 # 그래서 ..._avg 와 ..._std 가 서로 독립된 센서가 되고, '평균은 같은데 분산만 이동'
 # 케이스가 비교 로직의 별도 처리 없이 후보에 오른다.
-SENSOR_STEP = "Etch"                    # 1단이 지목하는 스텝 (ETCH9_B 가 여기 있다)
+SENSOR_STEP = ETCH_SEQ                  # 1단이 지목하는 스텝 (ETCH9_B 가 여기 있다)
 SENSOR_REAL = "rf_power_steady"         # 진짜 원인 — 불량군에서 평균 이동
 SENSOR_VAR_ONLY = "gas_flow_steady"     # 케이스 1: 평균 동일, 분산만 이동
 SENSOR_DECOYS = ["chuck_temp_steady", "he_leak_steady"]   # 케이스 2: 우연히 유의한 미끼
@@ -310,7 +318,7 @@ def _augment_yield(rows):
 # step_history 용 설비/챔버/PPID.
 SH_REAL_EQP, SH_REAL_CH, SH_REAL_PPID = "ETCH9", "B", "PPID_X"    # 불량군 전용
 SH_CTRL_EQP, SH_CTRL_PPID = "ETCH9", "PPID_Y"                     # 대조군: 같은 설비 다른 챔버/PPID
-SH_STEPS = ["Photo", "Etch", "Diffusion", "CMP"]                  # wafer 당 경로
+# 경로(SH_STEPS)는 SENSOR_STEP 이 참조하므로 파일 위쪽에 있다.
 
 
 def _make_step_history(rows):
@@ -322,9 +330,9 @@ def _make_step_history(rows):
         wid = r["wafer_id"]
         if wid in ADV_WAFERS or wid in SPLIT_WAFERS:   # 전용 생성기가 따로 만든다
             continue
-        for step in SH_STEPS:
-            eqp, ch, ppid = f"{step.upper()[:4]}1", "A", "PPID_Z"   # 기본: 공통 경로
-            if step == "Etch":
+        for seq, area in SH_STEPS:
+            eqp, ch, ppid = f"{area.upper()[:4]}1", "A", "PPID_Z"   # 기본: 공통 경로
+            if area == "Etch":
                 if wid in GROUP_WAFERS:
                     eqp, ch, ppid = SH_REAL_EQP, SH_REAL_CH, SH_REAL_PPID
                 elif wid in CONTROL_WAFERS:
@@ -332,7 +340,7 @@ def _make_step_history(rows):
                 else:
                     eqp, ch, ppid = f"ETCH{int(sh_rng.integers(1, 9))}", "A", "PPID_Z"
             steps.append({
-                "wafer_id": wid, "process_step": step,
+                "wafer_id": wid, "step_seq": seq, "area": area,
                 "eqp_id": eqp, "ch_id": ch, "ppid": ppid,
                 "timestamp": r["date"] + " 10:00:00",
             })
@@ -352,19 +360,19 @@ def _make_adversarial_steps():
         for wid in targets + controls:
             if wid == ADV_MISSING_WAFER:
                 continue                          # 케이스 3: 이력 자체가 없는 타깃
-            for step in SH_STEPS:
-                eqp, ch, ppid = f"{step.upper()[:4]}1", "A", "PPID_Z"
+            for seq, area in SH_STEPS:
+                eqp, ch, ppid = f"{area.upper()[:4]}1", "A", "PPID_Z"
 
-                if lot == ADV_COUNTEREX_LOT and step == "Etch":
+                if lot == ADV_COUNTEREX_LOT and area == "Etch":
                     # 케이스 1: 대조군 1장이 진짜 원인 챔버를 거쳤는데 정상 (반례)
                     eqp = "ETCH1"
                     ch = "B" if (wid in targets or wid == controls[0]) else "C"
-                elif lot == ADV_DECOY_LOT and step == "Etch":
+                elif lot == ADV_DECOY_LOT and area == "Etch":
                     eqp, ch = "ETCH2", ("B" if wid in targets else "C")
-                elif lot == ADV_DECOY_LOT and step == "Photo":
+                elif lot == ADV_DECOY_LOT and area == "Photo":
                     # 케이스 2: 진짜(1.0) 옆의 근접 미끼 — 타깃 4장 중 3장만 거친다
                     eqp, ch = "PHOT2", ("X" if wid in targets[:3] else "A")
-                elif lot == ADV_MISSING_LOT and step == "Etch":
+                elif lot == ADV_MISSING_LOT and area == "Etch":
                     eqp = "ETCH3"
                     if wid in targets:
                         ch = "B"
@@ -372,12 +380,12 @@ def _make_adversarial_steps():
                         ch = None                 # 케이스 3: 챔버 레벨이 조용히 빠져야 한다
                     else:
                         ch = "C"
-                elif lot == ADV_NOSIGNAL_LOT and step == "Etch":
+                elif lot == ADV_NOSIGNAL_LOT and area == "Etch":
                     # 케이스 4: 원인이 root_lot 전원에 걸려 타깃·대조군이 같은 경로
                     eqp, ch = "ETCH4", "A"
 
                 steps.append({
-                    "wafer_id": wid, "process_step": step,
+                    "wafer_id": wid, "step_seq": seq, "area": area,
                     "eqp_id": eqp, "ch_id": ch, "ppid": ppid,
                     "timestamp": RECENT_DATE + " 10:00:00",
                 })
@@ -391,12 +399,12 @@ def _make_split_lot_steps():
     """
     steps = []
     for wid in SPLIT_TARGETS + SPLIT_CONTROLS:
-        for step in SH_STEPS:
-            eqp, ch, ppid = f"{step.upper()[:4]}1", "A", "PPID_Z"
-            if step == "Etch":
+        for seq, area in SH_STEPS:
+            eqp, ch, ppid = f"{area.upper()[:4]}1", "A", "PPID_Z"
+            if area == "Etch":
                 eqp, ch = "ETCH5", ("B" if wid in SPLIT_TARGETS else "C")
             steps.append({
-                "wafer_id": wid, "process_step": step,
+                "wafer_id": wid, "step_seq": seq, "area": area,
                 "eqp_id": eqp, "ch_id": ch, "ppid": ppid,
                 "timestamp": RECENT_DATE + " 10:00:00",
             })
@@ -439,7 +447,7 @@ def _make_sensor_log(rows):
 
                 out.append({
                     "wafer_id": wid,
-                    "process_step": SENSOR_STEP,
+                    "step_seq": SENSOR_STEP,
                     "sensor_name": f"{name}_{stat}",
                     "value": round(float(sen_rng.normal(base, spread)), 3),
                     "tkout_time": r["date"] + " 10:00:00",
@@ -461,7 +469,7 @@ def _write_sqlite(rows, steps, sensors):
             lot_id       TEXT NOT NULL,
             yield        REAL NOT NULL,
             defect_type  TEXT,
-            process_step TEXT,
+            step_seq     TEXT,
             date         TEXT NOT NULL,
             root_lot_id  TEXT NOT NULL,
             lot_type     TEXT NOT NULL
@@ -473,7 +481,8 @@ def _write_sqlite(rows, steps, sensors):
     conn.execute("""
         CREATE TABLE step_history (
             wafer_id     TEXT NOT NULL,
-            process_step TEXT NOT NULL,
+            step_seq     TEXT NOT NULL,
+            area         TEXT,
             eqp_id       TEXT NOT NULL,
             ch_id        TEXT,
             ppid         TEXT,
@@ -482,20 +491,20 @@ def _write_sqlite(rows, steps, sensors):
     """)
     conn.executemany(
         """INSERT INTO step_history VALUES
-           (:wafer_id, :process_step, :eqp_id, :ch_id, :ppid, :timestamp)""", steps)
+           (:wafer_id, :step_seq, :area, :eqp_id, :ch_id, :ppid, :timestamp)""", steps)
     conn.execute("""
         CREATE TABLE sensor_log (
             wafer_id     TEXT NOT NULL,
-            process_step TEXT NOT NULL,
+            step_seq     TEXT NOT NULL,
             sensor_name  TEXT NOT NULL,
             value        REAL NOT NULL,
             tkout_time   TEXT
         )
     """)
-    conn.execute("CREATE INDEX idx_sensor_step ON sensor_log(process_step, wafer_id)")
+    conn.execute("CREATE INDEX idx_sensor_step ON sensor_log(step_seq, wafer_id)")
     conn.executemany(
         """INSERT INTO sensor_log VALUES
-           (:wafer_id, :process_step, :sensor_name, :value, :tkout_time)""", sensors)
+           (:wafer_id, :step_seq, :sensor_name, :value, :tkout_time)""", sensors)
     conn.commit()
     conn.close()
 

@@ -25,7 +25,7 @@ def _effect_size(t: list[float], c: list[float]) -> float:
     return abs(statistics.mean(t) - statistics.mean(c)) / pooled
 
 
-def compare_sensor_distribution(process_step: str, group_ids: list[str],
+def compare_sensor_distribution(step_seq: str, group_ids: list[str],
                                 control_ids: list[str]) -> dict:
     """지목된 스텝에서 두 그룹의 센서 분포를 비교해 효과크기 top-K 후보를 낸다.
 
@@ -39,7 +39,7 @@ def compare_sensor_distribution(process_step: str, group_ids: list[str],
     controls = sorted(set(control_ids or []) - set(targets))
 
     base = {"candidates": [], "truncated": 0,
-            "refetch_key": {"process_step": process_step,
+            "refetch_key": {"step_seq": step_seq,
                             "target_wafers": targets, "control_wafers": controls,
                             "sensors": [], "store_mode": config.SENSOR_MODE}}
 
@@ -50,7 +50,7 @@ def compare_sensor_distribution(process_step: str, group_ids: list[str],
                          f"표본 2장짜리 효과크기는 허상이다.")}
 
     try:
-        rows = get_store().fetch(process_step, targets + controls)
+        rows = get_store().fetch(step_seq, targets + controls)
     except Exception as e:                       # 조회 실패를 '결과 없음' 으로 오해하지 않게
         return {**base, "status": "fetch_failed",
                 "note": f"센서 조회 실패: {type(e).__name__}: {e}"}

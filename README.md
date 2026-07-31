@@ -30,15 +30,15 @@ $ PYTHONUTF8=1 python main.py
      게이트: 반려: 확신도 0.60 < 0.8. 근거를 좁힐 tool 을 더 호출하라.
   2. hyp_eqp_ch_commonality  args={'group_ids': ['W2406_06', 'W2406_02', 'W2413_cen4', ...], 'control_ids': ['W2401_001', ...]}
      판단: 종료 제안이 반려됐다. 챔버 편중 가설로 두 그룹을 대조한다.
-  3. compare_sensor_distribution  args={'process_step': 'Etch', 'group_ids': ['W2406_06', 'W2406_02', 'W2413_cen4', ...], 'control_ids': ['W2401_001', ...]}
+  3. compare_sensor_distribution  args={'step_seq': 'CC002000', 'group_ids': ['W2406_06', 'W2406_02', 'W2413_cen4', ...], 'control_ids': ['W2401_001', ...]}
      판단: 챔버까지 좁혔다. 그 스텝의 센서 분포로 '왜' 를 본다.
-  4. finalize  args={'hypothesis': 'Etch 공정 ETCH9_B 편중(분리 점수 1.0, 불량군 3장 전용)이 원인 — rf_power_steady_avg 효과크기 2.573', 'confidence': 0.9}
+  4. finalize  args={'hypothesis': 'CC002000 공정 ETCH9_B 편중(분리 점수 1.0, 불량군 3장 전용)이 원인 — rf_power_steady_avg 효과크기 2.573', 'confidence': 0.9}
      판단: 챔버 편중에 센서 근거까지 붙었다. 근거 충분.
      게이트: 승인 (확신도·증거 충족): 리포팅으로 진행한다.
 
 [리포트 — 고정 골격]
 ...
-[결론] Etch 공정 ETCH9_B 편중(분리 점수 1.0, 불량군 3장 전용)이 원인 — rf_power_steady_avg 효과크기 2.573 (확신도 0.9)
+[결론] CC002000 공정 ETCH9_B 편중(분리 점수 1.0, 불량군 3장 전용)이 원인 — rf_power_steady_avg 효과크기 2.573 (확신도 0.9)
 ```
 
 > 실제 실행 출력입니다. wafer 목록과 `control_ids`(78장)만 `...` 로 줄였습니다.

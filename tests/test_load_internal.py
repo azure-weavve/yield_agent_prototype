@@ -15,16 +15,18 @@ import sys
 from data import load_internal as li
 
 YIELDS = [{"root_lot_id": "A45Z5", "wafer_id": "01", "lot_id": "A45Z5.1",
-           "yield": 91.2, "date": "2026-07-01"},
+           "lot_type": "P1", "yield": 91.2, "date": "2026-07-01"},
           {"root_lot_id": "A45Z5", "wafer_id": "02", "lot_id": "A45Z5.1",
-           "yield": 62.0, "date": "2026-07-01"}]
+           "lot_type": "P1", "yield": 62.0, "date": "2026-07-01"}]
 
-STEPS = [{"root_lot_id": "A45Z5", "wafer_id": "01", "process_step": "Etch",
-          "eqp_id": "ETCH9", "ch_id": "A", "ppid": "PPID_Y", "timestamp": "t"},
-         {"root_lot_id": "A45Z5", "wafer_id": "02", "process_step": "Etch",
-          "eqp_id": "ETCH9", "ch_id": "B", "ppid": "PPID_X", "timestamp": "t"},
-         # ch_id·ppid 없는 원천 (단일 챔버 설비·PPID 개념 없는 스텝)
-         {"root_lot_id": "A45Z5", "wafer_id": "02", "process_step": "CMP",
+STEPS = [{"root_lot_id": "A45Z5", "wafer_id": "01", "step_seq": "CC002000",
+          "area": "Etch", "eqp_id": "ETCH9", "ch_id": "A", "ppid": "PPID_Y",
+          "timestamp": "t"},
+         {"root_lot_id": "A45Z5", "wafer_id": "02", "step_seq": "CC002000",
+          "area": "Etch", "eqp_id": "ETCH9", "ch_id": "B", "ppid": "PPID_X",
+          "timestamp": "t"},
+         # area·ch_id·ppid 없는 원천 (공정명 미제공·단일 챔버 설비·PPID 개념 없는 스텝)
+         {"root_lot_id": "A45Z5", "wafer_id": "02", "step_seq": "CC004000",
           "eqp_id": "CMP1", "timestamp": "t"}]
 
 
@@ -38,12 +40,12 @@ def test_step_columns_survive_the_write_path(tmp_path):
     """DDL 에만 있고 INSERT 에서 빠지는 일이 없어야 한다."""
     db, _ = _load(tmp_path)
     conn = sqlite3.connect(db)
-    rows = conn.execute("""SELECT wafer_id, eqp_id, ch_id, ppid FROM step_history
-                           ORDER BY wafer_id, process_step""").fetchall()
+    rows = conn.execute("""SELECT wafer_id, area, eqp_id, ch_id, ppid FROM step_history
+                           ORDER BY wafer_id, step_seq""").fetchall()
     conn.close()
-    assert rows == [("A45Z5_01", "ETCH9", "A", "PPID_Y"),
-                    ("A45Z5_02", "CMP1", None, None),      # 결측은 NULL 로
-                    ("A45Z5_02", "ETCH9", "B", "PPID_X")]
+    assert rows == [("A45Z5_01", "Etch", "ETCH9", "A", "PPID_Y"),
+                    ("A45Z5_02", "Etch", "ETCH9", "B", "PPID_X"),
+                    ("A45Z5_02", None, "CMP1", None, None)]   # 결측은 NULL 로
 
 
 def test_null_rates_reflect_actual_gaps(tmp_path):
@@ -51,7 +53,74 @@ def test_null_rates_reflect_actual_gaps(tmp_path):
     _, report = _load(tmp_path)
     assert report["ch_id_null_rate"] == round(1 / 3, 3)
     assert report["ppid_null_rate"] == round(1 / 3, 3)
+    assert report["area_null_rate"] == round(1 / 3, 3)
     assert not report["fatal"]
+
+
+def test_lot_type_comes_from_the_source_code_not_from_the_lot_id(tmp_path):
+    """판정 재료는 원천의 두 자리 코드다 — lot_id 접미는 아무것도 결정하지 않는다.
+
+    한동안 `lot_id` 의 '.1' 접미를 보는 휴리스틱이었다. 되돌아가면 여기서 잡힌다:
+    아래 두 행은 접미와 코드가 서로 반대라 옛 규칙이면 값이 뒤집힌다.
+    """
+    ys = [{"root_lot_id": "Z99Z9", "wafer_id": "01", "lot_id": "Z99Z9.1",
+           "lot_type": "E1", "yield": 80.0, "date": "d"},
+          {"root_lot_id": "Z99Z9", "wafer_id": "02", "lot_id": "Z99Z9.2",
+           "lot_type": "P1", "yield": 80.0, "date": "d"}]
+    st = [{"root_lot_id": "Z99Z9", "wafer_id": f"{i:02d}", "step_seq": "CC002000",
+           "eqp_id": "E9", "timestamp": "t"} for i in (1, 2)]
+    report = li.load(ys, st, tmp_path / "t.db", verbose=False)
+
+    assert report["lot_types"] == {"eval": 1, "prod": 1}
+
+
+def test_a_malformed_lot_type_code_stops_the_load(tmp_path):
+    """코드 형식이 어긋나면 조용히 eval 로 떨어뜨리지 말고 멈춰야 한다.
+
+    eval 로 흘리면 양산랏이 통째로 평가랏이 되어도 리포트의 lot_type 집계가
+    그럴듯해 보인다 — 사람이 볼 수 있는 증상이 없다.
+    """
+    ys = [dict(YIELDS[0], lot_type="PROD")]
+    db = tmp_path / "t.db"
+    try:
+        li.load(ys, [], db, verbose=False)
+    except ValueError as e:
+        assert "두 자리" in str(e)
+    else:
+        raise AssertionError("형식 위반 코드가 통과했다")
+    # 실패한 적재가 기존 DB 자리에 잔해를 남기면 안 된다
+    assert not db.exists() and not db.with_name(db.name + ".tmp").exists()
+
+
+def test_a_process_name_in_step_seq_is_flagged(tmp_path):
+    """step_seq 자리에 공정명이 들어오면 경고해야 한다 — area 와 뒤바뀐 원천의 서명.
+
+    이 사고는 에러를 내지 않는다. 공정명으로 묶인 후보가 그럴듯하게 나오고, 사내에서
+    그 스텝 번호를 못 찾아서야 뒤늦게 드러난다. 다만 교체는 막지 않는다 — 자릿수
+    관행이 제품군마다 다를 수 있어 오경보가 가능하다.
+    """
+    st = [dict(s, step_seq="Etch") for s in STEPS]
+    report = li.load(YIELDS, st, tmp_path / "t.db", verbose=False)
+
+    assert any("step_seq 형식 위반" in i for i in report["issues"])
+    assert not report["fatal"] and report["swapped"]
+
+
+def test_padded_step_seq_does_not_split_one_step_into_two(tmp_path):
+    """고정폭 원천의 앞뒤 공백이 같은 스텝을 두 군으로 쪼개면 안 된다.
+
+    `"CC002000"` 과 `"CC002000 "` 이 섞이면 commonality 가 같은 설비를 두 군으로 나눠
+    분리 점수가 반토막 나는데, 에러는 나지 않는다.
+    """
+    st = [dict(STEPS[0]), dict(STEPS[1])]
+    st[1]["step_seq"] = " CC002000 "          # 고정폭 CHAR 원천의 흔한 모양
+    db = tmp_path / "t.db"
+    li.load(YIELDS, st, db, verbose=False)
+
+    conn = sqlite3.connect(db)
+    seqs = [r[0] for r in conn.execute("SELECT DISTINCT step_seq FROM step_history")]
+    conn.close()
+    assert seqs == ["CC002000"]
 
 
 # --------------------------------------------------------------------------- #
@@ -66,14 +135,14 @@ def test_null_rates_reflect_actual_gaps(tmp_path):
 # 증명되므로, "전 데이터에 반례 0건" 일 때만 의심한다.
 # --------------------------------------------------------------------------- #
 LOT_GRAIN_YIELDS = [{"root_lot_id": "B77Q2", "wafer_id": "01", "lot_id": "B77Q2.1",
-                     "yield": 88.0, "date": "2026-07-02"},
+                     "lot_type": "P1", "yield": 88.0, "date": "2026-07-02"},
                     {"root_lot_id": "B77Q2", "wafer_id": "02", "lot_id": "B77Q2.1",
-                     "yield": 55.0, "date": "2026-07-02"}]
+                     "lot_type": "P1", "yield": 55.0, "date": "2026-07-02"}]
 
 # lot 마스터 조인의 서명: 같은 lot×스텝의 두 wafer 가 챔버는 갈리는데 ppid 는 같다
-LOT_GRAIN_STEPS = [{"root_lot_id": "B77Q2", "wafer_id": "01", "process_step": "Etch",
+LOT_GRAIN_STEPS = [{"root_lot_id": "B77Q2", "wafer_id": "01", "step_seq": "CC002000",
                     "eqp_id": "ETCH9", "ch_id": "A", "ppid": "PPID_L", "timestamp": "t"},
-                   {"root_lot_id": "B77Q2", "wafer_id": "02", "process_step": "Etch",
+                   {"root_lot_id": "B77Q2", "wafer_id": "02", "step_seq": "CC002000",
                     "eqp_id": "ETCH9", "ch_id": "B", "ppid": "PPID_L", "timestamp": "t"}]
 
 
@@ -94,12 +163,12 @@ def test_ppid_grain_is_silent_when_variation_is_structurally_impossible(tmp_path
     있는 게 아니라 `COUNT(DISTINCT tool) > 1` 하나가 두 경우를 함께 처리한다.
     """
     yields = [{"root_lot_id": "C31K8", "wafer_id": "01", "lot_id": "C31K8.1",
-               "yield": 90.0, "date": "2026-07-03"},
+               "lot_type": "P1", "yield": 90.0, "date": "2026-07-03"},
               {"root_lot_id": "C31K8", "wafer_id": "02", "lot_id": "C31K8.2",
-               "yield": 70.0, "date": "2026-07-03"}]
-    steps = [{"root_lot_id": "C31K8", "wafer_id": "01", "process_step": "Etch",
+               "lot_type": "E1", "yield": 70.0, "date": "2026-07-03"}]
+    steps = [{"root_lot_id": "C31K8", "wafer_id": "01", "step_seq": "CC002000",
               "eqp_id": "ETCH9", "ch_id": "A", "ppid": "PPID_L", "timestamp": "t"},
-             {"root_lot_id": "C31K8", "wafer_id": "02", "process_step": "Etch",
+             {"root_lot_id": "C31K8", "wafer_id": "02", "step_seq": "CC002000",
               "eqp_id": "ETCH9", "ch_id": "B", "ppid": "PPID_L", "timestamp": "t"}]
     report = li.load(yields, steps, tmp_path / "t.db", verbose=False)
     assert report["ppid_grain"] == {"checkable": 0, "varying": 0}
@@ -125,9 +194,9 @@ def test_uniform_equipment_means_the_source_never_proved_wafer_granularity(tmp_p
     군에서는 원천이 wafer 단위를 주는지 자체가 안 보이므로 할 말이 없다.
     """
     ys = [{"root_lot_id": "G44D4", "wafer_id": f"{i:02d}", "lot_id": "G44D4.1",
-           "yield": 80.0, "date": "d"} for i in (1, 2, 3)]
+           "lot_type": "P1", "yield": 80.0, "date": "d"} for i in (1, 2, 3)]
     # lot 전원이 같은 설비·챔버·PPID (정상 운영에서 흔하다)
-    st = [{"root_lot_id": "G44D4", "wafer_id": f"{i:02d}", "process_step": "Etch",
+    st = [{"root_lot_id": "G44D4", "wafer_id": f"{i:02d}", "step_seq": "CC002000",
            "eqp_id": "E9", "ch_id": "A", "ppid": "PPID_L", "timestamp": "t"}
           for i in (1, 2, 3)]
     report = li.load(ys, st, tmp_path / "t.db", verbose=False)
@@ -144,9 +213,9 @@ def test_equipment_alone_can_prove_wafer_granularity_without_any_chamber(tmp_pat
     `IFNULL` 을 빼면 그런 스텝 전부에서 검사가 조용히 꺼진다.
     """
     ys = [{"root_lot_id": "P11A1", "wafer_id": f"{i:02d}", "lot_id": "P11A1.1",
-           "yield": 80.0, "date": "d"} for i in (1, 2, 3)]
+           "lot_type": "P1", "yield": 80.0, "date": "d"} for i in (1, 2, 3)]
     # 설비는 wafer 마다 갈리고 ch_id 는 원천에 없음. ppid 는 전원 동일(lot 마스터 grain)
-    st = [{"root_lot_id": "P11A1", "wafer_id": f"{i:02d}", "process_step": "Etch",
+    st = [{"root_lot_id": "P11A1", "wafer_id": f"{i:02d}", "step_seq": "CC002000",
            "eqp_id": f"E{i}", "ppid": "PPID_L", "timestamp": "t"} for i in (1, 2, 3)]
     report = li.load(ys, st, tmp_path / "t.db", verbose=False)
 
@@ -162,10 +231,10 @@ def test_equipment_and_chamber_are_joined_with_a_separator(tmp_path):
     빠진다(항상 침묵 방향이라 오경보는 안 나지만, 검사가 조용히 꺼진다).
     """
     ys = [{"root_lot_id": "R33C3", "wafer_id": f"{i:02d}", "lot_id": "R33C3.1",
-           "yield": 80.0, "date": "d"} for i in (1, 2)]
-    st = [{"root_lot_id": "R33C3", "wafer_id": "01", "process_step": "Etch",
+           "lot_type": "P1", "yield": 80.0, "date": "d"} for i in (1, 2)]
+    st = [{"root_lot_id": "R33C3", "wafer_id": "01", "step_seq": "CC002000",
            "eqp_id": "E1", "ch_id": "2A", "ppid": "PPID_L", "timestamp": "t"},
-          {"root_lot_id": "R33C3", "wafer_id": "02", "process_step": "Etch",
+          {"root_lot_id": "R33C3", "wafer_id": "02", "step_seq": "CC002000",
            "eqp_id": "E12", "ch_id": "A", "ppid": "PPID_L", "timestamp": "t"}]
     report = li.load(ys, st, tmp_path / "t.db", verbose=False)
 
@@ -181,11 +250,11 @@ def test_grain_is_judged_per_step_not_per_lot(tmp_path, monkeypatch):
     침묵한다 — 그런데 `[grain]` 줄은 0 아닌 숫자를 찍어 사람을 안심시킨다.
     """
     ys = [{"root_lot_id": "Q22B2", "wafer_id": f"{i:02d}", "lot_id": "Q22B2.1",
-           "yield": 80.0, "date": "d"} for i in (1, 2)]
+           "lot_type": "P1", "yield": 80.0, "date": "d"} for i in (1, 2)]
     # 2개 스텝, 둘 다 lot 마스터 grain (스텝끼리는 ppid 가 다르다 — 정상)
-    st = [{"root_lot_id": "Q22B2", "wafer_id": f"{i:02d}", "process_step": step,
+    st = [{"root_lot_id": "Q22B2", "wafer_id": f"{i:02d}", "step_seq": step,
            "eqp_id": "E9", "ch_id": ch, "ppid": f"PPID_{step}", "timestamp": "t"}
-          for step in ("Etch", "CMP") for i, ch in zip((1, 2), "AB")]
+          for step in ("CC002000", "CC004000") for i, ch in zip((1, 2), "AB")]
 
     buf = io.TextIOWrapper(io.BytesIO(), encoding="cp949")
     monkeypatch.setattr(sys, "stdout", buf)
@@ -208,9 +277,9 @@ def test_rework_rows_are_not_mistaken_for_wafer_level_variation(tmp_path):
     예상되는 상태다(검사 #6 이 "재작업인지 확인" 이라고 말하는 이유).
     """
     ys = [{"root_lot_id": "D11A1", "wafer_id": f"{i:02d}", "lot_id": "D11A1.1",
-           "yield": 80.0, "date": "d"} for i in (1, 2, 3)]
+           "lot_type": "P1", "yield": 80.0, "date": "d"} for i in (1, 2, 3)]
     # 챔버는 wafer 마다 갈리고(= 판정 대상) ppid 만 전원 동일 = lot 마스터 grain(틀림)
-    st = [{"root_lot_id": "D11A1", "wafer_id": f"{i:02d}", "process_step": "Etch",
+    st = [{"root_lot_id": "D11A1", "wafer_id": f"{i:02d}", "step_seq": "CC002000",
            "eqp_id": "E9", "ch_id": ch, "ppid": "PPID_L", "timestamp": "t"}
           for i, ch in zip((1, 2, 3), "ABC")]
     rework = dict(st[0])
@@ -229,17 +298,17 @@ def test_ppid_grain_needs_a_counterexample_somewhere_not_in_every_lot(tmp_path):
     PPID 로 도는 건 정상인 스텝도 많아 개별 판정은 오경보이므로, 금지된 설계다.
     """
     ys = ([{"root_lot_id": "E22B2", "wafer_id": f"{i:02d}", "lot_id": "E22B2.1",
-            "yield": 80.0, "date": "d"} for i in (1, 2)] +
+            "lot_type": "P1", "yield": 80.0, "date": "d"} for i in (1, 2)] +
           [{"root_lot_id": "E22B2", "wafer_id": f"{i:02d}", "lot_id": "E22B2.2",
-            "yield": 80.0, "date": "d"} for i in (3, 4)])
+            "lot_type": "E1", "yield": 80.0, "date": "d"} for i in (3, 4)])
     # 두 lot 모두 챔버는 갈린다(= 둘 다 판정 대상). ppid 는 lot .2 에서만 갈린다.
-    st = ([{"root_lot_id": "E22B2", "wafer_id": "01", "process_step": "Etch",
+    st = ([{"root_lot_id": "E22B2", "wafer_id": "01", "step_seq": "CC002000",
             "eqp_id": "E9", "ch_id": "A", "ppid": "PPID_L", "timestamp": "t"},
-           {"root_lot_id": "E22B2", "wafer_id": "02", "process_step": "Etch",
+           {"root_lot_id": "E22B2", "wafer_id": "02", "step_seq": "CC002000",
             "eqp_id": "E9", "ch_id": "B", "ppid": "PPID_L", "timestamp": "t"},
-           {"root_lot_id": "E22B2", "wafer_id": "03", "process_step": "Etch",
+           {"root_lot_id": "E22B2", "wafer_id": "03", "step_seq": "CC002000",
             "eqp_id": "E9", "ch_id": "A", "ppid": "PPID_L", "timestamp": "t"},
-           {"root_lot_id": "E22B2", "wafer_id": "04", "process_step": "Etch",
+           {"root_lot_id": "E22B2", "wafer_id": "04", "step_seq": "CC002000",
             "eqp_id": "E9", "ch_id": "B", "ppid": "PPID_M", "timestamp": "t"}])
     report = li.load(ys, st, tmp_path / "t.db", verbose=False)                # lot .2 — 갈린다
 
@@ -254,10 +323,10 @@ def test_ppid_grain_ignores_wafers_whose_ppid_is_missing(tmp_path):
     ppid 부분 결측은 실데이터 1차 추출의 전형적 상태다(DDL 이 nullable 인 이유).
     """
     ys = [{"root_lot_id": "F33C3", "wafer_id": f"{i:02d}", "lot_id": "F33C3.1",
-           "yield": 80.0, "date": "d"} for i in (1, 2, 3)]
+           "lot_type": "P1", "yield": 80.0, "date": "d"} for i in (1, 2, 3)]
     # 챔버는 갈린다 — 그래서 checkable 이 0 인 유일한 이유가 ppid 결측이 된다
     # (챔버까지 같으면 이 테스트는 NULL 필터 삭제를 못 잡는다)
-    st = [{"root_lot_id": "F33C3", "wafer_id": f"{i:02d}", "process_step": "Etch",
+    st = [{"root_lot_id": "F33C3", "wafer_id": f"{i:02d}", "step_seq": "CC002000",
            "eqp_id": "E9", "ch_id": ch, "timestamp": "t"}
           for i, ch in zip((1, 2, 3), "ABC")]
     st[0]["ppid"] = "PPID_L"                  # 3장 중 1장만 ppid 보유

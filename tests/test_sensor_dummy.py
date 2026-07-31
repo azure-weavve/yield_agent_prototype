@@ -20,7 +20,7 @@ def _vals(sensor_name, wafer_ids):
         ph = ",".join("?" * len(wafer_ids))
         rows = conn.execute(
             f"SELECT value FROM sensor_log WHERE sensor_name = ? "
-            f"AND process_step = ? AND wafer_id IN ({ph})",
+            f"AND step_seq = ? AND wafer_id IN ({ph})",
             [sensor_name, SENSOR_STEP, *wafer_ids]).fetchall()
     finally:
         conn.close()
@@ -33,7 +33,7 @@ def test_sensor_log_table_exists_with_expected_columns():
         cols = {r[1] for r in conn.execute("PRAGMA table_info(sensor_log)")}
     finally:
         conn.close()
-    assert cols == {"wafer_id", "process_step", "sensor_name", "value", "tkout_time"}
+    assert cols == {"wafer_id", "step_seq", "sensor_name", "value", "tkout_time"}
 
 
 def test_case1_variance_only_shift_keeps_mean_but_moves_std():

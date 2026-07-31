@@ -18,11 +18,11 @@ def _make_db(tmp_path, monkeypatch, yield_rows, history_rows):
     conn = sqlite3.connect(db)
     conn.execute("""CREATE TABLE yield (
         wafer_id TEXT PRIMARY KEY, lot_id TEXT NOT NULL, yield REAL NOT NULL,
-        defect_type TEXT NOT NULL, process_step TEXT, date TEXT NOT NULL,
+        defect_type TEXT NOT NULL, step_seq TEXT, date TEXT NOT NULL,
         root_lot_id TEXT NOT NULL, lot_type TEXT NOT NULL)""")
     conn.executemany("INSERT INTO yield VALUES (?,?,?,?,?,?,?,?)", yield_rows)
     conn.execute("""CREATE TABLE step_history (
-        wafer_id TEXT NOT NULL, process_step TEXT NOT NULL, eqp_id TEXT NOT NULL,
+        wafer_id TEXT NOT NULL, step_seq TEXT NOT NULL, eqp_id TEXT NOT NULL,
         ch_id TEXT, timestamp TEXT)""")
     conn.executemany("INSERT INTO step_history VALUES (?,?,?,?,?)", history_rows)
     conn.commit()
@@ -70,7 +70,7 @@ def test_clean_separation_scores_one(tmp_path, monkeypatch):
     assert (ch["control_pass"], ch["control_total"]) == (0, 3)
     assert ch["coverage_target"] == 1.0 and ch["coverage_control"] == 0.0
     assert ch["score"] == 1.0
-    assert ch["process_step"] == "Etch" and ch["eqp_id"] == "ETCH9" and ch["ch_id"] == "3"
+    assert ch["step_seq"] == "Etch" and ch["eqp_id"] == "ETCH9" and ch["ch_id"] == "3"
     assert ch["n_strata"] == 1
 
 
@@ -278,11 +278,11 @@ def _make_db_ppid(tmp_path, monkeypatch, yield_rows, history_rows):
     conn = sqlite3.connect(db)
     conn.execute("""CREATE TABLE yield (
         wafer_id TEXT PRIMARY KEY, lot_id TEXT NOT NULL, yield REAL NOT NULL,
-        defect_type TEXT NOT NULL, process_step TEXT, date TEXT NOT NULL,
+        defect_type TEXT NOT NULL, step_seq TEXT, date TEXT NOT NULL,
         root_lot_id TEXT NOT NULL, lot_type TEXT NOT NULL)""")
     conn.executemany("INSERT INTO yield VALUES (?,?,?,?,?,?,?,?)", yield_rows)
     conn.execute("""CREATE TABLE step_history (
-        wafer_id TEXT NOT NULL, process_step TEXT NOT NULL, eqp_id TEXT NOT NULL,
+        wafer_id TEXT NOT NULL, step_seq TEXT NOT NULL, eqp_id TEXT NOT NULL,
         ch_id TEXT, ppid TEXT, timestamp TEXT)""")
     conn.executemany("INSERT INTO step_history VALUES (?,?,?,?,?,?)", history_rows)
     conn.commit()

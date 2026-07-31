@@ -69,3 +69,8 @@ spec 이 없다(그 spec 은 하루 앞선 `2026-07-23-...-design.md`).
 `spec_low`/`spec_high` · `LEGACY_TOOLS_ENABLED` · `aggregate_defects` · `label_counts` ·
 `find_counterexamples` · `validate_data_completeness` · `compare_process_logs` ·
 `compare_parameter_distribution`. 현재 스키마는 **`yield`·`step_history`·`sensor_log` 3개**다.
+
+**개명된 심볼**: `process_step` → **`step_seq`** (2026-07-31, 사내 원천 이름에 맞춤 —
+세 테이블·후보 dict 키·도구 파라미터·FDC 요청 키 전부). 문서에서 `process_step` 이
+보이면 낡은 서술이다. 값도 공정명(`"Etch"`)이 아니라 **순번 코드**(`"CC002000"` =
+제품군 2자리 + 스텝 순서 6자리)로 바뀌었고, 공정명은 신규 컬럼 **`area`** 에 있다.

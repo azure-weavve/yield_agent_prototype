@@ -11,8 +11,8 @@ def test_local_store_fetches_requested_wafers_only():
     rows = ss.LocalSensorStore().fetch(SENSOR_STEP, GROUP_WAFERS)
     assert rows
     assert {r["wafer_id"] for r in rows} <= set(GROUP_WAFERS)
-    assert all(r["process_step"] == SENSOR_STEP for r in rows)
-    assert {"wafer_id", "process_step", "sensor_name", "value", "tkout_time"} == set(rows[0])
+    assert all(r["step_seq"] == SENSOR_STEP for r in rows)
+    assert {"wafer_id", "step_seq", "sensor_name", "value", "tkout_time"} == set(rows[0])
     assert any(r["sensor_name"] == f"{SENSOR_REAL}_avg" for r in rows)
 
 

@@ -27,7 +27,7 @@ def _searcher_lazy():
 
 @tool
 def get_wafer(wafer_id: str, reason: str = "") -> dict | None:
-    """wafer 1장의 수율·소속 lot·날짜를 조회한다 (defect_type·process_step 은 항상 NULL).
+    """wafer 1장의 수율·소속 lot·날짜를 조회한다 (defect_type·step_seq 은 항상 NULL).
     대상 wafer 의 기본 정보가 필요할 때 사용.
     reason: 이 tool 을 호출하는 판단 이유를 한 문장으로 기술한다 (감사 기록에 남는다)."""
     return yt.get_wafer(wafer_id)
@@ -42,13 +42,13 @@ def search_similar(wafer_id: str, k: int = 5, reason: str = "") -> list[dict]:
 
 
 @tool
-def compare_sensor_distribution(process_step: str, group_ids: list[str],
+def compare_sensor_distribution(step_seq: str, group_ids: list[str],
                                 control_ids: list[str], reason: str = "") -> dict:
     """가설 도구(hyp_*)가 지목한 공정 스텝에서 두 그룹의 센서 통계값 분포를 비교한다.
     효과크기가 큰 센서 top-K 를 낸다 — 어느 챔버인지까지 좁힌 뒤 '왜' 를 보는 2단이다.
     후보는 결론이 아니다: 표본 수(n_target/n_control)를 함께 보고 판단하라.
     reason: 이 tool 을 호출하는 판단 이유를 한 문장으로 기술한다 (감사 기록에 남는다)."""
-    return sc.compare_sensor_distribution(process_step, group_ids, control_ids)
+    return sc.compare_sensor_distribution(step_seq, group_ids, control_ids)
 
 
 @tool

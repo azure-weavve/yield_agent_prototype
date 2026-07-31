@@ -91,7 +91,7 @@ class ScriptedMockLLMClient(LLMClient):
         if "compare_sensor_distribution" not in done:
             return self._call(
                 "compare_sensor_distribution",
-                {"process_step": top["process_step"],
+                {"step_seq": top["step_seq"],
                  "group_ids": target, "control_ids": control},
                 "챔버까지 좁혔다. 그 스텝의 센서 분포로 '왜' 를 본다.")
 

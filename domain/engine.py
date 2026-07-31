@@ -32,12 +32,12 @@ def evaluate(spec: dict, group_ids: list[str], control_ids: list[str]) -> dict:
     for cand in res.get("candidates", []):
         passes, reject = _passes(cand, min_score, min_target, status, ok)
         candidates.append({
-            "value": [cand["process_step"], cand["key"]],
+            "value": [cand["step_seq"], cand["key"]],
             "passes": passes,
             "reject_reason": reject,
             "level": cand["level"],
             "key": cand["key"],
-            "process_step": cand["process_step"],
+            "step_seq": cand["step_seq"],
             "score": cand["score"],
             "target_pass": cand["target_pass"], "target_total": cand["target_total"],
             "control_pass": cand["control_pass"], "control_total": cand["control_total"],

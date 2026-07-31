@@ -39,7 +39,7 @@ def test_compare_sensor_distribution_tool_invokes():
     from data.generate_dummy import CONTROL_WAFERS, GROUP_WAFERS, SENSOR_REAL, SENSOR_STEP
 
     res = at.TOOLS_BY_NAME["compare_sensor_distribution"].invoke({
-        "process_step": SENSOR_STEP,
+        "step_seq": SENSOR_STEP,
         "group_ids": GROUP_WAFERS, "control_ids": CONTROL_WAFERS,
     })
     assert res["status"] == "ok"

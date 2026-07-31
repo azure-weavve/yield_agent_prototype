@@ -11,10 +11,15 @@
 ────────────────────────────────────────────────────────────────────────
 입력 계약 — `_extract()` 가 반환할 형태 (원천 컬럼명 그대로 통과시켜도 된다)
 
-  yield_records : [{root_lot_id, wafer_id, lot_id, yield, date,
+  yield_records : [{root_lot_id, wafer_id, lot_id, lot_type, yield, date,
                     defect_type(optional)}, ...]                     # wafer 1장당 1행
-  step_records  : [{root_lot_id, wafer_id, process_step, eqp_id,
-                    ch_id(optional), ppid(optional), timestamp}, ...]  # wafer×스텝당 1행
+  step_records  : [{root_lot_id, wafer_id, step_seq, eqp_id,
+                    area(optional), ch_id(optional), ppid(optional),
+                    timestamp}, ...]                                 # wafer×스텝당 1행
+
+  ⚠️ `step_seq` 는 **문자 2자리(제품군) + 숫자 6자리(스텝 순서)** 다 ("CC001000").
+      스텝의 **공정명이 아니다** — 공정명은 원천의 별개 컬럼 `area` 에 있고, 그 스텝이
+      무슨 공정인지 확인할 때 그쪽을 본다. 분석은 step_seq 를 축으로 돈다.
 
   ⚠️ ppid 는 **그 wafer 가 그 스텝을 돌 때 쓴 PPID** — wafer×스텝 단위다.
       lot 단위나 recipe 마스터 단위로 넣으면 에러 없이 틀린 집계가 나온다.
@@ -28,6 +33,11 @@
       → 이 스크립트가 root_lot_id + "_" + zero-pad(순번,2) 로 합성해 넣는다.
         yield · step_history · EDS 3곳이 바이트 단위로 일치해야 조인이 성립한다.
         (순번 키를 `wafer_no` 로 넘겨도 받는다 — _wafer_no() 참조)
+
+      원천의 `lot_type`  = 사내 **두 자리 코드** ("PW" 등)
+      타깃의 `lot_type`  = **"prod" / "eval"**
+      → classify_lot_type() 이 변환해 넣는다. 원천 코드를 그대로 실으면 commonality
+        meta 집계가 사내 코드로 나와 해석이 어긋난다.
 ────────────────────────────────────────────────────────────────────────
 """
 
@@ -50,20 +60,24 @@ ORPHAN_FATAL_RATE = 0.5
 NO_HISTORY_FATAL_RATE = 0.5
 
 # --------------------------------------------------------------------------- #
-# lot_type 판정 — 격리 함수 (사내에서 실제 규칙으로 교체)
+# lot_type 판정 — 격리 함수 (원천 두 자리 코드 → prod/eval)
 # --------------------------------------------------------------------------- #
-# ⚠️ 실제 양산/평가 판정 규칙은 이 저장소에 두지 않는다. 아래는 문서화된 휴리스틱이며
-#    사내 배포 시 **이 함수 하나만** 교체하면 된다.
+# 판정 규칙이 바뀌면 **이 함수 하나만** 고치면 된다.
 # 주의: lot_type 은 대조군 '필터'가 아니다. 평가랏에는 설비 작업 후 검증랏이 섞여 있어
 #      배제하면 오히려 단서를 버린다. commonality 는 이 값을 meta(해석 재료)로만 쓴다.
 PROD = "prod"
 EVAL = "eval"
 
 
-def classify_lot_type(lot_id: str) -> str:
-    """lot_id 의 '.' 접미로 양산/평가 판정 (휴리스틱, 교체 대상)."""
-    suffix = lot_id.split(".", 1)[1] if "." in lot_id else ""
-    return PROD if suffix == "1" else EVAL
+def classify_lot_type(code: str) -> str:
+    """원천 lot_type 두 자리 코드의 첫 글자가 P 면 양산, 아니면 평가.
+
+    형식이 어긋나면 eval 로 떨어뜨리지 않고 적재를 멈춘다 — 조용히 넘기면 양산랏이
+    통째로 평가랏으로 둔갑해도 리포트의 lot_type 집계가 그럴듯해 보인다.
+    """
+    if not code or len(code) != 2:
+        raise ValueError(f"lot_type 코드가 두 자리가 아님: {code!r}")
+    return PROD if code[0].upper() == "P" else EVAL
 
 
 # --------------------------------------------------------------------------- #
@@ -118,10 +132,10 @@ def transform_yield(records):
             # ⚠️ 항상 NULL. 원천에 있어도 넣지 않는다 — '어느 스텝이 원인인가'는
             #    이 시스템이 추론할 결론이지 입력이 아니다(정답 누출).
             #    컬럼 자체는 기존 SQL 호환을 위해 남겨둔다.
-            "process_step": None,
+            "step_seq": None,
             "date": str(r["date"]),
             "root_lot_id": root,
-            "lot_type": classify_lot_type(lot_id),
+            "lot_type": classify_lot_type(r["lot_type"]),
         }
 
 
@@ -129,8 +143,13 @@ def transform_steps(records):
     for r in records:
         yield {
             "wafer_id": build_wafer_id(r["root_lot_id"], _wafer_no(r)),
-            "process_step": str(r["process_step"]),
-            "eqp_id": str(r["eqp_id"]),
+            # 필수 필드도 공백을 턴다. 원천이 고정폭 CHAR 이면 "CC002000 " 이 섞여 들어와
+            # commonality 가 같은 스텝(같은 설비)을 두 군으로 쪼갠다 — 에러 없이 신호만 반토막.
+            "step_seq": str(r["step_seq"]).strip(),
+            # area = 그 스텝의 공정명. 분석 축은 step_seq 이고 area 는 사람이 "이 스텝이
+            # 무슨 공정인가" 를 확인할 때만 본다. 원천이 아직 안 실어 줘도 되게 NULL 허용.
+            "area": _text(r.get("area")),
+            "eqp_id": str(r["eqp_id"]).strip(),
             # ch_id 는 NULL 허용 (단일 챔버 설비·챔버 개념 없는 스텝).
             # commonality 가 NULL 이면 챔버 레벨을 건너뛰고 설비 레벨만 계산한다.
             "ch_id": _text(r.get("ch_id")),
@@ -153,7 +172,7 @@ CREATE TABLE yield (
     lot_id       TEXT NOT NULL,
     yield        REAL NOT NULL,
     defect_type  TEXT,               -- NULL = 라벨 없음 (EDS 유래 메타데이터)
-    process_step TEXT,               -- 항상 NULL (정답 누출 방지, 컬럼만 호환 유지)
+    step_seq     TEXT,               -- 항상 NULL (정답 누출 방지, 컬럼만 호환 유지)
     date         TEXT NOT NULL,
     root_lot_id  TEXT NOT NULL,
     lot_type     TEXT NOT NULL       -- 필터가 아니라 해석용 컨텍스트
@@ -161,7 +180,8 @@ CREATE TABLE yield (
 
 CREATE TABLE step_history (
     wafer_id     TEXT NOT NULL,      -- 합성 조인 키
-    process_step TEXT NOT NULL,
+    step_seq     TEXT NOT NULL,      -- 제품군 2자리 + 스텝 순서 6자리 ("CC001000")
+    area         TEXT,               -- 그 스텝의 공정명 (NULL 허용, 해석용)
     eqp_id       TEXT NOT NULL,
     ch_id        TEXT,               -- NULL 허용
     ppid         TEXT,               -- NULL 허용 (2차 legend: hyp_ppid_commonality)
@@ -172,7 +192,7 @@ CREATE TABLE step_history (
 # 인덱스는 적재 **후에** 만든다 (적재 중 인덱스 유지 비용 회피)
 INDEXES = """
 CREATE INDEX idx_step_wafer ON step_history(wafer_id);
-CREATE INDEX idx_step_step  ON step_history(process_step);
+CREATE INDEX idx_step_step  ON step_history(step_seq);
 CREATE INDEX idx_yield_root ON yield(root_lot_id);
 """
 
@@ -213,14 +233,15 @@ def load(yield_records, step_records, db_path: Path,
         conn.executescript(DDL)
 
         n_y = _insert_batched(conn, """
-            INSERT INTO yield (wafer_id, lot_id, yield, defect_type, process_step,
+            INSERT INTO yield (wafer_id, lot_id, yield, defect_type, step_seq,
                                date, root_lot_id, lot_type)
-            VALUES (:wafer_id, :lot_id, :yield, :defect_type, :process_step,
+            VALUES (:wafer_id, :lot_id, :yield, :defect_type, :step_seq,
                     :date, :root_lot_id, :lot_type)""", transform_yield(yield_records))
 
         n_s = _insert_batched(conn, """
-            INSERT INTO step_history (wafer_id, process_step, eqp_id, ch_id, ppid, timestamp)
-            VALUES (:wafer_id, :process_step, :eqp_id, :ch_id, :ppid, :timestamp)""",
+            INSERT INTO step_history (wafer_id, step_seq, area, eqp_id, ch_id, ppid,
+                                      timestamp)
+            VALUES (:wafer_id, :step_seq, :area, :eqp_id, :ch_id, :ppid, :timestamp)""",
             transform_steps(step_records))
 
         conn.executescript(INDEXES)
@@ -250,6 +271,7 @@ def load(yield_records, step_records, db_path: Path,
 # 적재 후 정합성 검사
 # --------------------------------------------------------------------------- #
 _WID = re.compile(r"^.+_\d{2}$")
+_STEP_SEQ = re.compile(r"^[A-Z]{2}\d{6}$")      # 제품군 2자리 + 스텝 순서 6자리
 
 
 def validate(conn: sqlite3.Connection, n_yield: int, n_steps: int) -> dict:
@@ -278,6 +300,16 @@ def validate(conn: sqlite3.Connection, n_yield: int, n_steps: int) -> dict:
         fatal.append(f"root_lot_id 불일치 {len(mism)}건 "
                      f"(예: {[r['wafer_id'] for r in mism[:3]]})")
 
+    # 2-1. step_seq 형식 — 원천에서 step_seq 와 area 가 뒤바뀌어 실려도 적재는 통과하고,
+    #      공정명("Etch")으로 묶인 후보가 그럴듯하게 나온다. 그 사고를 잡는다.
+    #      자릿수 관행이 제품군마다 다를 수 있으므로 경고에 그친다 (교체는 막지 않는다).
+    bad_seq = [r["step_seq"] for r in q("SELECT DISTINCT step_seq FROM step_history")
+               if not _STEP_SEQ.match(r["step_seq"])]
+    if bad_seq:
+        issues.append(f"step_seq 형식 위반 {len(bad_seq)}종 (예: {bad_seq[:3]}): "
+                      f"기대 형식은 제품군 2자리 + 순번 6자리('CC001000'). "
+                      f"area 컬럼과 뒤바뀌지 않았는지 확인")
+
     # 3. step_history 고아 (이력엔 있으나 yield 에 없는 wafer) — 조인 키 불일치의 주 증상
     # 소수면 경고지만, 대부분이 고아면 조인 키 자체가 어긋난 것이므로 교체를 막는다
     n_hist_wafers = one("SELECT COUNT(DISTINCT wafer_id) FROM step_history")
@@ -305,7 +337,7 @@ def validate(conn: sqlite3.Connection, n_yield: int, n_steps: int) -> dict:
         issues.append(f"yield 범위(0~100) 이탈 {oor}건")
 
     # 6. 중복 이력 (같은 wafer×스텝이 여러 번) — 정상일 수도(재작업), 확인 필요
-    dup = one("""SELECT COUNT(*) FROM (SELECT wafer_id, process_step
+    dup = one("""SELECT COUNT(*) FROM (SELECT wafer_id, step_seq
                  FROM step_history GROUP BY 1,2 HAVING COUNT(*) > 1)""")
     if dup:
         issues.append(f"wafer×스텝 중복 이력 {dup}건: 재작업(rework)인지 확인 필요")
@@ -330,7 +362,7 @@ def validate(conn: sqlite3.Connection, n_yield: int, n_steps: int) -> dict:
     #    `COUNT(DISTINCT tool) > 1` 이 "wafer 2장 이상" 을 함의하므로 별도 조건을 안 둔다.
     gr = q("""SELECT COUNT(*) checkable, COALESCE(SUM(nd > 1), 0) varying FROM (
                   SELECT COUNT(DISTINCT p) nd
-                  FROM (SELECT y.lot_id lot, h.process_step step, h.wafer_id w,
+                  FROM (SELECT y.lot_id lot, h.step_seq step, h.wafer_id w,
                                MIN(h.ppid) p,
                                MIN(h.eqp_id || '|' || IFNULL(h.ch_id, '')) tool
                         FROM step_history h JOIN yield y USING (wafer_id)
@@ -365,6 +397,12 @@ def validate(conn: sqlite3.Connection, n_yield: int, n_steps: int) -> dict:
         "defect_labeled": one("SELECT COUNT(*) FROM yield WHERE defect_type IS NOT NULL"),
         "steps_per_wafer": ({"min": s["lo"], "max": s["hi"], "avg": round(s["avg"], 1)}
                             if s else None),
+        # area 결측률 — step_seq 는 순번 코드라 그 자체로는 무슨 공정인지 안 보인다.
+        # 전부 NULL 이면 리포트의 스텝을 사람이 읽을 수 없는데, 분석은 멀쩡히 돌아
+        # 증상이 없다. ch_id·ppid 와 같은 이유로 숫자를 싣는다.
+        "area_null_rate": round(
+            one("SELECT COUNT(*) FROM step_history WHERE area IS NULL")
+            / max(n_steps, 1), 3),
         # ch_id 결측률 — 높으면 commonality 가 챔버 레벨을 거의 못 쓴다(설비 레벨만 남음)
         "ch_id_null_rate": round(
             one("SELECT COUNT(*) FROM step_history WHERE ch_id IS NULL")
@@ -401,7 +439,7 @@ def _print(r: dict) -> None:
     _say(f"[구성] root_lot {r['n_root_lots']}개 · 이력 보유 wafer {r['n_wafers_with_history']}장 "
          f"· lot_type {r['lot_types']}")
     _say(f"[이력] wafer 당 스텝 {r['steps_per_wafer']} · ch_id 결측률 {r['ch_id_null_rate']}"
-         f" · ppid 결측률 {r['ppid_null_rate']}")
+         f" · ppid 결측률 {r['ppid_null_rate']} · area 결측률 {r['area_null_rate']}")
     # 경고가 안 뜬 이유를 구분하려면 숫자가 보여야 한다 (wafer 단위 확인됨 vs 판정 불가)
     g = r["ppid_grain"]
     _say(f"[grain] ppid wafer 단위 증거 {g['varying']}/{g['checkable']}군"
