@@ -20,7 +20,7 @@ YIELD_THRESHOLD = 90.0
 # EDS 유사맵 도구: "local" = 로컬 hnswlib, "http" = 사내 Flask /search
 EDS_MODE = "local"
 EDS_MIN_SIMILARITY = 0.5  # 이 미만 후보는 제외 (무관 wafer 컷). 그룹~0.92 / 외부~0.10
-EDS_HTTP_URL = "https://<사내-eds-호스트>/search"  # 운영 시 교체
+EDS_HTTP_URL = os.getenv("EDS_URL")  # 운영 시 교체
 EDS_HTTP_VERIFY = False  # 사내 자체 인증서 → 프로토타입은 우회, 운영은 .pem 경로로 전환
 
 # LLM: "mock" = 규칙 기반(사내망 밖 데모), "openai" = 사내 OpenAI 호환 서빙

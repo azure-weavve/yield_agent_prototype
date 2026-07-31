@@ -71,7 +71,12 @@ class HttpEDSSearcher(EDSSearcher):
 
         resp = requests.post(
             config.EDS_HTTP_URL,
-            json={"wafer_id": wafer_id, "k": k},  # ⚠️ 요청 스키마는 아직 미확정(응답만 확인됨)
+            json={
+                "line_id": "S3",
+                "product": "All Products",
+                "wafer_id": wafer_id,
+                "n_results": k,
+            },
             verify=config.EDS_HTTP_VERIFY,
             timeout=10,
         )
