@@ -20,10 +20,15 @@
 
 import json
 import sqlite3
+import sys
 from pathlib import Path
 
 import hnswlib
 import numpy as np
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from console import say                        # noqa: E402
 
 # ---------------------------------------------------------------- 설정 (문서 9절 기본값)
 SEED = 42
@@ -528,21 +533,23 @@ def _write_index(vectors, wafer_ids):
 
 
 def _report(rows, vectors, wafer_ids):
-    print(f"총 wafer: {len(rows)}  (정상 {N_NORMAL} + 패턴 {len(rows) - N_NORMAL})")
-    print(f"임베딩: {len(vectors)} x {DIM}d  -> {EMB_DIR / 'index.bin'}")
-    print(f"SQLite: {DB_PATH}")
-    print("\n[lot 평균 수율 낮은 순 상위 3]")
+    # DB·임베딩을 다 쓴 **뒤** 라서, print 가 콘솔 인코딩에 걸려 죽으면 산출물은 남고
+    # 리포트만 사라진다. 출력은 전부 `say` 로 한다 (console.py 참조).
+    say(f"총 wafer: {len(rows)}  (정상 {N_NORMAL} + 패턴 {len(rows) - N_NORMAL})")
+    say(f"임베딩: {len(vectors)} x {DIM}d  -> {EMB_DIR / 'index.bin'}")
+    say(f"SQLite: {DB_PATH}")
+    say("\n[lot 평균 수율 낮은 순 상위 3]")
     by_lot = {}
     for r in rows:
         by_lot.setdefault(r["lot_id"], []).append(r["yield"])
     avg = sorted(((sum(v) / len(v), lot, len(v)) for lot, v in by_lot.items()))
     for a, lot, c in avg[:3]:
-        print(f"  {lot}: 평균 {a:.1f}  (wafer {c}장)")
-    print(f"\n[{RECENT_LOT} 그룹 대조 시나리오]")
+        say(f"  {lot}: 평균 {a:.1f}  (wafer {c}장)")
+    say(f"\n[{RECENT_LOT} 그룹 대조 시나리오]")
     for r in rows:
         if r["lot_id"] == RECENT_LOT:
-            print(f"  {r['wafer_id']}  yield={r['yield']}  "
-                  f"defect={r['_truth_defect']} (정답지 — DB 에는 NULL)")
+            say(f"  {r['wafer_id']}  yield={r['yield']}  "
+                f"defect={r['_truth_defect']} (정답지 — DB 에는 NULL)")
 
 
 if __name__ == "__main__":

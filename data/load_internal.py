@@ -34,7 +34,7 @@
         yield · step_history · EDS 3곳이 바이트 단위로 일치해야 조인이 성립한다.
         (순번 키를 `wafer_no` 로 넘겨도 받는다 — _wafer_no() 참조)
 
-      원천의 `lot_type`  = 사내 **두 자리 코드** ("PW" 등)
+      원천의 `lot_type`  = 사내 **두 자리 코드** ("PP" 양산 · "ES" 평가 등)
       타깃의 `lot_type`  = **"prod" / "eval"**
       → classify_lot_type() 이 변환해 넣는다. 원천 코드를 그대로 실으면 commonality
         meta 집계가 사내 코드로 나와 해석이 어긋난다.
@@ -47,10 +47,10 @@ import argparse
 import os
 import re
 import sqlite3
-import sys
 from pathlib import Path
 
 import config
+from console import say as _say     # cp949 콘솔에서 리포트가 통째로 사라지는 것을 막는다
 
 BATCH = 20_000          # step_history 는 wafer 당 ~1000행이라 배치로 넣는다
 
@@ -271,7 +271,9 @@ def load(yield_records, step_records, db_path: Path,
 # 적재 후 정합성 검사
 # --------------------------------------------------------------------------- #
 _WID = re.compile(r"^.+_\d{2}$")
-_STEP_SEQ = re.compile(r"^[A-Z]{2}\d{6}$")      # 제품군 2자리 + 스텝 순서 6자리
+# 제품군 2자리 + 스텝 순서 6자리. 사내에 문자3+숫자5 체계도 있으나 이 팀은 안 쓴다 —
+# 그 체계를 쓰는 데이터를 받게 되면 이 정규식부터 넓힐 것.
+_STEP_SEQ = re.compile(r"^[A-Z]{2}\d{6}$")
 
 
 def validate(conn: sqlite3.Connection, n_yield: int, n_steps: int) -> dict:
@@ -417,21 +419,6 @@ def validate(conn: sqlite3.Connection, n_yield: int, n_steps: int) -> dict:
         "fatal": fatal,
         "issues": issues,
     }
-
-
-def _say(line: str) -> None:
-    """콘솔 인코딩이 못 싣는 글자가 있어도 리포트를 잃지 않는다.
-
-    한국어 코드페이지(cp949)에는 em-dash(U+2014)가 없다. 경고 문구에 그 글자가 하나
-    있으면 print 가 UnicodeEncodeError 로 죽는데, `_print` 는 os.replace **뒤에**
-    불리므로 DB 는 교체된 채 traceback 만 남고 사람이 봐야 할 경고가 사라진다.
-    빈 추출·중복 이력처럼 리포트가 가장 필요한 순간이 정확히 이 경로다.
-    """
-    try:
-        print(line)
-    except UnicodeEncodeError:
-        enc = getattr(sys.stdout, "encoding", None) or "utf-8"
-        print(line.encode(enc, "replace").decode(enc, "replace"))
 
 
 def _print(r: dict) -> None:
