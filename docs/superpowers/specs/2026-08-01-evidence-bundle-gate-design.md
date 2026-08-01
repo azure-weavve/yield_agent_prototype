@@ -62,7 +62,7 @@ LLM 이 `"ETCH9_B 는 원인이 아니다"` 라고 써도 토큰이 들어 있�
 ```python
 @dataclass(frozen=True)
 class Claim:
-    claim_id: str          # "eqp_ch_commonality:CC002000:ETCH9_B"
+    claim_id: str          # "eqp_ch_commonality:chamber:CC002000:ETCH9_B"
     tool: str              # "hyp_eqp_ch_commonality"  (findings 의 tool 이름)
     hypothesis_id: str
     step_seq: str
@@ -107,13 +107,21 @@ def build_bundle(findings: list[dict]) -> Bundle: ...
 LLM 이 결과에서 그대로 읽어 옮겨야 하므로 도구 출력에 있어야 한다.
 
 ```python
-claim_id = f"{spec['id']}:{cand['step_seq']}:{cand['key']}"
+claim_id = f"{spec['id']}:{cand['level']}:{cand['step_seq']}:{cand['key']}"
 ```
 
 **게이트는 이 문자열을 파싱하지 않는다.** 사전 조회 키로만 쓴다. 구분자가 값에 섞여도
 조회는 안전하다. 콜론 형식을 쓰는 유일한 이유는 감사 기록에서 사람이 읽을 수 있다는 것이다.
 
-두 도구가 같은 `(step_seq, key)` 를 내도 `hypothesis_id` 접두 때문에 충돌하지 않는다.
+**id 는 commonality 의 후보 정체성 `(level, step_seq, key)` 를 전부 담아야 한다**
+(`tools/commonality.py` 의 `agg` 키와 같은 조합). 초안은 `level` 을 뺐다가 Task 1 검토에서
+잡혔다 — 챔버 키는 `eqp_id` 와 `ch_id` 를 언더스코어로 이어 만들기 때문에
+(`commonality.py:108`), 설비 하나가 `ETCH9_B` 라는 이름을 갖고 다른 wafer 가
+`eqp_id=ETCH9, ch_id=B` 이면 설비 후보와 챔버 후보의 id 가 같아진다. 사전 조회에서
+통과 후보가 미통과 후보에 덮이면 게이트가 조용히 반대 판정을 낸다.
+
+`hypothesis_id` 접두는 legend 가 다른 두 도구가 같은 `(level, step_seq, key)` 를 내는
+경우를 막는다.
 
 ---
 
@@ -184,7 +192,7 @@ confidence 는 이제 **필요조건일 뿐 근거가 아니다.** 승인 실권
 넘기고, 코드가 `claim_id`·score·2x2 카운트를 직접 쓴다.
 
 ```
-[근거] eqp_ch_commonality:CC002000:ETCH9_B · 분리 점수 1.0 ·
+[근거] eqp_ch_commonality:chamber:CC002000:ETCH9_B · 분리 점수 1.0 ·
        타깃 3/3 통과 · 대조군 0/6 통과
 ```
 

@@ -53,7 +53,14 @@
 
 **Interfaces:**
 - Consumes: 없음 (첫 Task)
-- Produces: `engine.evaluate()` 결과의 각 후보에 `claim_id: str` 키. 형식은 `f"{spec['id']}:{step_seq}:{key}"`. Task 2·3·4 가 이 키를 읽는다.
+- Produces: `engine.evaluate()` 결과의 각 후보에 `claim_id: str` 키. 형식은 `f"{spec['id']}:{level}:{step_seq}:{key}"`. Task 2·3·4 가 이 키를 읽는다.
+
+> **2026-08-01 정정 (Task 1 검토 반영):** 초안 형식은 `level` 이 없었다. 챔버 키는
+> `eqp_id` 와 `ch_id` 를 언더스코어로 이어 만들기 때문에(`tools/commonality.py:108`),
+> 설비 하나가 `ETCH9_B` 라는 이름을 갖고 다른 wafer 가 `eqp_id=ETCH9, ch_id=B` 이면
+> 설비 후보와 챔버 후보의 id 가 같아진다. Task 2 의 조회 사전에서 통과 후보가 미통과
+> 후보에 덮여 게이트가 조용히 반대 판정을 낸다. commonality 의 후보 정체성이
+> `(level, step_seq, key)` 이므로 id 도 그 셋을 다 담는다.
 
 - [ ] **Step 1: 실패하는 테스트를 쓴다**
 
@@ -65,18 +72,43 @@ def test_evaluate_issues_claim_id_per_candidate(fx_db):
     res = engine.evaluate({"id": "eqp_ch", "legend": EQP_CH},
                           ["G1", "G2", "G3"], ["C1", "C2", "C3"])
     by_key = {c["key"]: c for c in res["candidates"]}
-    assert by_key["ETCH9_B"]["claim_id"] == "eqp_ch:Etch:ETCH9_B"
+    assert by_key["ETCH9_B"]["claim_id"] == "eqp_ch:chamber:Etch:ETCH9_B"
     # 모든 후보가 발급받는다 (통과 여부와 무관 — 반려 사유를 돌려주려면 미통과도 조회돼야 한다)
     assert all(c["claim_id"] for c in res["candidates"])
 
 
 def test_claim_id_is_namespaced_by_hypothesis(fx_db):
-    """legend 가 다른 두 도구가 같은 (step, key) 를 내도 claim_id 는 충돌하지 않는다."""
-    a = engine.evaluate({"id": "eqp_ch", "legend": EQP_CH}, ["G1", "G2", "G3"], ["C1", "C2", "C3"])
-    b = engine.evaluate({"id": "ppid", "legend": PPID}, ["G1", "G2", "G3"], ["C1", "C2", "C3"])
+    """같은 legend 를 다른 가설 id 로 돌리면 후보는 같고 claim_id 만 갈린다.
+
+    legend 가 다른 두 도구(EQP_CH vs PPID)로 비교하면 애초에 key 가 안 겹쳐서,
+    구현에서 id 접두어를 지워도 통과하는 공허한 테스트가 된다.
+    """
+    a = engine.evaluate({"id": "eqp_ch", "legend": EQP_CH},
+                        ["G1", "G2", "G3"], ["C1", "C2", "C3"])
+    b = engine.evaluate({"id": "eqp_ch_v2", "legend": EQP_CH},
+                        ["G1", "G2", "G3"], ["C1", "C2", "C3"])
+    keys = [c["key"] for c in a["candidates"]]
+    assert keys and keys == [c["key"] for c in b["candidates"]]   # 같은 후보 집합인지 먼저
     assert not ({c["claim_id"] for c in a["candidates"]} &
                 {c["claim_id"] for c in b["candidates"]})
+
+
+def test_claim_id_is_issued_for_failing_candidates_too(fx_db, monkeypatch):
+    """미통과 후보도 발급받는다 - 게이트가 반려 사유를 돌려주려면 조회돼야 한다.
+
+    fx_db 기본 시나리오는 후보가 전부 passes=True 라, 임계를 올려 미통과 후보를
+    만들지 않으면 이 요구가 한 번도 검증되지 않는다.
+    """
+    monkeypatch.setattr(config, "COMMONALITY_PASS_MIN_SCORE", 1.5)
+    res = engine.evaluate({"id": "eqp_ch", "legend": EQP_CH},
+                          ["G1", "G2", "G3"], ["C1", "C2", "C3"])
+    failing = [c for c in res["candidates"] if not c["passes"]]
+    assert failing, "미통과 후보가 없으면 이 테스트는 아무것도 지키지 않는다"
+    by_key = {c["key"]: c for c in failing}
+    assert by_key["ETCH9_B"]["claim_id"] == "eqp_ch:chamber:Etch:ETCH9_B"
 ```
+
+`level` 이 id 에 들어가는 것은 첫 테스트의 `"eqp_ch:chamber:Etch:ETCH9_B"` 리터럴이 지킨다 - 구현에서 `level` 을 빼면 그 단언이 죽는다.
 
 - [ ] **Step 2: 실패를 확인한다**
 
@@ -92,7 +124,9 @@ Expected: FAIL — `KeyError: 'claim_id'`
             # 게이트가 조회할 유일한 키. 게이트는 이 문자열을 **파싱하지 않는다** —
             # 사전 조회에만 쓰므로 구분자가 값에 섞여도 안전하다. 콜론 형식을 쓰는
             # 이유는 감사 기록에서 사람이 읽을 수 있다는 것뿐이다.
-            "claim_id": f"{spec['id']}:{cand['step_seq']}:{cand['key']}",
+            # level 을 빼면 안 된다 — 챔버 키가 eqp_id + "_" + ch_id 라서,
+            # 이름이 "ETCH9_B" 인 설비와 (ETCH9, B) 챔버의 id 가 같아진다.
+            "claim_id": f"{spec['id']}:{cand['level']}:{cand['step_seq']}:{cand['key']}",
             "value": [cand["step_seq"], cand["key"]],
             "passes": passes,
 ```
@@ -159,11 +193,11 @@ def _finding(tool, hypothesis_id, status, candidates, result=None):
             "thought": "t"}
 
 
-CAND_PASS = {"claim_id": "eqp_ch_commonality:CC002000:ETCH9_B", "level": "chamber",
+CAND_PASS = {"claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH9_B", "level": "chamber",
              "step_seq": "CC002000", "key": "ETCH9_B", "passes": True,
              "reject_reason": None, "score": 1.0,
              "target_pass": 3, "target_total": 3, "control_pass": 0, "control_total": 6}
-CAND_FAIL = {"claim_id": "eqp_ch_commonality:CD004000:PHOT2_X", "level": "chamber",
+CAND_FAIL = {"claim_id": "eqp_ch_commonality:chamber:CD004000:PHOT2_X", "level": "chamber",
              "step_seq": "CD004000", "key": "PHOT2_X", "passes": False,
              "reject_reason": "분리 점수 0.3 < 0.5", "score": 0.3,
              "target_pass": 3, "target_total": 4, "control_pass": 2, "control_total": 5}
@@ -211,7 +245,7 @@ def test_no_signal_status_is_recorded_without_candidates():
 
 def test_rerun_replaces_previous_claims_of_the_same_tool():
     """같은 도구를 다시 돌리면 앞 결과는 버린다 — 그룹이 바뀐 재실행이면 옛 후보는 거짓이다."""
-    stale = {**CAND_PASS, "claim_id": "eqp_ch_commonality:CC002000:ETCH1_A", "key": "ETCH1_A"}
+    stale = {**CAND_PASS, "claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH1_A", "key": "ETCH1_A"}
     b = evidence.build_bundle([
         _finding("hyp_eqp_ch_commonality", "eqp_ch_commonality", "ok", [stale]),
         _finding("hyp_eqp_ch_commonality", "eqp_ch_commonality", "ok", [CAND_PASS]),
@@ -221,11 +255,11 @@ def test_rerun_replaces_previous_claims_of_the_same_tool():
 
 def test_top_score_is_per_tool():
     """legend 가 다른 두 도구의 점수는 비교 대상이 아니다."""
-    ppid = {"claim_id": "ppid_commonality:CC002000:PPID_X", "level": "ppid",
+    ppid = {"claim_id": "ppid_commonality:ppid:CC002000:PPID_X", "level": "ppid",
             "step_seq": "CC002000", "key": "PPID_X", "passes": True,
             "reject_reason": None, "score": 0.6,
             "target_pass": 3, "target_total": 3, "control_pass": 2, "control_total": 5}
-    decoy = {**CAND_PASS, "claim_id": "eqp_ch_commonality:CD004000:PHOT2_X",
+    decoy = {**CAND_PASS, "claim_id": "eqp_ch_commonality:chamber:CD004000:PHOT2_X",
              "key": "PHOT2_X", "score": 0.75}
     b = evidence.build_bundle([
         _finding("hyp_eqp_ch_commonality", "eqp_ch_commonality", "ok", [CAND_PASS, decoy]),
@@ -387,7 +421,7 @@ EOF
     msgs += [ai, _tm("hyp_eqp_ch_commonality", {"hypothesis_id": "eqp_ch_commonality",
                                                 "status": "ok", "candidates": [
         {"level": "chamber", "key": "ETCH9_B", "value": ["Etch", "ETCH9_B"],
-         "claim_id": "eqp_ch_commonality:Etch:ETCH9_B",
+         "claim_id": "eqp_ch_commonality:chamber:Etch:ETCH9_B",
          "step_seq": "Etch", "score": 1.0, "target_pass": 3, "passes": True},
     ]})]
 ```
@@ -395,7 +429,7 @@ EOF
 같은 테스트의 마지막 단언(현재 62-64행) 뒤에 한 줄을 더한다.
 
 ```python
-    assert ai.tool_calls[0]["args"]["claim_id"] == "eqp_ch_commonality:Etch:ETCH9_B"
+    assert ai.tool_calls[0]["args"]["claim_id"] == "eqp_ch_commonality:chamber:Etch:ETCH9_B"
 ```
 
 그리고 파일 끝에 신규 2건을 추가한다.
@@ -439,7 +473,7 @@ def test_scripted_uses_ppid_claim_when_eqp_ch_is_silent():
     msgs += [ai, _tm("hyp_ppid_commonality", {"hypothesis_id": "ppid_commonality",
                                               "status": "ok", "candidates": [
         {"level": "ppid", "key": "PPID_X", "value": ["CC002000", "PPID_X"],
-         "claim_id": "ppid_commonality:CC002000:PPID_X", "step_seq": "CC002000",
+         "claim_id": "ppid_commonality:ppid:CC002000:PPID_X", "step_seq": "CC002000",
          "score": 1.0, "target_pass": 3, "passes": True}]})]
 
     ai = llm.analyze_step(msgs)                          # 2단 센서로 넘어간다
@@ -578,7 +612,7 @@ EOF
 `tests/test_graph_nodes.py` 를 고친다. 먼저 헬퍼와 픽스처.
 
 ```python
-def _ai_finalize(confidence, hypothesis="Etch ETCH-9 원인", claim_id="eqp_ch_commonality:Etch:ETCH-9"):
+def _ai_finalize(confidence, hypothesis="Etch ETCH-9 원인", claim_id="eqp_ch_commonality:chamber:Etch:ETCH-9"):
     return AIMessage(
         content="종료 제안",
         tool_calls=[{"name": "finalize",
@@ -599,7 +633,7 @@ EVIDENCE_FINDING = {
                "legend": [{"level": "chamber", "columns": ["eqp_id", "ch_id"]}],
                "status": "ok",
                "candidates": [
-                   {"claim_id": "eqp_ch_commonality:Etch:ETCH-9",
+                   {"claim_id": "eqp_ch_commonality:chamber:Etch:ETCH-9",
                     "value": ["Etch", "ETCH-9"], "passes": True,
                     "level": "chamber", "key": "ETCH-9", "step_seq": "Etch", "score": 1.0,
                     "target_pass": 3, "target_total": 3,
@@ -609,7 +643,7 @@ EVIDENCE_FINDING = {
 }
 ```
 
-`EVIDENCE_FINDING_NEW` 의 두 후보에도 같은 형식으로 `claim_id`·`step_seq`·`score`·총계를 넣는다. 통과 후보는 `"eqp_ch_commonality:CC002000:ETCH9_B"`(score 1.0), 미끼는 `"eqp_ch_commonality:CD004000:PHOTO1_A"`(score 0.0, `passes: False`)로 한다.
+`EVIDENCE_FINDING_NEW` 의 두 후보에도 같은 형식으로 `claim_id`·`step_seq`·`score`·총계를 넣는다. 통과 후보는 `"eqp_ch_commonality:chamber:CC002000:ETCH9_B"`(score 1.0), 미끼는 `"eqp_ch_commonality:chamber:CD004000:PHOTO1_A"`(score 0.0, `passes: False`)로 한다.
 
 `test_collect_evidence_gathers_passing_tokens`(74-76행)를 삭제하고 — `_collect_evidence` 가 사라진다 — 대신 게이트 판정표 4줄을 덮는 테스트를 쓴다. `PPID_SILENT` 는 "등록 가설을 다 돌렸다" 를 만드는 재료다.
 
@@ -640,7 +674,7 @@ def test_gate_rejects_text_only_claim():
                             "findings": [EVIDENCE_FINDING]})
     assert "finalize_accepted" not in out
     assert "반려" in out["messages"][0].content
-    assert "eqp_ch_commonality:Etch:ETCH-9" in out["messages"][0].content   # 지목할 대상을 알려준다
+    assert "eqp_ch_commonality:chamber:Etch:ETCH-9" in out["messages"][0].content   # 지목할 대상을 알려준다
 
 
 def test_gate_rejects_negation_when_claim_id_is_absent():
@@ -652,7 +686,7 @@ def test_gate_rejects_negation_when_claim_id_is_absent():
 
 
 def test_gate_rejects_unknown_claim_id():
-    ai = _ai_finalize(0.9, claim_id="eqp_ch_commonality:Etch:CVD-3")
+    ai = _ai_finalize(0.9, claim_id="eqp_ch_commonality:chamber:Etch:CVD-3")
     out = nodes.tools_node({"messages": [ai], "loop_count": 3,
                             "findings": [EVIDENCE_FINDING]})
     assert "finalize_accepted" not in out
@@ -661,7 +695,7 @@ def test_gate_rejects_unknown_claim_id():
 
 def test_gate_rejects_claim_that_did_not_pass():
     """미통과 후보를 지목하면 도구가 낸 reject_reason 을 그대로 돌려준다."""
-    ai = _ai_finalize(0.9, claim_id="eqp_ch_commonality:CD004000:PHOTO1_A")
+    ai = _ai_finalize(0.9, claim_id="eqp_ch_commonality:chamber:CD004000:PHOTO1_A")
     out = nodes.tools_node({"messages": [ai], "loop_count": 3,
                             "findings": [EVIDENCE_FINDING_NEW]})
     assert "finalize_accepted" not in out
@@ -673,21 +707,21 @@ def test_gate_rejects_lower_scored_claim_and_names_the_stronger_one():
     decoy = {
         "loop": 2, "tool": "hyp_eqp_ch_commonality", "args": {},
         "result": {"hypothesis_id": "eqp_ch_commonality", "status": "ok", "candidates": [
-            {"claim_id": "eqp_ch_commonality:CC002000:ETCH2_B", "step_seq": "CC002000",
+            {"claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH2_B", "step_seq": "CC002000",
              "key": "ETCH2_B", "level": "chamber", "passes": True, "reject_reason": None,
              "score": 1.0, "target_pass": 4, "target_total": 4,
              "control_pass": 0, "control_total": 5},
-            {"claim_id": "eqp_ch_commonality:CD004000:PHOT2_X", "step_seq": "CD004000",
+            {"claim_id": "eqp_ch_commonality:chamber:CD004000:PHOT2_X", "step_seq": "CD004000",
              "key": "PHOT2_X", "level": "chamber", "passes": True, "reject_reason": None,
              "score": 0.75, "target_pass": 4, "target_total": 4,
              "control_pass": 1, "control_total": 5},
         ]},
         "thought": "미끼 포함",
     }
-    ai = _ai_finalize(0.9, claim_id="eqp_ch_commonality:CD004000:PHOT2_X")
+    ai = _ai_finalize(0.9, claim_id="eqp_ch_commonality:chamber:CD004000:PHOT2_X")
     out = nodes.tools_node({"messages": [ai], "loop_count": 3, "findings": [decoy]})
     assert "finalize_accepted" not in out
-    assert "eqp_ch_commonality:CC002000:ETCH2_B" in out["messages"][0].content
+    assert "eqp_ch_commonality:chamber:CC002000:ETCH2_B" in out["messages"][0].content
 
 
 def test_gate_accepts_tied_top_score():
@@ -699,18 +733,18 @@ def test_gate_accepts_tied_top_score():
     tied = {
         "loop": 2, "tool": "hyp_eqp_ch_commonality", "args": {},
         "result": {"hypothesis_id": "eqp_ch_commonality", "status": "ok", "candidates": [
-            {"claim_id": "eqp_ch_commonality:CC002000:ETCH9", "step_seq": "CC002000",
+            {"claim_id": "eqp_ch_commonality:equipment:CC002000:ETCH9", "step_seq": "CC002000",
              "key": "ETCH9", "level": "equipment", "passes": True, "reject_reason": None,
              "score": 1.0, "target_pass": 3, "target_total": 3,
              "control_pass": 0, "control_total": 6},
-            {"claim_id": "eqp_ch_commonality:CC002000:ETCH9_B", "step_seq": "CC002000",
+            {"claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH9_B", "step_seq": "CC002000",
              "key": "ETCH9_B", "level": "chamber", "passes": True, "reject_reason": None,
              "score": 1.0, "target_pass": 3, "target_total": 3,
              "control_pass": 0, "control_total": 6},
         ]},
         "thought": "동점",
     }
-    ai = _ai_finalize(0.9, claim_id="eqp_ch_commonality:CC002000:ETCH9_B")
+    ai = _ai_finalize(0.9, claim_id="eqp_ch_commonality:chamber:CC002000:ETCH9_B")
     out = nodes.tools_node({"messages": [ai], "loop_count": 3, "findings": [tied]})
     assert out["finalize_status"] == "confirmed"
 
@@ -720,7 +754,7 @@ def test_gate_records_the_approved_claim():
     out = nodes.tools_node({"messages": [_ai_finalize(0.9)], "loop_count": 4,
                             "findings": [EVIDENCE_FINDING]})
     assert out["finalize_status"] == "confirmed"
-    assert out["final_claim"]["claim_id"] == "eqp_ch_commonality:Etch:ETCH-9"
+    assert out["final_claim"]["claim_id"] == "eqp_ch_commonality:chamber:Etch:ETCH-9"
     assert out["final_claim"]["score"] == 1.0
     assert (out["final_claim"]["target_pass"], out["final_claim"]["control_pass"]) == (3, 0)
 
@@ -765,11 +799,11 @@ def test_gate_no_signal_beats_max_loops():
 
 | 테스트 | 고칠 것 | 안 고치면 |
 |---|---|---|
-| `test_gate_accepts_chamber_hypothesis` | `claim_id="eqp_ch_commonality:CC002000:ETCH9_B"` 명시 | 기본 claim_id 가 `EVIDENCE_FINDING_NEW` 와 안 맞아 반려 |
-| `test_finalize_gate_sees_evidence_from_same_message` | finalize args 에 `"claim_id": "eqp_ch_commonality:CC002000:ETCH9_B"` | 같은 이유로 반려 |
+| `test_gate_accepts_chamber_hypothesis` | `claim_id="eqp_ch_commonality:chamber:CC002000:ETCH9_B"` 명시 | 기본 claim_id 가 `EVIDENCE_FINDING_NEW` 와 안 맞아 반려 |
+| `test_finalize_gate_sees_evidence_from_same_message` | finalize args 에 `"claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH9_B"` | 같은 이유로 반려 |
 | `test_finalize_gate_rejects_low_confidence` | `findings=[EVIDENCE_FINDING]` 을 주고 단언을 `"확신도" in content` 로 강화 | findings 가 비면 "claim_id 가 없다" 로 반려돼 **확신도 분기를 전혀 안 탄다** (통과는 하지만 공허하다) |
 | `test_finalize_gate_rejects_high_confidence_without_evidence` | `claim_id=""` 를 넘긴다 | "조사 없이 결론" 이 아니라 "지어낸 claim_id" 를 시험하게 되고, 단언 `"hyp_" in content` 가 깨진다 |
-| `test_finalize_gate_handles_non_numeric_confidence` | `"claim_id": "eqp_ch_commonality:Etch:ETCH-9"` 와 `findings=[EVIDENCE_FINDING]` 을 준다 | 확신도 분기에 도달하지 못해 안내 문구(`숫자가 아니다`)가 안 나오고 단언이 깨진다 |
+| `test_finalize_gate_handles_non_numeric_confidence` | `"claim_id": "eqp_ch_commonality:chamber:Etch:ETCH-9"` 와 `findings=[EVIDENCE_FINDING]` 을 준다 | 확신도 분기에 도달하지 못해 안내 문구(`숫자가 아니다`)가 안 나오고 단언이 깨진다 |
 
 ```python
 def test_finalize_gate_rejects_low_confidence():
@@ -790,7 +824,7 @@ def test_finalize_gate_rejects_high_confidence_without_evidence():
 
 def test_finalize_gate_handles_non_numeric_confidence():
     ai = AIMessage(content="종료 제안", tool_calls=[
-        {"name": "finalize", "args": {"claim_id": "eqp_ch_commonality:Etch:ETCH-9",
+        {"name": "finalize", "args": {"claim_id": "eqp_ch_commonality:chamber:Etch:ETCH-9",
                                       "hypothesis": "Etch ETCH-9 원인",
                                       "confidence": "high"}, "id": "cf"}])
     out = nodes.tools_node({"messages": [ai], "loop_count": 3,
@@ -799,7 +833,7 @@ def test_finalize_gate_handles_non_numeric_confidence():
     assert "숫자" in out["messages"][0].content
 ```
 
-`test_tools_node_skips_calls_after_finalize_accepted`(275-282행)도 finalize args 에 `"claim_id": "eqp_ch_commonality:CC002000:ETCH9_B"` 를 넣어야 승인이 유지된다. `test_rejected_finalize_does_not_stop_following_calls`(300-305행)는 확신도 0.3 에 근거도 없어 어느 경로로든 반려되므로 그대로 둔다.
+`test_tools_node_skips_calls_after_finalize_accepted`(275-282행)도 finalize args 에 `"claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH9_B"` 를 넣어야 승인이 유지된다. `test_rejected_finalize_does_not_stop_following_calls`(300-305행)는 확신도 0.3 에 근거도 없어 어느 경로로든 반려되므로 그대로 둔다.
 
 `test_finalize_gate_accepts_high_confidence_with_evidence` 와 `test_finalize_gate_marks_inconclusive_at_max_loops` 는 수정 없이 통과한다 (전자는 기본 claim_id 가 `EVIDENCE_FINDING` 과 맞고, 후자는 `no_signal` status 가 없어 루프 한계 분기로 간다).
 
@@ -1074,12 +1108,12 @@ def test_report_carries_gate_verified_numbers_not_llm_prose():
         target_wafers=["W2406_02"], target_source="manual", target_group=TARGET,
         status_summary="s", findings=[], hypothesis="원인은 그 챔버다", confidence=0.9,
         finalize_status="confirmed",
-        claim={"claim_id": "eqp_ch_commonality:CC002000:ETCH9_B", "score": 1.0,
+        claim={"claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH9_B", "score": 1.0,
                "target_pass": 3, "target_total": 3,
                "control_pass": 0, "control_total": 6},
     )
     assert "[근거]" in report
-    assert "eqp_ch_commonality:CC002000:ETCH9_B" in report
+    assert "eqp_ch_commonality:chamber:CC002000:ETCH9_B" in report
     assert "3/3" in report and "0/6" in report
 
 
@@ -1101,11 +1135,11 @@ def test_report_node_passes_the_approved_claim_to_the_report():
         "target_group": ["W2406_02"], "status_summary": "요약", "findings": [],
         "final_hypothesis": "ETCH9_B 편중", "final_confidence": 0.9,
         "finalize_status": "confirmed",
-        "final_claim": {"claim_id": "eqp_ch_commonality:CC002000:ETCH9_B", "score": 1.0,
+        "final_claim": {"claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH9_B", "score": 1.0,
                         "target_pass": 3, "target_total": 3,
                         "control_pass": 0, "control_total": 6},
     })
-    assert "eqp_ch_commonality:CC002000:ETCH9_B" in out["report"]
+    assert "eqp_ch_commonality:chamber:CC002000:ETCH9_B" in out["report"]
 ```
 
 - [ ] **Step 2: 실패를 확인한다**
@@ -1162,7 +1196,7 @@ Run: `python -m pytest -q`
 Expected: 184 passed (181 + 신규 3)
 
 Run: `python main.py W2406_02`
-Expected: 리포트 마지막에 `[근거] eqp_ch_commonality:CC002000:ETCH9_B · 분리 점수 1.0 · 타깃 3/3 통과 · 대조군 0/6 통과` 가 보인다.
+Expected: 리포트 마지막에 `[근거] eqp_ch_commonality:chamber:CC002000:ETCH9_B · 분리 점수 1.0 · 타깃 3/3 통과 · 대조군 0/6 통과` 가 보인다.
 
 - [ ] **Step 6: 커밋**
 
