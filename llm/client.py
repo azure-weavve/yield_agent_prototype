@@ -147,6 +147,10 @@ class ScriptedMockLLMClient(LLMClient):
                 lines.append(f"     - 게이트: {f['result']}")
         if finalize_status == "inconclusive":
             conclusion = f"미확정 (루프 한계 도달) — 유력 가설: {hypothesis or '없음'}"
+        elif finalize_status == "no_signal":
+            conclusion = ("신호 없음 - lot 내부 대조로는 타깃만 거친 설비/챔버/PPID 가 없다. "
+                          "원인 없음이 아니라 원인이 root_lot 전체에 걸렸을 수 있다는 뜻이며, "
+                          "lot 밖 대조군이 필요하다.")
         elif finalize_status == "no_anomaly":
             conclusion = "이상 없음 — 수율 임계 미만 lot 이 없다."
         elif finalize_status == "unknown_target":
@@ -221,6 +225,9 @@ class OpenAILLMClient(LLMClient):
             "구성: 분석 대상/현황 → 분석 과정 요약 → 결론(원인 가설과 근거). "
             "판정이 inconclusive 면 결론을 확정하지 말고 '미확정(루프 한계 도달)'과 "
             "유력 후보·추가 조사 필요 항목으로 서술하라. "
+            "판정이 no_signal 이면 '신호 없음'으로 서술하라 - 원인 없음이 아니라 "
+            "lot 내부 대조로는 보이지 않는다는 뜻이며 lot 밖 대조군이 필요하다는 "
+            "후속 조치를 명시하고, 확정 결론을 쓰지 마라. "
             "판정이 no_anomaly 면 '이상 없음'으로 서술하라. "
             "판정이 isolated/control_insufficient/unknown_target/eds_lookup_failed 이면 "
             "'분석 미수행'과 그 사유를 명시하고 확정 결론을 쓰지 마라."

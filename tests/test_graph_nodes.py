@@ -26,11 +26,12 @@ def test_importing_nodes_does_not_acquire_the_llm():
     assert proc.stdout.decode().strip() == "None"
 
 
-def _ai_finalize(confidence, hypothesis="Etch ETCH-9 원인"):
+def _ai_finalize(confidence, hypothesis="Etch ETCH-9 원인", claim_id="eqp_ch_commonality:chamber:Etch:ETCH-9"):
     return AIMessage(
         content="종료 제안",
         tool_calls=[{"name": "finalize",
-                     "args": {"hypothesis": hypothesis, "confidence": confidence},
+                     "args": {"claim_id": claim_id, "hypothesis": hypothesis,
+                              "confidence": confidence},
                      "id": "call_f"}],
     )
 
@@ -44,9 +45,11 @@ EVIDENCE_FINDING = {
                "legend": [{"level": "chamber", "columns": ["eqp_id", "ch_id"]}],
                "status": "ok",
                "candidates": [
-                   {"value": ["Etch", "ETCH-9"], "passes": True,
-                    "level": "chamber", "key": "ETCH-9",
-                    "target_pass": 3, "control_pass": 0, "reject_reason": None},
+                   {"claim_id": "eqp_ch_commonality:chamber:Etch:ETCH-9",
+                    "value": ["Etch", "ETCH-9"], "passes": True,
+                    "level": "chamber", "key": "ETCH-9", "step_seq": "Etch", "score": 1.0,
+                    "target_pass": 3, "target_total": 3,
+                    "control_pass": 0, "control_total": 3, "reject_reason": None},
                ]},
     "thought": "그룹 대조",
 }
@@ -60,24 +63,165 @@ EVIDENCE_FINDING_NEW = {
                "legend": [{"level": "chamber", "columns": ["eqp_id", "ch_id"]}],
                "status": "ok",
                "candidates": [
-                   {"value": ["Etch", "ETCH9_B"], "passes": True,
-                    "level": "chamber", "key": "ETCH9_B",
-                    "target_pass": 3, "control_pass": 0, "reject_reason": None},
-                   {"value": ["Photo", "PHOTO1_A"], "passes": False,
-                    "level": "chamber", "key": "PHOTO1_A",
-                    "target_pass": 3, "control_pass": 3, "reject_reason": "분리 없음"},
+                   {"claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH9_B",
+                    "value": ["Etch", "ETCH9_B"], "passes": True,
+                    "level": "chamber", "key": "ETCH9_B", "step_seq": "CC002000", "score": 1.0,
+                    "target_pass": 3, "target_total": 3,
+                    "control_pass": 0, "control_total": 3, "reject_reason": None},
+                   {"claim_id": "eqp_ch_commonality:chamber:CD004000:PHOTO1_A",
+                    "value": ["Photo", "PHOTO1_A"], "passes": False,
+                    "level": "chamber", "key": "PHOTO1_A", "step_seq": "CD004000", "score": 0.0,
+                    "target_pass": 3, "target_total": 3,
+                    "control_pass": 3, "control_total": 3, "reject_reason": "분리 없음"},
                ]},
     "thought": "챔버 편중",
 }
 
+# 등록 가설이 둘이므로, no_signal 종료를 시험하려면 PPID 도 돌아야 한다
+PPID_SILENT = {
+    "loop": 3, "tool": "hyp_ppid_commonality", "args": {},
+    "result": {"hypothesis_id": "ppid_commonality", "status": "no_signal",
+               "candidates": []},
+    "thought": "2차 legend",
+}
+EQP_CH_SILENT = {
+    "loop": 2, "tool": "hyp_eqp_ch_commonality", "args": {},
+    "result": {"hypothesis_id": "eqp_ch_commonality", "status": "no_signal",
+               "candidates": []},
+    "thought": "1차 legend",
+}
 
-def test_collect_evidence_gathers_passing_tokens():
-    tokens = nodes._collect_evidence([EVIDENCE_FINDING_NEW])
-    assert tokens == {"ETCH9_B"}          # 통과 후보만, 미끼(PHOTO1_A) 제외
+
+def test_gate_rejects_text_only_claim():
+    """claim_id 없이 hypothesis 문자열만으로는 절대 승인되지 않는다.
+
+    옛 게이트는 `any(eq in hypothesis for eq in suspects)` 였다 - 그래서
+    "ETCH-9 는 원인이 아니다" 도 토큰이 들어 있다는 이유로 승인됐다.
+    """
+    ai = _ai_finalize(0.9, hypothesis="Etch ETCH-9 원인", claim_id="")
+    out = nodes.tools_node({"messages": [ai], "loop_count": 3,
+                            "findings": [EVIDENCE_FINDING]})
+    assert "finalize_accepted" not in out
+    assert "반려" in out["messages"][0].content
+    assert "eqp_ch_commonality:chamber:Etch:ETCH-9" in out["messages"][0].content   # 지목할 대상을 알려준다
+
+
+def test_gate_rejects_negation_when_claim_id_is_absent():
+    """부정문이라도 게이트는 문장을 읽지 않는다 - 판정은 claim_id 조회로만 한다."""
+    ai = _ai_finalize(0.9, hypothesis="ETCH-9 는 원인이 아니다", claim_id="")
+    out = nodes.tools_node({"messages": [ai], "loop_count": 3,
+                            "findings": [EVIDENCE_FINDING]})
+    assert "finalize_accepted" not in out
+
+
+def test_gate_rejects_unknown_claim_id():
+    ai = _ai_finalize(0.9, claim_id="eqp_ch_commonality:chamber:Etch:CVD-3")
+    out = nodes.tools_node({"messages": [ai], "loop_count": 3,
+                            "findings": [EVIDENCE_FINDING]})
+    assert "finalize_accepted" not in out
+    assert "CVD-3" in out["messages"][0].content
+
+
+def test_gate_rejects_claim_that_did_not_pass():
+    """미통과 후보를 지목하면 도구가 낸 reject_reason 을 그대로 돌려준다."""
+    ai = _ai_finalize(0.9, claim_id="eqp_ch_commonality:chamber:CD004000:PHOTO1_A")
+    out = nodes.tools_node({"messages": [ai], "loop_count": 3,
+                            "findings": [EVIDENCE_FINDING_NEW]})
+    assert "finalize_accepted" not in out
+    assert "분리 없음" in out["messages"][0].content
+
+
+def test_gate_rejects_lower_scored_claim_and_names_the_stronger_one():
+    """근접 미끼: 통과했더라도 더 강한 후보가 있으면 승인하지 않는다."""
+    decoy = {
+        "loop": 2, "tool": "hyp_eqp_ch_commonality", "args": {},
+        "result": {"hypothesis_id": "eqp_ch_commonality", "status": "ok", "candidates": [
+            {"claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH2_B", "step_seq": "CC002000",
+             "key": "ETCH2_B", "level": "chamber", "passes": True, "reject_reason": None,
+             "score": 1.0, "target_pass": 4, "target_total": 4,
+             "control_pass": 0, "control_total": 5},
+            {"claim_id": "eqp_ch_commonality:chamber:CD004000:PHOT2_X", "step_seq": "CD004000",
+             "key": "PHOT2_X", "level": "chamber", "passes": True, "reject_reason": None,
+             "score": 0.75, "target_pass": 4, "target_total": 4,
+             "control_pass": 1, "control_total": 5},
+        ]},
+        "thought": "미끼 포함",
+    }
+    ai = _ai_finalize(0.9, claim_id="eqp_ch_commonality:chamber:CD004000:PHOT2_X")
+    out = nodes.tools_node({"messages": [ai], "loop_count": 3, "findings": [decoy]})
+    assert "finalize_accepted" not in out
+    assert "eqp_ch_commonality:chamber:CC002000:ETCH2_B" in out["messages"][0].content
+
+
+def test_gate_accepts_tied_top_score():
+    """설비 롤업과 챔버가 동점이면 더 구체적인 쪽을 지목해도 승인한다.
+
+    타깃 전원이 거친 설비를 대조군이 아무도 안 거치면 두 레벨이 같은 점수가 되고,
+    정렬은 문자열순이라 덜 구체적인 설비 롤업이 앞선다. 동점을 막으면 챔버 지목이 반려된다.
+    """
+    tied = {
+        "loop": 2, "tool": "hyp_eqp_ch_commonality", "args": {},
+        "result": {"hypothesis_id": "eqp_ch_commonality", "status": "ok", "candidates": [
+            {"claim_id": "eqp_ch_commonality:equipment:CC002000:ETCH9", "step_seq": "CC002000",
+             "key": "ETCH9", "level": "equipment", "passes": True, "reject_reason": None,
+             "score": 1.0, "target_pass": 3, "target_total": 3,
+             "control_pass": 0, "control_total": 6},
+            {"claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH9_B", "step_seq": "CC002000",
+             "key": "ETCH9_B", "level": "chamber", "passes": True, "reject_reason": None,
+             "score": 1.0, "target_pass": 3, "target_total": 3,
+             "control_pass": 0, "control_total": 6},
+        ]},
+        "thought": "동점",
+    }
+    ai = _ai_finalize(0.9, claim_id="eqp_ch_commonality:chamber:CC002000:ETCH9_B")
+    out = nodes.tools_node({"messages": [ai], "loop_count": 3, "findings": [tied]})
+    assert out["finalize_status"] == "confirmed"
+
+
+def test_gate_records_the_approved_claim():
+    """승인 시 근거 수치가 상태에 남는다 - 리포트가 LLM 문장에 의존하지 않게."""
+    out = nodes.tools_node({"messages": [_ai_finalize(0.9)], "loop_count": 4,
+                            "findings": [EVIDENCE_FINDING]})
+    assert out["finalize_status"] == "confirmed"
+    assert out["final_claim"]["claim_id"] == "eqp_ch_commonality:chamber:Etch:ETCH-9"
+    assert out["final_claim"]["score"] == 1.0
+    assert (out["final_claim"]["target_pass"], out["final_claim"]["control_pass"]) == (3, 0)
+
+
+def test_gate_asks_for_the_unrun_hypothesis_before_declaring_no_signal():
+    """EQP_CH 하나가 조용하다고 신호가 없다고 선언하지 않는다."""
+    ai = _ai_finalize(0.2, hypothesis="분리되는 후보가 없다", claim_id="")
+    out = nodes.tools_node({"messages": [ai], "loop_count": 2,
+                            "findings": [EQP_CH_SILENT]})
+    assert "finalize_accepted" not in out
+    assert "hyp_ppid_commonality" in out["messages"][0].content
+
+
+def test_gate_declares_no_signal_after_all_hypotheses_are_silent():
+    """등록 가설을 다 돌렸는데 통과 후보가 없으면 no_signal 로 종료한다.
+
+    확신도는 보지 않는다 - 물러섬 선언에 높은 확신도를 요구하면 모순이다.
+    루프 한계보다 먼저 걸려야 한다(loop 2 에서 종료).
+    """
+    ai = _ai_finalize(0.2, hypothesis="lot 내부 대조로는 안 보인다", claim_id="")
+    out = nodes.tools_node({"messages": [ai], "loop_count": 2,
+                            "findings": [EQP_CH_SILENT, PPID_SILENT]})
+    assert out["finalize_accepted"] is True
+    assert out["finalize_status"] == "no_signal"
+    assert "신호 없음" in out["messages"][0].content
+
+
+def test_gate_no_signal_beats_max_loops():
+    """루프 한계에 닿아도 사유가 분명하면 no_signal 로 보고한다 (inconclusive 아님)."""
+    ai = _ai_finalize(0.2, claim_id="")
+    out = nodes.tools_node({"messages": [ai], "loop_count": 6,
+                            "findings": [EQP_CH_SILENT, PPID_SILENT]})
+    assert out["finalize_status"] == "no_signal"
 
 
 def test_gate_accepts_chamber_hypothesis():
-    ai = _ai_finalize(0.9, hypothesis="Etch 공정 ETCH9_B 챔버 편중이 원인")
+    ai = _ai_finalize(0.9, hypothesis="Etch 공정 ETCH9_B 챔버 편중이 원인",
+                      claim_id="eqp_ch_commonality:chamber:CC002000:ETCH9_B")
     out = nodes.tools_node({"messages": [ai], "loop_count": 4, "findings": [EVIDENCE_FINDING_NEW]})
     assert out["finalize_accepted"] is True
     assert out["finalize_status"] == "confirmed"
@@ -161,10 +305,11 @@ def test_tools_node_executes_and_records_finding():
 
 
 def test_finalize_gate_rejects_low_confidence():
-    out = nodes.tools_node({"messages": [_ai_finalize(0.6)], "loop_count": 3})
+    out = nodes.tools_node({"messages": [_ai_finalize(0.6)], "loop_count": 3,
+                            "findings": [EVIDENCE_FINDING]})
     assert "finalize_accepted" not in out
-    assert "반려" in out["messages"][0].content
-    assert out["findings"][0]["tool"] == "finalize"          # 반려도 감사 기록에 남는다
+    assert "확신도" in out["messages"][0].content     # 근거는 맞는데 확신도가 모자란 경우
+    assert out["findings"][0]["tool"] == "finalize"   # 반려도 감사 기록에 남는다
 
 
 def test_finalize_gate_accepts_high_confidence_with_evidence():
@@ -179,22 +324,10 @@ def test_finalize_gate_accepts_high_confidence_with_evidence():
 
 def test_finalize_gate_rejects_high_confidence_without_evidence():
     # (a) 조사 없이 결론: confidence 0.9 라도 그룹 대조 근거가 없으면 반려
-    out = nodes.tools_node({"messages": [_ai_finalize(0.9)], "loop_count": 1,
-                            "findings": []})
+    out = nodes.tools_node({"messages": [_ai_finalize(0.9, claim_id="")],
+                            "loop_count": 1, "findings": []})
     assert "finalize_accepted" not in out
-    assert "반려" in out["messages"][0].content
-    assert "hyp_" in out["messages"][0].content  # 무엇을 하라는지 안내
-
-
-def test_finalize_gate_rejects_hypothesis_not_backed_by_evidence():
-    # (b) 조사와 다른 결론: tool 결과는 ETCH-9 를 지목했는데 가설은 CVD-3
-    out = nodes.tools_node({
-        "messages": [_ai_finalize(0.9, hypothesis="CVD-3 장비의 온도 이상이 원인")],
-        "loop_count": 3, "findings": [EVIDENCE_FINDING],
-    })
-    assert "finalize_accepted" not in out
-    assert "반려" in out["messages"][0].content
-    assert "ETCH-9" in out["messages"][0].content  # 실제 suspect 후보를 알려준다
+    assert "hyp_" in out["messages"][0].content       # 무엇을 하라는지 안내
 
 
 def test_finalize_gate_sees_evidence_from_same_message():
@@ -207,7 +340,8 @@ def test_finalize_gate_sees_evidence_from_same_message():
                       "control_ids": ["W2406_01", "W2406_03", "W2406_05"]},
              "id": "call_c"},
             {"name": "finalize",
-             "args": {"hypothesis": "Etch ETCH9_B 챔버 편중이 원인", "confidence": 0.9},
+             "args": {"claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH9_B",
+                      "hypothesis": "Etch ETCH9_B 챔버 편중이 원인", "confidence": 0.9},
              "id": "call_f"},
         ],
     )
@@ -262,9 +396,11 @@ def test_tools_node_recovers_from_bad_args():
 
 def test_finalize_gate_handles_non_numeric_confidence():
     ai = AIMessage(content="종료 제안", tool_calls=[
-        {"name": "finalize", "args": {"hypothesis": "Etch ETCH-9 원인",
+        {"name": "finalize", "args": {"claim_id": "eqp_ch_commonality:chamber:Etch:ETCH-9",
+                                      "hypothesis": "Etch ETCH-9 원인",
                                       "confidence": "high"}, "id": "cf"}])
-    out = nodes.tools_node({"messages": [ai], "loop_count": 3, "findings": []})
+    out = nodes.tools_node({"messages": [ai], "loop_count": 3,
+                            "findings": [EVIDENCE_FINDING]})
     assert "finalize_accepted" not in out
     assert "숫자" in out["messages"][0].content
 
@@ -274,7 +410,8 @@ def test_tools_node_skips_calls_after_finalize_accepted():
     감사 기록에 섞이면 안 된다. 단 ToolMessage 는 tool_call 수만큼 채운다(LangChain 계약)."""
     ai = AIMessage(content="종료 제안", tool_calls=[
         {"name": "finalize",
-         "args": {"hypothesis": "Etch 공정 ETCH9_B 챔버 편중이 원인", "confidence": 0.9},
+         "args": {"claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH9_B",
+                  "hypothesis": "Etch 공정 ETCH9_B 챔버 편중이 원인", "confidence": 0.9},
          "id": "cf"},
         {"name": "get_wafer", "args": {"wafer_id": "W2406_02"}, "id": "c1"},
     ])
@@ -315,7 +452,8 @@ def test_second_finalize_does_not_overwrite_accepted_hypothesis():
     """한 메시지에 finalize 가 2개면 뒤가 앞의 승인 가설을 덮어썼다."""
     ai = AIMessage(content="종료 제안", tool_calls=[
         {"name": "finalize",
-         "args": {"hypothesis": "Etch 공정 ETCH9_B 챔버 편중이 원인", "confidence": 0.9},
+         "args": {"claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH9_B",
+                  "hypothesis": "Etch 공정 ETCH9_B 챔버 편중이 원인", "confidence": 0.9},
          "id": "cf1"},
         {"name": "finalize",
          "args": {"hypothesis": "ETCH9_B 와 무관한 다른 가설", "confidence": 0.95},

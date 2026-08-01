@@ -9,10 +9,12 @@
 """
 
 import json
+from dataclasses import asdict
 
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 
 import config
+from graph import evidence
 from llm.client import get_llm
 from tools import grouping
 from tools import yield_tools as yt
@@ -39,7 +41,7 @@ ANALYZE_SYSTEM_PROMPT = """너는 반도체 수율 분석 전문가다. 불량 �
 - 매 단계, 지금까지의 tool 결과로 원인을 확신할 수 있는지 스스로 평가하라.
 - 확신이 부족하면 근거를 좁힐 tool 을 하나 더 호출하라. 그룹 간 차이(장비·파라미터)가 핵심 근거다 — 가설 도구(hyp_*)로 두 그룹을 대조하라.
 - tool 을 호출할 때는 reason 인자에 현재 가설과 그 tool 을 고른 이유를 한 문장으로 반드시 담아라 — 이 서술이 그대로 분석 감사 기록에 남는다.
-- 원인을 좁혔고 근거가 충분하면 finalize(hypothesis, confidence) 로 종료를 제안하라. 확신도가 낮으면 반려된다.
+- 원인을 좁혔고 근거가 충분하면 finalize(claim_id, hypothesis, confidence) 로 종료를 제안하라. claim_id 는 가설 도구 결과의 후보에 실려 온 값을 **그대로** 옮겨야 한다 - 지어내거나 문장으로 대신하면 반려된다. 지목할 근거가 없어 물러설 때는 claim_id 를 비우고 낮은 확신도로 제출하라.
 - 수치는 tool 결과를 그대로 인용하고 절대 임의로 만들지 마라."""
 
 
@@ -198,30 +200,50 @@ def tools_node(state: dict) -> dict:
 def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) -> str:
     """LLM 의 종료 제안을 코드가 최종 판정한다 (부품 4b).
 
-    승인 실권은 confidence 자기 신고가 아니라 findings 의 결정론적 증거에 있다:
-    (a) 그룹 대조 근거가 존재하고 (b) 가설의 장비가 그 근거의 suspect 와 일치해야 승인.
-    (c) 루프 한계 도달 강제 종료는 승인이 아니라 '미확정' 으로 구분 기록한다.
+    승인 실권은 confidence 자기 신고도, LLM 이 쓴 문장도 아니라 **EvidenceBundle
+    조회 결과**에 있다. LLM 은 도구가 발급한 claim_id 를 지목하고, 게이트는 그
+    claim 이 판별선을 넘었는지와 같은 도구 안에서 최고 점수인지를 확인한다.
+
+    판정은 위에서부터 처음 걸리는 줄로 결정된다:
+      (1) 지목한 claim 이 통과 + 최고 점수 + 확신도 충족 -> confirmed
+      (2) 등록 가설을 다 돌렸는데 통과 후보 0 + no_signal 있음 -> no_signal
+      (3) 루프 한계 -> inconclusive (승인이 아니라 '미확정')
+      (4) 그 외 -> 반려. 무엇이 모자란지 그대로 돌려준다.
     """
-    raw = args.get("confidence", 0.0)
-    try:
-        conf = float(raw)
-    except (TypeError, ValueError):
-        conf = 0.0
-        conf_note = (f" (confidence 로 받은 '{raw}' 은 숫자가 아니다 — "
-                     f"0~1 사이 숫자로 다시 제출하라)")
-    else:
-        conf_note = ""
-
+    bundle = evidence.build_bundle(findings)
+    conf, conf_note = _confidence(args.get("confidence", 0.0))
     hypothesis = args.get("hypothesis", "")
-    suspects = _collect_evidence(findings)
+    claim_id = (args.get("claim_id") or "").strip()
+    claim = bundle.claims.get(claim_id)
+    registered = {n for n in TOOLS_BY_NAME if n.startswith("hyp_")}
+    unrun = sorted(registered - bundle.ran)
 
-    if conf >= config.CONFIDENCE_THRESHOLD and any(eq in hypothesis for eq in suspects):
+    # (1) 승인
+    if (claim is not None and claim.passes
+            and claim.score >= bundle.top_score(claim.tool)
+            and conf >= config.CONFIDENCE_THRESHOLD):
         update["finalize_accepted"] = True
         update["finalize_status"] = "confirmed"
         update["final_hypothesis"] = hypothesis
         update["final_confidence"] = conf
-        return "승인 (확신도·증거 충족): 리포팅으로 진행한다."
+        update["final_claim"] = asdict(claim)
+        return (f"승인 (근거 확인): {claim.claim_id} · 분리 점수 {claim.score} · "
+                f"타깃 {claim.target_pass}/{claim.target_total} 통과 · "
+                f"대조군 {claim.control_pass}/{claim.control_total} 통과. "
+                f"리포팅으로 진행한다.")
 
+    # (2) 신호 없음 - 등록 가설을 다 돌렸는데 통과 후보가 하나도 없다.
+    #     확신도를 보지 않는다: 물러섬 선언에 높은 확신도를 요구하면 모순이다.
+    #     루프 한계(3)보다 **먼저** 판정해야 사유가 정확해진다.
+    if not bundle.passing() and not unrun and "no_signal" in bundle.statuses.values():
+        update["finalize_accepted"] = True
+        update["finalize_status"] = "no_signal"
+        update["final_hypothesis"] = hypothesis
+        update["final_confidence"] = conf
+        return ("신호 없음 (등록 가설 전부 대조 완료, 분리되는 후보 없음): "
+                "lot 내부 대조로는 원인을 좁힐 수 없다. 리포팅으로 진행한다.")
+
+    # (3) 루프 한계 도달 강제 종료는 승인이 아니라 '미확정'
     if loop >= config.MAX_LOOPS:
         update["finalize_accepted"] = True
         update["finalize_status"] = "inconclusive"
@@ -229,31 +251,50 @@ def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) ->
         update["final_confidence"] = conf
         return "미확정 (루프 한계 도달): 확정 근거 없이 리포팅으로 진행한다."
 
-    if conf < config.CONFIDENCE_THRESHOLD:
-        return (f"반려: 확신도 {conf:.2f} < {config.CONFIDENCE_THRESHOLD}."
-                f"{conf_note} 근거를 좁힐 tool 을 더 호출하라.")
-    if not suspects:
-        return "반려: 그룹 대조 근거가 없다. 가설 도구(hyp_*)로 두 그룹을 먼저 대조하라."
-    return (f"반려: 가설의 장비가 tool 결과의 suspect 목록({', '.join(sorted(suspects))})에 없다. "
-            f"근거가 지목한 장비로 가설을 세우라.")
+    # (4) 반려
+    return _gate_rejection(claim_id, claim, bundle, unrun, conf, conf_note)
 
 
-def _collect_evidence(findings: list[dict]) -> set[str]:
-    """findings 에서 판별 통과 후보의 토큰을 모은다 (LLM 이 만들 수 없는 근거).
+def _confidence(raw) -> tuple[float, str]:
+    try:
+        return float(raw), ""
+    except (TypeError, ValueError):
+        return 0.0, (f" (confidence 로 받은 '{raw}' 은 숫자가 아니다 - "
+                     f"0~1 사이 숫자로 다시 제출하라)")
 
-    레지스트리 도구 결과(HypothesisResult, candidates 보유)만 훑는다.
-    토큰 = value 의 마지막 요소 (범주형 (공정,값)->값, 수치형 (공정,파라미터)->파라미터).
-    """
-    tokens = set()
-    for f in findings:
-        result = f.get("result")
-        if not isinstance(result, dict) or "candidates" not in result:
-            continue
-        for c in result["candidates"]:
-            if c.get("passes"):
-                v = c["value"]
-                tokens.add(v[-1] if isinstance(v, (list, tuple)) else str(v))
-    return tokens
+
+def _gate_rejection(claim_id, claim, bundle, unrun, conf, conf_note) -> str:
+    """왜 승인하지 않았는지를 LLM 이 다음 행동으로 옮길 수 있게 돌려준다."""
+    if claim_id and claim is None:
+        valid = sorted(bundle.claims)
+        avail = ("유효한 claim_id: " + ", ".join(valid)) if valid else "아직 유효한 claim 이 없다"
+        return f"반려: claim_id '{claim_id}' 는 도구 결과에 없다. {avail}."
+
+    if claim is not None:
+        if not claim.passes:
+            return (f"반려: {claim.claim_id} 는 판별선을 넘지 못했다 ({claim.reject_reason}). "
+                    f"통과한 후보를 지목하라.")
+        top = bundle.top_score(claim.tool)
+        if claim.score < top:
+            best = max((c for c in bundle.passing() if c.tool == claim.tool),
+                       key=lambda c: c.score)
+            return (f"반려: {claim.claim_id}(점수 {claim.score}) 보다 강한 후보가 있다: "
+                    f"{best.claim_id}(점수 {best.score}). 근거가 가장 강한 후보를 지목하라.")
+        return (f"반려: 확신도 {conf:.2f} < {config.CONFIDENCE_THRESHOLD}.{conf_note} "
+                f"근거를 좁힐 tool 을 더 호출하라.")
+
+    # claim_id 미제출
+    valid = sorted(c.claim_id for c in bundle.passing())
+    if valid:
+        return (f"반려: claim_id 를 제출하지 않았다. 결론은 도구가 발급한 claim_id 로 "
+                f"지목해야 한다. 통과 후보: {', '.join(valid)}.")
+    if unrun:
+        return (f"반려: 통과한 후보가 없다. 아직 실행하지 않은 가설 도구가 있다: "
+                f"{', '.join(unrun)}. 먼저 호출하라.")
+    if bundle.ran:
+        return ("반려: 등록 가설을 다 돌렸으나 판별선을 넘은 후보가 없다. "
+                "2단 센서로 근거를 더 좁히거나 대조군을 다시 보라.")
+    return "반려: 그룹 대조 근거가 없다. 가설 도구(hyp_*)로 두 그룹을 먼저 대조하라."
 
 
 # ------------------------------------------------ 고정 골격: 리포팅

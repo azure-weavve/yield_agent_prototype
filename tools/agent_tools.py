@@ -43,10 +43,14 @@ def compare_sensor_distribution(step_seq: str, group_ids: list[str],
 
 
 @tool
-def finalize(hypothesis: str, confidence: float) -> str:
-    """원인을 특정 공정/장비까지 좁혔고 근거가 충분하다고 판단될 때만 호출해
-    분석 종료를 제안한다. hypothesis=원인 가설(공정·장비·파라미터 명시),
-    confidence=0~1 확신도. 확신도가 낮으면 반려되고 추가 분석을 지시받는다."""
+def finalize(claim_id: str = "", hypothesis: str = "", confidence: float = 0.0) -> str:
+    """원인을 특정 후보까지 좁혔고 근거가 충분하다고 판단될 때만 호출해 분석 종료를 제안한다.
+
+    claim_id: 가설 도구(hyp_*) 결과의 후보에 실려 온 claim_id 를 **그대로** 옮긴다.
+      이것이 승인 판정의 유일한 근거다. 지어내면 반려된다. 지목할 근거가 없어
+      물러설 때는 빈 문자열로 둔다.
+    hypothesis: 현장 엔지니어가 읽을 원인 서술. 판정에는 쓰이지 않는다.
+    confidence: 0~1 확신도. 확신도만 높고 claim_id 가 없으면 반려된다."""
     return "finalize 는 게이트가 처리한다"  # 직접 실행되지 않음
 
 

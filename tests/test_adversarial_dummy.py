@@ -91,12 +91,12 @@ def test_case4_cause_spanning_whole_root_lot_yields_no_signal():
     assert "lot 내부 대조" in res["note"]
 
 
-def test_case4_end_to_end_does_not_produce_a_confirmed_conclusion():
+def test_case4_end_to_end_reports_no_signal_not_loop_exhaustion():
     """no_signal 케이스가 그래프 전체를 지나도 **확정 결론이 되면 안 된다**.
 
-    이 테스트를 처음 돌렸을 때 mock LLM 이 `passing[0]` 에서 IndexError 로 죽었다 —
-    "통과 후보가 항상 하나는 있다" 는 가정이 코드에 박혀 있었다. 적대적 케이스가
-    없었으면 실데이터에서 처음 터졌을 자리다.
+    그리고 사유가 정확해야 한다 - "루프를 다 썼다"(inconclusive)와 "lot 내부
+    대조로는 신호가 없다"(no_signal)는 사람이 할 조치가 다르다. 전자는 재시도,
+    후자는 대조군을 lot 밖으로 넓히는 일이다.
     """
     from graph.build import build_graph
 
@@ -104,11 +104,14 @@ def test_case4_end_to_end_does_not_produce_a_confirmed_conclusion():
     state = build_graph().invoke({"target_wafers": [targets[0]], "target_source": "manual"})
 
     assert state["report"]
-    assert state["finalize_status"] == "inconclusive"      # 미확정으로 끝난다
-    assert "미확정" in state["report"]
-    # 게이트가 이 가설을 승인한 적이 없어야 한다.
-    # (finalize_accepted 는 승인 신호가 아니라 '리포트로 진행' 라우팅 플래그다 —
-    #  루프 한계에서도 True 가 되므로 확정 여부 판정에 쓰면 안 된다.)
+    assert state["finalize_status"] == "no_signal"
+    assert "신호 없음" in state["report"]
+    assert "lot 밖 대조군" in state["report"]
+    # 도구가 1회차에 아는 사실이므로 루프를 다 태우지 않는다
+    assert state["loop_count"] < 6
+    # 게이트가 이 가설을 승인한 적이 없어야 한다
     gate = [f["result"] for f in state["findings"] if f["tool"] == "finalize"]
     assert not any("승인" in r for r in gate)
-    assert any("반려" in r for r in gate)
+    # 등록 가설을 둘 다 돌린 뒤에 판정했다
+    tools_used = [f["tool"] for f in state["findings"]]
+    assert "hyp_eqp_ch_commonality" in tools_used and "hyp_ppid_commonality" in tools_used
