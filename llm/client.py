@@ -64,7 +64,8 @@ class ScriptedMockLLMClient(LLMClient):
         if "finalize" not in done:
             return self._call(
                 "finalize",
-                {"hypothesis": f"불량 그룹 {len(target)}장이 한 사건으로 묶였다 — "
+                {"claim_id": "",
+                 "hypothesis": f"불량 그룹 {len(target)}장이 한 사건으로 묶였다 - "
                                f"공통 원인 존재 추정",
                  "confidence": 0.6},
                 "그룹은 묶였지만 공정 근거가 아직 없다. 이 정도로 종료를 제안해 본다.")
@@ -77,15 +78,26 @@ class ScriptedMockLLMClient(LLMClient):
         res = self._result(tool_msgs, "hyp_eqp_ch_commonality")
         passing = [c for c in res.get("candidates", []) if c["passes"]]
         if not passing:
-            # 분리되는 후보가 없다 — **원인 없음이 아니라 lot 내부 대조로는 안 보인다**는 뜻.
-            # 억지로 후보를 집으면 허위 확정이므로 낮은 확신도로 물러선다(게이트가 반려하고,
-            # 루프 한계에 닿아 '미확정' 리포트로 끝난다).
+            # EQP_CH 로 안 갈렸다. YAML 이 2차 legend 로 선언한 PPID 를 먼저 써 본다 -
+            # 첫 no_signal 로 물러서면 등록된 가설 하나를 안 써보고 포기하는 셈이다.
+            if "hyp_ppid_commonality" not in done:
+                return self._call(
+                    "hyp_ppid_commonality", {"group_ids": target, "control_ids": control},
+                    "EQP_CH 로는 두 그룹이 안 갈렸다. 2차 legend(PPID)로 대조한다.")
+            res = self._result(tool_msgs, "hyp_ppid_commonality")
+            passing = [c for c in res.get("candidates", []) if c["passes"]]
+
+        if not passing:
+            # 등록 가설을 다 돌렸는데 분리되는 후보가 없다 - **원인 없음이 아니라 lot
+            # 내부 대조로는 안 보인다**는 뜻. 억지로 후보를 집으면 허위 확정이므로
+            # 지목 없이 물러선다(게이트가 no_signal 로 판정한다).
             return self._call(
                 "finalize",
-                {"hypothesis": "lot 내부 대조로는 타깃만 거친 설비/챔버가 없다 — "
+                {"claim_id": "",
+                 "hypothesis": "lot 내부 대조로는 타깃만 거친 설비/챔버/PPID 가 없다 - "
                                "원인이 root_lot 전체에 걸렸을 수 있어 lot 밖 대조군이 필요하다",
                  "confidence": 0.2},
-                "대조 결과에 분리되는 후보가 없다. 확정할 근거가 없으므로 물러선다.")
+                "등록 가설을 다 돌렸으나 분리되는 후보가 없다. 확정할 근거가 없으므로 물러선다.")
         top = passing[0]
 
         if "compare_sensor_distribution" not in done:
@@ -105,14 +117,16 @@ class ScriptedMockLLMClient(LLMClient):
             # 내면 없는 근거를 있다고 말하는 꼴이라, 이 Stage 가 없앤 조용한 오확증이 된다.
             return self._call(
                 "finalize",
-                {"hypothesis": hyp + " — 다만 2단 센서 근거는 확보하지 못했다",
+                {"claim_id": top["claim_id"],
+                 "hypothesis": hyp + " - 다만 2단 센서 근거는 확보하지 못했다",
                  "confidence": 0.5},
                 f"1단은 갈렸지만 2단이 근거를 못 냈다(status={sensor.get('status')}). "
                 f"'왜' 없이 확정하지 않는다.")
         c = sensor["candidates"][0]
         hyp += f" — {c['sensor_name']} 효과크기 {c['effect_size']}"
         return self._call(
-            "finalize", {"hypothesis": hyp, "confidence": 0.9},
+            "finalize",
+            {"claim_id": top["claim_id"], "hypothesis": hyp, "confidence": 0.9},
             "챔버 편중에 센서 근거까지 붙었다. 근거 충분.")
 
     # -------------------------------------------------- report

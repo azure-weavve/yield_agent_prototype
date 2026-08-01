@@ -42,8 +42,10 @@ def test_scripted_sequence():
     assert ai.tool_calls[0]["name"] == "hyp_eqp_ch_commonality"
     assert ai.tool_calls[0]["args"]["group_ids"] == TARGET
     assert ai.tool_calls[0]["args"]["control_ids"] == CONTROL
-    msgs += [ai, _tm("hyp_eqp_ch_commonality", {"candidates": [
+    msgs += [ai, _tm("hyp_eqp_ch_commonality", {"hypothesis_id": "eqp_ch_commonality",
+                                                "status": "ok", "candidates": [
         {"level": "chamber", "key": "ETCH9_B", "value": ["Etch", "ETCH9_B"],
+         "claim_id": "eqp_ch_commonality:chamber:Etch:ETCH9_B",
          "step_seq": "Etch", "score": 1.0, "target_pass": 3, "passes": True},
     ]})]
 
@@ -62,6 +64,7 @@ def test_scripted_sequence():
     hyp = ai.tool_calls[0]["args"]["hypothesis"]
     assert "ETCH9_B" in hyp
     assert "rf_power_steady_avg" in hyp       # 2단 근거가 결론에 실린다
+    assert ai.tool_calls[0]["args"]["claim_id"] == "eqp_ch_commonality:chamber:Etch:ETCH9_B"
 
 
 def test_generate_report_contains_findings_and_conclusion():
@@ -141,10 +144,63 @@ def test_scripted_survives_tool_error_string():
                                 "(KeyError: 'legend'). 인자를 확인하고 다시 호출하라.",
                                 ensure_ascii=False))]
 
-    ai = llm.analyze_step(msgs)                      # 3) 죽지 않고 물러선다
+    ai = llm.analyze_step(msgs)                      # 3) 죽지 않고 폴백을 돈다
+    assert ai.tool_calls[0]["name"] == "hyp_ppid_commonality"
+    msgs += [ai, _tm("hyp_ppid_commonality",
+                     json.dumps("오류: hyp_ppid_commonality 실행 실패 "
+                                "(KeyError: 'legend'). 인자를 확인하고 다시 호출하라.",
+                                ensure_ascii=False))]
+
+    ai = llm.analyze_step(msgs)                      # 4) 그래도 죽지 않고 물러선다
     assert ai.tool_calls[0]["name"] == "finalize"
     assert ai.tool_calls[0]["args"]["confidence"] == 0.2   # '후보 없음' 후퇴 분기
     assert ai.content
+
+
+def test_scripted_falls_back_to_ppid_when_eqp_ch_is_silent():
+    """EQP_CH 로 안 갈리면 2차 legend(PPID)를 돌린다 — YAML 이 선언한 폴백 순서다.
+
+    첫 no_signal 로 물러서면 등록된 가설 하나를 안 써보고 포기하는 셈이다.
+    """
+    llm = ScriptedMockLLMClient()
+    msgs = [HUMAN]
+    msgs += [llm.analyze_step(msgs), _tm("finalize", "반려")]          # 1) 조기 finalize
+    ai = llm.analyze_step(msgs)                                        # 2) 1단 EQP_CH
+    assert ai.tool_calls[0]["name"] == "hyp_eqp_ch_commonality"
+    msgs += [ai, _tm("hyp_eqp_ch_commonality", {"hypothesis_id": "eqp_ch_commonality",
+                                                "status": "no_signal", "candidates": []})]
+
+    ai = llm.analyze_step(msgs)                                        # 3) 폴백 PPID
+    assert ai.tool_calls[0]["name"] == "hyp_ppid_commonality"
+    assert ai.tool_calls[0]["args"]["group_ids"] == TARGET
+    assert ai.tool_calls[0]["args"]["control_ids"] == CONTROL
+    msgs += [ai, _tm("hyp_ppid_commonality", {"hypothesis_id": "ppid_commonality",
+                                              "status": "no_signal", "candidates": []})]
+
+    ai = llm.analyze_step(msgs)                                        # 4) 물러선다
+    assert ai.tool_calls[0]["name"] == "finalize"
+    assert ai.tool_calls[0]["args"]["confidence"] == 0.2
+    assert ai.tool_calls[0]["args"]["claim_id"] == ""    # 지목할 근거가 없다
+
+
+def test_scripted_uses_ppid_claim_when_eqp_ch_is_silent():
+    """PPID 로 갈리면 그 claim_id 를 지목한다 — 폴백이 장식이 아니라 경로다."""
+    llm = ScriptedMockLLMClient()
+    msgs = [HUMAN]
+    msgs += [llm.analyze_step(msgs), _tm("finalize", "반려")]
+    msgs += [llm.analyze_step(msgs), _tm("hyp_eqp_ch_commonality",
+                                         {"hypothesis_id": "eqp_ch_commonality",
+                                          "status": "no_signal", "candidates": []})]
+    ai = llm.analyze_step(msgs)
+    msgs += [ai, _tm("hyp_ppid_commonality", {"hypothesis_id": "ppid_commonality",
+                                              "status": "ok", "candidates": [
+        {"level": "ppid", "key": "PPID_X", "value": ["CC002000", "PPID_X"],
+         "claim_id": "ppid_commonality:ppid:CC002000:PPID_X", "step_seq": "CC002000",
+         "score": 1.0, "target_pass": 3, "passes": True}]})]
+
+    ai = llm.analyze_step(msgs)                          # 2단 센서로 넘어간다
+    assert ai.tool_calls[0]["name"] == "compare_sensor_distribution"
+    assert ai.tool_calls[0]["args"]["step_seq"] == "CC002000"
 
 
 def test_generate_report_renders_inconclusive_status():
