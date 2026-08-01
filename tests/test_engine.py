@@ -92,3 +92,21 @@ def test_evaluate_passes_requires_status_ok(fx_db, monkeypatch):
     res = engine.evaluate({"id": "eqp_ch", "legend": EQP_CH}, ["G1", "G2", "G3"], ["C1", "C2", "C3"])
     assert res["candidates"]
     assert all(c["passes"] is False for c in res["candidates"])
+
+
+def test_evaluate_issues_claim_id_per_candidate(fx_db):
+    """claim_id 는 게이트가 조회할 유일한 키다 — 도구가 발급해 결과에 실어 보낸다."""
+    res = engine.evaluate({"id": "eqp_ch", "legend": EQP_CH},
+                          ["G1", "G2", "G3"], ["C1", "C2", "C3"])
+    by_key = {c["key"]: c for c in res["candidates"]}
+    assert by_key["ETCH9_B"]["claim_id"] == "eqp_ch:Etch:ETCH9_B"
+    # 모든 후보가 발급받는다 (통과 여부와 무관 — 반려 사유를 돌려주려면 미통과도 조회돼야 한다)
+    assert all(c["claim_id"] for c in res["candidates"])
+
+
+def test_claim_id_is_namespaced_by_hypothesis(fx_db):
+    """legend 가 다른 두 도구가 같은 (step, key) 를 내도 claim_id 는 충돌하지 않는다."""
+    a = engine.evaluate({"id": "eqp_ch", "legend": EQP_CH}, ["G1", "G2", "G3"], ["C1", "C2", "C3"])
+    b = engine.evaluate({"id": "ppid", "legend": PPID}, ["G1", "G2", "G3"], ["C1", "C2", "C3"])
+    assert not ({c["claim_id"] for c in a["candidates"]} &
+                {c["claim_id"] for c in b["candidates"]})

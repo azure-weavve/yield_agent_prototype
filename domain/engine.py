@@ -32,6 +32,10 @@ def evaluate(spec: dict, group_ids: list[str], control_ids: list[str]) -> dict:
     for cand in res.get("candidates", []):
         passes, reject = _passes(cand, min_score, min_target, status, ok)
         candidates.append({
+            # 게이트가 조회할 유일한 키. 게이트는 이 문자열을 **파싱하지 않는다** —
+            # 사전 조회에만 쓰므로 구분자가 값에 섞여도 안전하다. 콜론 형식을 쓰는
+            # 이유는 감사 기록에서 사람이 읽을 수 있다는 것뿐이다.
+            "claim_id": f"{spec['id']}:{cand['step_seq']}:{cand['key']}",
             "value": [cand["step_seq"], cand["key"]],
             "passes": passes,
             "reject_reason": reject,
