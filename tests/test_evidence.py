@@ -33,6 +33,12 @@ def test_build_bundle_collects_claims_and_status():
     # 미통과 후보도 담는다 — 게이트가 reject_reason 을 그대로 돌려주려면 조회돼야 한다
     assert b.claims[CAND_FAIL["claim_id"]].reject_reason == "분리 점수 0.3 < 0.5"
     assert [c.claim_id for c in b.passing()] == [CAND_PASS["claim_id"]]
+    # 필드 매핑 자체를 잠근다 — step_seq/key 전치, target/control 뒤섞임을 잡는다
+    c = b.claims[CAND_PASS["claim_id"]]
+    assert (c.hypothesis_id, c.level, c.step_seq, c.key) == (
+        "eqp_ch_commonality", "chamber", "CC002000", "ETCH9_B")
+    assert (c.score, c.target_pass, c.target_total, c.control_pass, c.control_total) == (
+        1.0, 3, 3, 0, 6)
 
 
 def test_sensor_result_is_not_evidence():
@@ -80,11 +86,15 @@ def test_top_score_is_per_tool():
             "step_seq": "CC002000", "key": "PPID_X", "passes": True,
             "reject_reason": None, "score": 0.6,
             "target_pass": 3, "target_total": 3, "control_pass": 2, "control_total": 5}
+    # 점수가 더 높은 미통과 후보 — passes 필터가 빠지면 이 0.9 가 새어 나온다
+    ppid_fail = {**ppid, "claim_id": "ppid_commonality:ppid:CC002000:PPID_Y",
+                 "key": "PPID_Y", "passes": False, "score": 0.9,
+                 "reject_reason": "분리 점수 미달"}
     decoy = {**CAND_PASS, "claim_id": "eqp_ch_commonality:chamber:CD004000:PHOT2_X",
              "key": "PHOT2_X", "score": 0.75}
     b = evidence.build_bundle([
         _finding("hyp_eqp_ch_commonality", "eqp_ch_commonality", "ok", [CAND_PASS, decoy]),
-        _finding("hyp_ppid_commonality", "ppid_commonality", "ok", [ppid]),
+        _finding("hyp_ppid_commonality", "ppid_commonality", "ok", [ppid, ppid_fail]),
     ])
     assert b.top_score("hyp_eqp_ch_commonality") == 1.0
     assert b.top_score("hyp_ppid_commonality") == 0.6
