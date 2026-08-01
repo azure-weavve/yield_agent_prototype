@@ -35,6 +35,7 @@ def test_scripted_sequence():
     assert ai.tool_calls[0]["name"] == "finalize"
     assert ai.tool_calls[0]["args"]["confidence"] < 0.8
     assert ai.content  # thought(가설 서술)가 감사 기록 재료로 반드시 존재
+    assert ai.tool_calls[0]["args"]["claim_id"] == ""   # 근거가 없을 때도 키 자체는 제출한다
     msgs += [ai, _tm("finalize", "반려: 확신도 0.60 < 0.8. 근거를 좁힐 tool 을 더 호출하라.")]
 
     # 2) 1단 — 챔버 편중 가설
@@ -201,6 +202,27 @@ def test_scripted_uses_ppid_claim_when_eqp_ch_is_silent():
     ai = llm.analyze_step(msgs)                          # 2단 센서로 넘어간다
     assert ai.tool_calls[0]["name"] == "compare_sensor_distribution"
     assert ai.tool_calls[0]["args"]["step_seq"] == "CC002000"
+
+
+def test_scripted_keeps_claim_id_when_stage2_fails():
+    """2단이 근거를 못 내도 1단 claim 은 실재한다 - 지목을 지우면 게이트가 근거를 못 찾는다."""
+    llm = ScriptedMockLLMClient()
+    msgs = [HUMAN]
+    msgs += [llm.analyze_step(msgs), _tm("finalize", "반려")]
+    msgs += [llm.analyze_step(msgs), _tm("hyp_eqp_ch_commonality", {
+        "hypothesis_id": "eqp_ch_commonality", "status": "ok", "candidates": [
+            {"level": "chamber", "key": "ETCH9_B", "value": ["Etch", "ETCH9_B"],
+             "claim_id": "eqp_ch_commonality:chamber:Etch:ETCH9_B",
+             "step_seq": "Etch", "score": 1.0, "target_pass": 3, "passes": True}]})]
+    ai = llm.analyze_step(msgs)
+    assert ai.tool_calls[0]["name"] == "compare_sensor_distribution"
+    msgs += [ai, _tm("compare_sensor_distribution",
+                     {"status": "fetch_failed", "candidates": []})]
+
+    ai = llm.analyze_step(msgs)
+    assert ai.tool_calls[0]["name"] == "finalize"
+    assert ai.tool_calls[0]["args"]["confidence"] == 0.5
+    assert ai.tool_calls[0]["args"]["claim_id"] == "eqp_ch_commonality:chamber:Etch:ETCH9_B"
 
 
 def test_generate_report_renders_inconclusive_status():

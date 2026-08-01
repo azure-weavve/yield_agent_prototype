@@ -123,7 +123,7 @@ class ScriptedMockLLMClient(LLMClient):
                 f"1단은 갈렸지만 2단이 근거를 못 냈다(status={sensor.get('status')}). "
                 f"'왜' 없이 확정하지 않는다.")
         c = sensor["candidates"][0]
-        hyp += f" — {c['sensor_name']} 효과크기 {c['effect_size']}"
+        hyp += f" - {c['sensor_name']} 효과크기 {c['effect_size']}"
         return self._call(
             "finalize",
             {"claim_id": top["claim_id"], "hypothesis": hyp, "confidence": 0.9},
