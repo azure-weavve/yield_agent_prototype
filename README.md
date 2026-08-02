@@ -25,20 +25,21 @@ $ PYTHONUTF8=1 python main.py
 대조군 (같은 root_lot 비타깃): 78장 — LOT2402 18장, LOT2403 18장, LOT2404 19장, LOT2405 19장, LOT2406 4장 · 수율 중앙값 95.3, 임계 90.0 미만 10장
 
 [분석 루프 — 감사 기록]
-  1. finalize  args={'hypothesis': '불량 그룹 7장이 한 사건으로 묶였다 — 공통 원인 존재 추정', 'confidence': 0.6}
+  1. finalize  args={'claim_id': '', 'hypothesis': '불량 그룹 7장이 한 사건으로 묶였다 - 공통 원인 존재 추정', 'confidence': 0.6}
      판단: 그룹은 묶였지만 공정 근거가 아직 없다. 이 정도로 종료를 제안해 본다.
-     게이트: 반려: 확신도 0.60 < 0.8. 근거를 좁힐 tool 을 더 호출하라.
+     게이트: 반려: 통과한 후보가 없다. 아직 실행하지 않은 가설 도구가 있다: hyp_eqp_ch_commonality, hyp_ppid_commonality. 먼저 호출하라.
   2. hyp_eqp_ch_commonality  args={'group_ids': ['W2406_06', 'W2406_02', 'W2413_cen4', ...], 'control_ids': ['W2401_001', ...]}
      판단: 종료 제안이 반려됐다. 챔버 편중 가설로 두 그룹을 대조한다.
   3. compare_sensor_distribution  args={'step_seq': 'CC002000', 'group_ids': ['W2406_06', 'W2406_02', 'W2413_cen4', ...], 'control_ids': ['W2401_001', ...]}
      판단: 챔버까지 좁혔다. 그 스텝의 센서 분포로 '왜' 를 본다.
-  4. finalize  args={'hypothesis': 'CC002000 공정 ETCH9_B 편중(분리 점수 1.0, 불량군 3장 전용)이 원인 — rf_power_steady_avg 효과크기 2.573', 'confidence': 0.9}
+  4. finalize  args={'claim_id': 'eqp_ch_commonality:chamber:CC002000:ETCH9_B', 'hypothesis': 'CC002000 공정 ETCH9_B 편중(분리 점수 1.0, 불량군 3장 전용)이 원인 - rf_power_steady_avg 효과크기 2.573', 'confidence': 0.9}
      판단: 챔버 편중에 센서 근거까지 붙었다. 근거 충분.
-     게이트: 승인 (확신도·증거 충족): 리포팅으로 진행한다.
+     게이트: 승인 (근거 확인): eqp_ch_commonality:chamber:CC002000:ETCH9_B · 분리 점수 1.0 · 타깃 3/3 통과 · 대조군 0/4 통과. 리포팅으로 진행한다.
 
 [리포트 — 고정 골격]
 ...
-[결론] CC002000 공정 ETCH9_B 편중(분리 점수 1.0, 불량군 3장 전용)이 원인 — rf_power_steady_avg 효과크기 2.573 (확신도 0.9)
+[결론] CC002000 공정 ETCH9_B 편중(분리 점수 1.0, 불량군 3장 전용)이 원인 - rf_power_steady_avg 효과크기 2.573 (확신도 0.9)
+[근거] eqp_ch_commonality:chamber:CC002000:ETCH9_B · 분리 점수 1.0 · 타깃 3/3 통과 · 대조군 0/4 통과
 ```
 
 > 실제 실행 출력입니다. wafer 목록과 `control_ids`(78장)만 `...` 로 줄였습니다.
@@ -114,10 +115,12 @@ status ──(대상 있음)──▶ analyze ──(tool call)──▶ tools �
 각 가설은 "어느 축(legend)으로 공통성을 돌릴지"만 선언하고, 계산은 공용 commonality 엔진이
 합니다. 새 인과 가설을 추가할 때 tool 코드를 새로 짤 필요 없이 YAML 에 항목을 추가하면 됩니다.
 
-- **finalize 게이트**: Agent 가 결론을 제안(`finalize`)하면, 확신도(`confidence`)가 임계값
-  (기본 0.8) 이상이고 **가설이 지목한 대상이 가설 도구 결과의 suspect 와 일치**해야 승인됩니다.
-  확신도 미달·그룹 대조 근거 부재·가설-근거 불일치는 각각의 사유와 함께 반려되어 `analyze` 로
-  되돌아가 근거를 더 쌓습니다 — 승인 실권은 LLM 자기 신고가 아니라 findings 의 결정론적 증거에 있습니다.
+- **finalize 게이트**: Agent 가 결론을 제안(`finalize`)할 때 판정 근거는 LLM 이 쓴 자유 텍스트
+  `hypothesis` 가 아니라 **도구가 발급한 `claim_id`** 입니다. 게이트는 그 claim_id 로
+  EvidenceBundle 을 조회해 통과 여부·같은 도구 안 최고 점수 여부·확신도를 확인합니다 —
+  승인 실권은 LLM 자기 신고가 아니라 findings 의 결정론적 증거에 있습니다. 반려되면
+  claim_id 미제출·미통과·최고 점수 아님·확신도 미달·미실행 가설 도구 존재 중 무엇이
+  걸렸는지를 그대로 돌려받아 `analyze` 로 되돌아가 근거를 더 쌓습니다.
 
 - **가드레일(MAX_LOOPS)**: 루프가 한계(기본 6회)에 도달하면 확신도와 무관하게 강제로 리포팅으로
   진행합니다 — 무한 루프를 원천 차단합니다. 이때의 finalize 는 승인이 아니라
@@ -143,7 +146,7 @@ status ──(대상 있음)──▶ analyze ──(tool call)──▶ tools �
 | `finalize_status` | 언제 | 사람이 할 일 |
 |---|---|---|
 | `confirmed` | 게이트가 claim_id 를 조회해 근거를 확인했다 (통과 후보 + 그 도구 안 최고 점수 + 확신도 충족) | 리포트의 `[근거]` 줄을 보고 현장 확인 |
-| `no_signal` | 등록 가설을 전부 대조했으나 타깃만 거친 후보가 없다 | 원인 없음이 아니라 lot 내부 대조의 한계 — 대조군을 lot 밖으로 넓혀야 합니다 |
+| `no_signal` | 등록 가설을 전부 대조했으나 타깃만 거친 후보가 없다 (계산 결과가 `no_signal` 인 가설이 하나 이상일 때) | 원인 없음이 아니라 lot 내부 대조의 한계 — 대조군을 lot 밖으로 넓혀야 합니다 |
 | `inconclusive` | 루프 한계까지 근거를 좁히지 못했다 | 분석 기록을 보고 사람이 이어받습니다 |
 
 ## 디렉토리 구조
