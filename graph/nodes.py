@@ -227,9 +227,7 @@ def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) ->
         update["final_hypothesis"] = hypothesis
         update["final_confidence"] = conf
         update["final_claim"] = asdict(claim)
-        return (f"승인 (근거 확인): {claim.claim_id} · 분리 점수 {claim.score} · "
-                f"타깃 {claim.target_pass}/{claim.target_total} 통과 · "
-                f"대조군 {claim.control_pass}/{claim.control_total} 통과. "
+        return (f"승인 (근거 확인): {evidence.format_evidence_line(update['final_claim'])}. "
                 f"리포팅으로 진행한다.")
 
     # (2) 신호 없음 - 등록 가설을 다 돌렸는데 통과 후보가 하나도 없다.
@@ -299,6 +297,7 @@ def _gate_rejection(claim_id, claim, bundle, unrun, conf, conf_note) -> str:
 
 # ------------------------------------------------ 고정 골격: 리포팅
 def report_node(state: dict) -> dict:
+    claim = state.get("final_claim")
     report = _llm_lazy().generate_report(
         target_wafers=state.get("target_wafers", []),
         target_source=state.get("target_source", "manual"),
@@ -308,6 +307,10 @@ def report_node(state: dict) -> dict:
         hypothesis=state.get("final_hypothesis"),
         confidence=state.get("final_confidence"),
         finalize_status=state.get("finalize_status"),
-        claim=state.get("final_claim"),
+        claim=claim,
     )
+    if claim:
+        # [근거] 줄은 클라이언트(LLM)가 아니라 여기서 코드로 붙인다 - 운영에서도
+        # 근거가 리포트에서 사라지지 않게 하려는 것이 이 기능의 목적이다.
+        report += f"\n[근거] {evidence.format_evidence_line(claim)}"
     return {"report": report}

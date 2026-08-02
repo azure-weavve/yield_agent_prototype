@@ -391,6 +391,9 @@ def test_finalize_gate_accepts_high_confidence_with_evidence():
     assert out["final_hypothesis"] == "Etch ETCH-9 원인"
     assert out["final_confidence"] == 0.9
     assert "승인" in out["messages"][0].content
+    # 감사 기록에 남는 verdict 수치 자체를 잠근다 (분리 점수·타깃/대조군 통과 수)
+    assert ("eqp_ch_commonality:chamber:Etch:ETCH-9 · 분리 점수 1.0 · "
+            "타깃 3/3 통과 · 대조군 0/3 통과") in out["messages"][0].content
 
 
 def test_finalize_gate_rejects_high_confidence_without_evidence():
@@ -543,6 +546,69 @@ def test_tools_node_falls_back_to_reason_when_content_empty():
          "args": {"wafer_id": "W2406_02", "reason": "대상 수율 확인"}, "id": "c1"}])
     out = nodes.tools_node({"messages": [ai], "loop_count": 1})
     assert out["findings"][0]["thought"] == "대상 수율 확인"
+
+
+def test_report_node_appends_evidence_line_for_approved_claim():
+    """[근거] 줄은 report_node 가 코드로 붙인다 - 클라이언트가 뭘 돌려주든 운영에서도 보장된다.
+
+    이전에는 ScriptedMockLLMClient 만 자기 안에서 [근거] 를 냈다(문제 1, 최종 검토).
+    그 계약(claim_id·분리 점수 1.0·3/3·0/6 라벨)을 여기 report_node 층으로 옮긴다.
+    """
+    out = nodes.report_node({
+        "target_wafers": ["W2406_02"], "target_source": "manual",
+        "target_group": ["W2406_02"], "status_summary": "요약", "findings": [],
+        "final_hypothesis": "원인은 그 챔버다", "final_confidence": 0.9,
+        "finalize_status": "confirmed",
+        "final_claim": {"claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH9_B",
+                        "score": 1.0, "target_pass": 3, "target_total": 3,
+                        "control_pass": 0, "control_total": 6},
+    })
+    assert "[근거]" in out["report"]
+    assert "eqp_ch_commonality:chamber:CC002000:ETCH9_B" in out["report"]
+    assert "분리 점수 1.0" in out["report"]
+    assert "타깃 3/3" in out["report"] and "대조군 0/6" in out["report"]
+    assert out["report"].count("[근거]") == 1   # 클라이언트가 또 붙이면 중복된다
+
+
+def test_report_node_has_no_evidence_line_without_claim():
+    """확정되지 않은 분석에 근거 줄을 만들어 붙이지 않는다."""
+    out = nodes.report_node({
+        "target_wafers": ["W1"], "target_source": "manual",
+        "target_group": ["W1"], "status_summary": "s", "findings": [],
+        "final_hypothesis": None, "final_confidence": None,
+    })
+    assert "[근거]" not in out["report"]
+
+
+def test_report_node_appends_evidence_line_regardless_of_client():
+    """운영 클라이언트가 [근거] 를 전혀 안 내도 report_node 가 붙인다 - '운영에서도 보장된다'의 유일한 증거.
+
+    OpenAILLMClient.generate_report 는 LLM 응답을 그대로 반환할 뿐 [근거] 를 만들지
+    않는다. 그 상황을 최소 스텁으로 재현한다.
+    """
+    class _StubClient:
+        def analyze_step(self, messages):
+            raise NotImplementedError
+
+        def generate_report(self, **kwargs):
+            return "고정된 산문 리포트 (근거 줄 없음)"
+
+    original = nodes._llm
+    nodes._llm = _StubClient()
+    try:
+        out = nodes.report_node({
+            "target_wafers": ["W2406_02"], "target_source": "manual",
+            "target_group": ["W2406_02"], "status_summary": "요약", "findings": [],
+            "final_hypothesis": "원인은 그 챔버다", "final_confidence": 0.9,
+            "finalize_status": "confirmed",
+            "final_claim": {"claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH9_B",
+                            "score": 1.0, "target_pass": 3, "target_total": 3,
+                            "control_pass": 0, "control_total": 6},
+        })
+    finally:
+        nodes._llm = original
+    assert "[근거]" in out["report"]
+    assert "eqp_ch_commonality:chamber:CC002000:ETCH9_B" in out["report"]
 
 
 def test_report_node_passes_the_approved_claim_to_the_report():

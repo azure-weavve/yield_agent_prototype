@@ -44,6 +44,17 @@ class Bundle:
         return max(scores) if scores else None
 
 
+def format_evidence_line(claim: dict) -> str:
+    """Claim 사전(`asdict(Claim)` 결과)을 사람이 읽는 근거 한 줄로 렌더링한다.
+
+    게이트 승인 verdict(`graph/nodes.py`)와 리포트 `[근거]` 줄(`report_node`)이
+    같은 본문을 문자 그대로 복제하던 것을 여기 하나로 모았다.
+    """
+    return (f"{claim['claim_id']} · 분리 점수 {claim['score']} · "
+            f"타깃 {claim['target_pass']}/{claim['target_total']} 통과 · "
+            f"대조군 {claim['control_pass']}/{claim['control_total']} 통과")
+
+
 def _is_hypothesis_result(result) -> bool:
     return (isinstance(result, dict)
             and "hypothesis_id" in result and "candidates" in result)

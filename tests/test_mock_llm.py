@@ -239,10 +239,13 @@ def test_generate_report_renders_inconclusive_status():
     assert "ETCH-9" in report        # 유력 가설은 후보로 남긴다
 
 
-def test_report_carries_gate_verified_numbers_not_llm_prose():
-    """근거 수치는 LLM 문장이 아니라 게이트가 확인한 claim 에서 나온다.
+def test_generate_report_no_longer_renders_evidence_line_itself():
+    """[근거] 줄은 이제 mock 이 아니라 report_node 가 코드로 붙인다 (Task 8 최종 검토).
 
-    운영 LLM 이 수치를 흐리거나 빠뜨려도 감사 기록에 남아야 한다.
+    claim 을 넘겨도 mock 의 generate_report 자체는 [근거] 를 내지 않아야 한다 —
+    안 그러면 report_node 가 붙이는 줄과 겹쳐 두 번 나온다.
+    같은 계약(claim_id·분리 점수·3/3·0/6 단언)은 `tests/test_graph_nodes.py` 의
+    `test_report_node_appends_evidence_line_for_approved_claim` 로 옮겼다.
     """
     llm = ScriptedMockLLMClient()
     report = llm.generate_report(
@@ -253,16 +256,4 @@ def test_report_carries_gate_verified_numbers_not_llm_prose():
                "target_pass": 3, "target_total": 3,
                "control_pass": 0, "control_total": 6},
     )
-    assert "[근거]" in report
-    assert "eqp_ch_commonality:chamber:CC002000:ETCH9_B" in report
-    assert "분리 점수 1.0" in report
-    assert "타깃 3/3" in report and "대조군 0/6" in report
-
-
-def test_report_without_claim_has_no_evidence_line():
-    """확정되지 않은 분석에 근거 줄을 만들어 붙이지 않는다."""
-    llm = ScriptedMockLLMClient()
-    report = llm.generate_report(
-        target_wafers=["W1"], target_source="manual", target_group=["W1"],
-        status_summary="s", findings=[], hypothesis=None, confidence=None)
     assert "[근거]" not in report

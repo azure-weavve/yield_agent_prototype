@@ -47,9 +47,12 @@ class LLMClient(ABC):
 class ScriptedMockLLMClient(LLMClient):
     """사내망 밖 데모용. 그룹 대조 시나리오를 따라가는 결정론적 스크립트.
 
-    finalize(0.6, 게이트가 반려) → hyp_eqp_ch_commonality(1단: 어느 챔버)
-    → compare_sensor_distribution(2단: 왜) → finalize(0.9, 승인) 순서로 진행하며,
-    각 단계 인자는 seed 메시지의 GROUPS_JSON 과 직전 ToolMessage(json) 를 파싱해 이어받는다.
+    finalize(claim_id="", confidence=0.6, 게이트가 반려) → hyp_eqp_ch_commonality(1단: 어느 챔버)
+    → (EQP_CH 에 통과 후보가 없으면 hyp_ppid_commonality 로 폴백, 2차 legend)
+    → compare_sensor_distribution(2단: 왜) → finalize(claim_id=<통과 후보>, confidence=0.9, 승인)
+    순서로 진행하며, 각 단계 인자는 seed 메시지의 GROUPS_JSON 과 직전 ToolMessage(json) 를
+    파싱해 이어받는다. 등록 가설(EQP_CH·PPID)을 다 돌렸는데도 분리되는 후보가 없으면
+    claim_id 를 비운 채 confidence=0.2 로 물러선다(게이트가 no_signal 로 판정).
 
     라벨(defect_type)을 쓰지 않는다 — 실데이터에 없기 때문이다.
     """
@@ -172,12 +175,8 @@ class ScriptedMockLLMClient(LLMClient):
             conclusion = hypothesis or "원인 미확정"
         conf = f" (확신도 {confidence})" if confidence is not None else ""
         lines += ["", f"[결론] {conclusion}{conf}"]
-        if claim:
-            # 게이트가 확인한 수치. LLM 문장과 나란히 놓아 대조할 수 있게 한다.
-            lines.append(
-                f"[근거] {claim['claim_id']} · 분리 점수 {claim['score']} · "
-                f"타깃 {claim['target_pass']}/{claim['target_total']} 통과 · "
-                f"대조군 {claim['control_pass']}/{claim['control_total']} 통과")
+        # [근거] 줄은 여기서 붙이지 않는다 - report_node 가 코드로 붙인다(운영 클라이언트도
+        # 동일하게 보장하려고 두 클라이언트 밖으로 뺐다). 여기서 또 붙이면 줄이 두 번 나온다.
         return "\n".join(lines)
 
     # -------------------------------------------------- 내부
