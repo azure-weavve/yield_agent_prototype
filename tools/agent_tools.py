@@ -4,8 +4,8 @@ LLM 이 읽는 것은 함수의 이름·docstring·인자 스키마다 — 여�
 곧 LLM 의 tool 선택 판단 재료이므로 '언제 쓰는지'를 명확히 적는다.
 
 finalize 는 실행되는 tool 이 아니라 "분석 종료 제안" 신호다.
-graph/nodes.py 의 tools 노드(게이트)가 confidence 를 검사해 승인/반려하므로
-TOOLS_BY_NAME 에는 넣지 않는다.
+graph/nodes.py 의 tools 노드(게이트)가 claim_id 로 EvidenceBundle 을 조회해
+승인/반려하므로(confidence 는 그 위에 얹는 보조 조건이다) TOOLS_BY_NAME 에는 넣지 않는다.
 """
 
 from langchain_core.tools import tool
