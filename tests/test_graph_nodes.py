@@ -247,6 +247,14 @@ def test_gate_no_signal_beats_max_loops():
     assert out["finalize_status"] == "no_signal"
 
 
+def test_gate_does_not_declare_no_signal_while_a_passing_claim_exists():
+    """한 가설에 통과 후보가 있으면, 다른 가설이 no_signal 이어도 전체를 신호 없음으로 뭉개면 안 된다."""
+    ai = _ai_finalize(0.2, hypothesis="아직 claim_id 를 못 골랐다", claim_id="")
+    out = nodes.tools_node({"messages": [ai], "loop_count": 3,
+                            "findings": [EVIDENCE_FINDING, PPID_SILENT]})
+    assert "finalize_accepted" not in out
+
+
 def test_gate_accepts_chamber_hypothesis():
     ai = _ai_finalize(0.9, hypothesis="Etch 공정 ETCH9_B 챔버 편중이 원인",
                       claim_id="eqp_ch_commonality:chamber:CC002000:ETCH9_B")
