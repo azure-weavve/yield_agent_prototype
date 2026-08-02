@@ -8,6 +8,8 @@
 ::test_control_insufficient_reported_honestly 가 지킨다 — 여기서 중복하지 않는다.
 """
 
+from langchain_core.messages import AIMessage
+
 from data.generate_dummy import (ADV_COUNTEREX_LOT, ADV_DECOY_LOT, ADV_MISSING_LOT,
                                  ADV_MISSING_WAFER, ADV_NOSIGNAL_LOT, adv_group)
 from domain import engine, registry
@@ -45,19 +47,37 @@ def test_case2_decoy_does_not_outrank_the_real_cause():
     assert 0.7 <= decoy[0]["score"] <= 0.85
 
 
-def test_case2_gate_alone_does_not_reject_the_decoy():
-    """미끼도 passes=True 다 — 미끼를 거르는 것은 게이트가 아니라 **순위**다.
+def test_case2_decoy_passes_the_discriminator_but_the_gate_rejects_it():
+    """미끼도 passes=True 다 - 거르는 것은 판별선이 아니라 **게이트의 최고 점수 규칙**이다.
 
-    engine 의 판별선은 (score ≥ COMMONALITY_PASS_MIN_SCORE, target_pass ≥ MIN_TARGET)
-    뿐이라 0.75 짜리 미끼도 통과한다. LLM 이 미끼를 골라 결론 문장에 쓰면 게이트는
-    승인한다. 알려진 한계이므로 테스트로 고정해 둔다 — 게이트를 강화하면 여기가
-    빨간불로 알려준다.
+    engine 의 판별선은 (score >= COMMONALITY_PASS_MIN_SCORE, target_pass >= MIN_TARGET)
+    뿐이라 0.75 짜리 미끼도 통과한다. 예전에는 LLM 이 미끼를 골라 결론에 쓰면 게이트가
+    승인했다. 지금은 같은 도구 안에서 최고 점수가 아니면 반려한다.
     """
+    from graph import nodes
+
     spec = next(s for s in registry.load_hypotheses() if s["id"] == "eqp_ch_commonality")
     t, c = adv_group(ADV_DECOY_LOT)
-    cands = {x["key"]: x for x in engine.evaluate(spec, t, c)["candidates"]}
+    res = engine.evaluate(spec, t, c)
+    cands = {x["key"]: x for x in res["candidates"]}
     assert cands["ETCH2_B"]["passes"]
-    assert cands["PHOT2_X"]["passes"], "미끼가 게이트에서 걸러진다면 이 한계는 해소된 것"
+    assert cands["PHOT2_X"]["passes"], "판별선은 여전히 미끼를 통과시킨다"
+
+    finding = {"loop": 1, "tool": "hyp_eqp_ch_commonality", "args": {},
+               "result": res, "thought": "대조"}
+    ai = AIMessage(content="종료 제안", tool_calls=[{"name": "finalize", "args": {
+        "claim_id": cands["PHOT2_X"]["claim_id"],
+        "hypothesis": "미끼가 원인", "confidence": 0.9}, "id": "call_f"}])
+    out = nodes.tools_node({"messages": [ai], "loop_count": 3, "findings": [finding]})
+    assert "finalize_accepted" not in out
+    assert cands["ETCH2_B"]["claim_id"] in out["messages"][0].content
+
+    # 진짜 원인을 지목하면 승인된다 - 게이트가 과하게 조여진 것이 아님을 함께 고정한다
+    ai_ok = AIMessage(content="종료 제안", tool_calls=[{"name": "finalize", "args": {
+        "claim_id": cands["ETCH2_B"]["claim_id"],
+        "hypothesis": "ETCH2_B 편중이 원인", "confidence": 0.9}, "id": "call_f"}])
+    ok = nodes.tools_node({"messages": [ai_ok], "loop_count": 3, "findings": [finding]})
+    assert ok["finalize_status"] == "confirmed"
 
 
 def test_case3_missing_history_is_separated_and_does_not_pollute_denominator():
@@ -115,3 +135,28 @@ def test_case4_end_to_end_reports_no_signal_not_loop_exhaustion():
     # 등록 가설을 둘 다 돌린 뒤에 판정했다
     tools_used = [f["tool"] for f in state["findings"]]
     assert "hyp_eqp_ch_commonality" in tools_used and "hyp_ppid_commonality" in tools_used
+
+
+def test_case1_counterexample_still_reaches_confirmed_end_to_end():
+    """반례가 있어도 판별선을 넘으면 확정한다 - 게이트를 조였다고 과민해지면 안 된다.
+
+    score 0.8 은 '원인 챔버를 거쳤는데 정상인 대조군 wafer 가 1장 있다' 는 뜻이다.
+    현실 데이터에서 흔한 모양이므로 여기서 물러서면 아무것도 확정하지 못한다.
+    """
+    from graph.build import build_graph
+
+    targets, _ = adv_group(ADV_COUNTEREX_LOT)
+    state = build_graph().invoke({"target_wafers": targets, "target_source": "manual"})
+    assert state["finalize_status"] == "confirmed"
+    assert state["final_claim"]["key"] == "ETCH1_B"
+    assert state["final_claim"]["control_pass"] == 1        # 반례가 근거에 그대로 남는다
+
+
+def test_case3_missing_history_still_reaches_confirmed_end_to_end():
+    """이력 결측 wafer 가 섞여도 판정이 흔들리지 않는다."""
+    from graph.build import build_graph
+
+    targets, _ = adv_group(ADV_MISSING_LOT)
+    state = build_graph().invoke({"target_wafers": targets, "target_source": "manual"})
+    assert state["finalize_status"] == "confirmed"
+    assert state["final_claim"]["key"] == "ETCH3_B"
