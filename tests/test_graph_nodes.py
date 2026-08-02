@@ -255,6 +255,41 @@ def test_gate_does_not_declare_no_signal_while_a_passing_claim_exists():
     assert "finalize_accepted" not in out
 
 
+def test_gate_does_not_declare_no_signal_when_candidates_only_missed_the_line():
+    """가설이 후보를 냈지만 문턱을 못 넘은 것(status ok)은 no_signal 이 아니라 반려다.
+
+    no_signal 은 도구가 후보 자체를 못 낸(status no_signal) 구조적 부재를 뜻한다.
+    후보는 있는데 판별선만 못 넘은 경우는 조치가 다르므로(더 좁힐 여지가 있다)
+    같은 취급을 하면 안 된다.
+    """
+    weak_eqp_ch = {
+        "loop": 2, "tool": "hyp_eqp_ch_commonality", "args": {},
+        "result": {"hypothesis_id": "eqp_ch_commonality", "status": "ok", "candidates": [
+            {"claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH9_B", "step_seq": "CC002000",
+             "key": "ETCH9_B", "level": "chamber", "passes": False,
+             "reject_reason": "분리 점수 0.3 < 0.6",
+             "score": 0.3, "target_pass": 4, "target_total": 4,
+             "control_pass": 3, "control_total": 5},
+        ]},
+        "thought": "약한 후보",
+    }
+    weak_ppid = {
+        "loop": 3, "tool": "hyp_ppid_commonality", "args": {},
+        "result": {"hypothesis_id": "ppid_commonality", "status": "ok", "candidates": [
+            {"claim_id": "ppid_commonality:ppid:PPID001:P1", "step_seq": "PPID001",
+             "key": "P1", "level": "ppid", "passes": False,
+             "reject_reason": "분리 점수 0.2 < 0.6",
+             "score": 0.2, "target_pass": 4, "target_total": 4,
+             "control_pass": 3, "control_total": 5},
+        ]},
+        "thought": "약한 후보",
+    }
+    ai = _ai_finalize(0.2, hypothesis="약한 후보뿐", claim_id="")
+    out = nodes.tools_node({"messages": [ai], "loop_count": 3,
+                            "findings": [weak_eqp_ch, weak_ppid]})
+    assert "finalize_accepted" not in out
+
+
 def test_gate_accepts_chamber_hypothesis():
     ai = _ai_finalize(0.9, hypothesis="Etch 공정 ETCH9_B 챔버 편중이 원인",
                       claim_id="eqp_ch_commonality:chamber:CC002000:ETCH9_B")
