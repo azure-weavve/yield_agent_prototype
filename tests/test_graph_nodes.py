@@ -131,6 +131,34 @@ def test_gate_rejects_claim_that_did_not_pass():
     assert "분리 없음" in out["messages"][0].content
 
 
+def test_gate_rejects_claim_that_did_not_pass_even_when_score_ties_the_top():
+    """실패 후보의 점수가 통과 후보의 최고 점수와 같거나 높아도 여전히 반려돼야 한다.
+
+    top_score 는 통과 후보만 대상으로 하므로, 점수 비교만으로는 passes=False 를
+    걸러내지 못한다 — 표본 부족(target_pass 미달)처럼 점수는 높은데 판별선을
+    못 넘는 후보가 있을 수 있다.
+    """
+    near_miss = {
+        "loop": 2, "tool": "hyp_eqp_ch_commonality", "args": {},
+        "result": {"hypothesis_id": "eqp_ch_commonality", "status": "ok", "candidates": [
+            {"claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH9_B", "step_seq": "CC002000",
+             "key": "ETCH9_B", "level": "chamber", "passes": True, "reject_reason": None,
+             "score": 0.8, "target_pass": 4, "target_total": 4,
+             "control_pass": 1, "control_total": 5},
+            {"claim_id": "eqp_ch_commonality:chamber:CD004000:PHOT2_X", "step_seq": "CD004000",
+             "key": "PHOT2_X", "level": "chamber", "passes": False,
+             "reject_reason": "타깃 표본 1 < 3",
+             "score": 1.0, "target_pass": 1, "target_total": 1,
+             "control_pass": 0, "control_total": 5},
+        ]},
+        "thought": "표본 부족 근접 미끼",
+    }
+    ai = _ai_finalize(0.9, claim_id="eqp_ch_commonality:chamber:CD004000:PHOT2_X")
+    out = nodes.tools_node({"messages": [ai], "loop_count": 3, "findings": [near_miss]})
+    assert "finalize_accepted" not in out
+    assert "타깃 표본" in out["messages"][0].content
+
+
 def test_gate_rejects_lower_scored_claim_and_names_the_stronger_one():
     """근접 미끼: 통과했더라도 더 강한 후보가 있으면 승인하지 않는다."""
     decoy = {
