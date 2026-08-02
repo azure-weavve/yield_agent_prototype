@@ -237,3 +237,31 @@ def test_generate_report_renders_inconclusive_status():
     assert "미확정" in report
     assert "한계" in report          # 왜 미확정인지 (루프 한계 도달)
     assert "ETCH-9" in report        # 유력 가설은 후보로 남긴다
+
+
+def test_report_carries_gate_verified_numbers_not_llm_prose():
+    """근거 수치는 LLM 문장이 아니라 게이트가 확인한 claim 에서 나온다.
+
+    운영 LLM 이 수치를 흐리거나 빠뜨려도 감사 기록에 남아야 한다.
+    """
+    llm = ScriptedMockLLMClient()
+    report = llm.generate_report(
+        target_wafers=["W2406_02"], target_source="manual", target_group=TARGET,
+        status_summary="s", findings=[], hypothesis="원인은 그 챔버다", confidence=0.9,
+        finalize_status="confirmed",
+        claim={"claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH9_B", "score": 1.0,
+               "target_pass": 3, "target_total": 3,
+               "control_pass": 0, "control_total": 6},
+    )
+    assert "[근거]" in report
+    assert "eqp_ch_commonality:chamber:CC002000:ETCH9_B" in report
+    assert "3/3" in report and "0/6" in report
+
+
+def test_report_without_claim_has_no_evidence_line():
+    """확정되지 않은 분석에 근거 줄을 만들어 붙이지 않는다."""
+    llm = ScriptedMockLLMClient()
+    report = llm.generate_report(
+        target_wafers=["W1"], target_source="manual", target_group=["W1"],
+        status_summary="s", findings=[], hypothesis=None, confidence=None)
+    assert "[근거]" not in report

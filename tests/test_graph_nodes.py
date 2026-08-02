@@ -543,3 +543,16 @@ def test_tools_node_falls_back_to_reason_when_content_empty():
          "args": {"wafer_id": "W2406_02", "reason": "대상 수율 확인"}, "id": "c1"}])
     out = nodes.tools_node({"messages": [ai], "loop_count": 1})
     assert out["findings"][0]["thought"] == "대상 수율 확인"
+
+
+def test_report_node_passes_the_approved_claim_to_the_report():
+    out = nodes.report_node({
+        "target_wafers": ["W2406_02"], "target_source": "manual",
+        "target_group": ["W2406_02"], "status_summary": "요약", "findings": [],
+        "final_hypothesis": "ETCH9_B 편중", "final_confidence": 0.9,
+        "finalize_status": "confirmed",
+        "final_claim": {"claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH9_B", "score": 1.0,
+                        "target_pass": 3, "target_total": 3,
+                        "control_pass": 0, "control_total": 6},
+    })
+    assert "eqp_ch_commonality:chamber:CC002000:ETCH9_B" in out["report"]

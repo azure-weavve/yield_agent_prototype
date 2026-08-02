@@ -308,5 +308,6 @@ def report_node(state: dict) -> dict:
         hypothesis=state.get("final_hypothesis"),
         confidence=state.get("final_confidence"),
         finalize_status=state.get("finalize_status"),
+        claim=state.get("final_claim"),
     )
     return {"report": report}

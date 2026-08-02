@@ -33,11 +33,13 @@ class LLMClient(ABC):
         hypothesis: str | None,
         confidence: float | None,
         finalize_status: str | None = None,
+        claim: dict | None = None,
     ) -> str:
         """감사 기록을 근거로 원인 리포트 생성.
 
         finalize_status 가 "inconclusive"(루프 한계 도달)면 결론을 확정 톤이 아니라
         "미확정 + 유력 가설(후보)" 톤으로 서술해야 한다.
+        claim 이 있으면 게이트가 확인한 근거 수치다 - 그대로 인용하고 바꾸지 않는다.
         """
         ...
 
@@ -131,7 +133,8 @@ class ScriptedMockLLMClient(LLMClient):
 
     # -------------------------------------------------- report
     def generate_report(self, target_wafers, target_source, target_group, status_summary,
-                        findings, hypothesis, confidence, finalize_status=None) -> str:
+                        findings, hypothesis, confidence, finalize_status=None,
+                        claim=None) -> str:
         lines = [
             f"[분석 대상 입력] ({target_source}) {', '.join(target_wafers) or '없음'}",
             f"[불량 그룹] {', '.join(target_group) or '없음'}",
@@ -169,6 +172,12 @@ class ScriptedMockLLMClient(LLMClient):
             conclusion = hypothesis or "원인 미확정"
         conf = f" (확신도 {confidence})" if confidence is not None else ""
         lines += ["", f"[결론] {conclusion}{conf}"]
+        if claim:
+            # 게이트가 확인한 수치. LLM 문장과 나란히 놓아 대조할 수 있게 한다.
+            lines.append(
+                f"[근거] {claim['claim_id']} · 분리 점수 {claim['score']} · "
+                f"타깃 {claim['target_pass']}/{claim['target_total']} 통과 · "
+                f"대조군 {claim['control_pass']}/{claim['control_total']} 통과")
         return "\n".join(lines)
 
     # -------------------------------------------------- 내부
@@ -218,7 +227,8 @@ class OpenAILLMClient(LLMClient):
         return self.analyzer.invoke(messages)
 
     def generate_report(self, target_wafers, target_source, target_group, status_summary,
-                        findings, hypothesis, confidence, finalize_status=None) -> str:
+                        findings, hypothesis, confidence, finalize_status=None,
+                        claim=None) -> str:
         sys = (
             "현장 반도체 엔지니어에게 한국어 높임말로 원인 분석 리포트를 쓴다. "
             "분석 과정(findings)의 수치는 절대 임의로 바꾸지 말고 그대로 인용하라. "
@@ -239,6 +249,9 @@ class OpenAILLMClient(LLMClient):
             f"결론 가설: {hypothesis or '미확정'} / 확신도: {confidence} / "
             f"판정: {finalize_status or '미상'}"
         )
+        if claim:
+            user += (f"\n게이트가 확인한 근거(수치를 그대로 인용하라): "
+                     f"{json.dumps(claim, ensure_ascii=False)}")
         resp = self.llm.invoke([SystemMessage(content=sys), HumanMessage(content=user)])
         return resp.content.strip()
 
