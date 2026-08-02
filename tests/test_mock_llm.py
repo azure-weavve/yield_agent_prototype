@@ -255,7 +255,7 @@ def test_report_carries_gate_verified_numbers_not_llm_prose():
     )
     assert "[근거]" in report
     assert "eqp_ch_commonality:chamber:CC002000:ETCH9_B" in report
-    assert "3/3" in report and "0/6" in report
+    assert "타깃 3/3" in report and "대조군 0/6" in report
 
 
 def test_report_without_claim_has_no_evidence_line():
