@@ -36,21 +36,22 @@
 
 | 문서 | 무엇 |
 |---|---|
-| [`사내LLM연동_변경분_정리.md`](사내LLM연동_변경분_정리.md) | 2026-07-16 에 **끝난** 사내 LLM 연동 재현 기록. 기준선 63 passed(현재 152) |
+| [`사내LLM연동_변경분_정리.md`](사내LLM연동_변경분_정리.md) | 2026-07-16 에 **끝난** 사내 LLM 연동 재현 기록. 기준선 63 passed(현재 191) |
 | [`2026-07-18-status-node-review-and-redesign.md`](2026-07-18-status-node-review-and-redesign.md) | status_node 재설계 논의. 후속 구현은 `plans/2026-07-19-status-input-redesign.md` |
 | [`2026-07-25-dummy-first-stage-reorder.md`](2026-07-25-dummy-first-stage-reorder.md) | 더미 우선 Stage 재배열 계획. **완료** — 체크박스와 "이 플랜을 구현하라" 지시가 남아 있지만 실행하지 말 것. 결과는 `stages.md` |
 | [`codex.md`](codex.md) | 2026-07-13 codex 리뷰 **원문**(헤더 없음). 1번은 수정됨(`tools/target_selection.py:13`), 4번(TLS 기본값)·5번은 `deferred-internal-integration.md` 가 추적 중 |
 
-## 4. `superpowers/` — spec·plan 스냅샷 (19개)
+## 4. `superpowers/` — spec·plan 스냅샷 (21개)
 
 `superpowers/specs/<날짜>-<주제>-design.md` = 설계, `superpowers/plans/<날짜>-<주제>.md` = 구현 플랜.
 **파일명에 날짜가 박혀 있어 구조상 과거 기록이고**, 그 날짜의 작업이 끝나면 동결된다.
-plan 12개 · spec 7개인데 **이름이 정확히 짝을 이루는 건 6쌍뿐**이다 — 초기 6개 plan
+plan 13개 · spec 8개인데 **이름이 정확히 짝을 이루는 건 7쌍뿐**이다 — 초기 6개 plan
 (`2026-07-10`~`2026-07-19`, 그리고 `2026-07-24-causal-hypothesis-registry`)은 같은 이름의
 spec 이 없다(그 spec 은 하루 앞선 `2026-07-23-...-design.md`).
 어떤 Stage 가 어느 spec/plan 을 썼는지는 `stages.md` 가 짚어준다.
 
-가장 최근 것부터: `2026-07-29-stage5-legacy-removal`(Stage 5 삭제) ·
+가장 최근 것부터: `2026-08-01-evidence-bundle-gate`(게이트 강화, EvidenceBundle) ·
+`2026-07-29-stage5-legacy-removal`(Stage 5 삭제) ·
 `2026-07-29-post-stage4-small-fixes`(조기 출구 3건) · `2026-07-28-ground-truth-removal`(Stage 4) ·
 `2026-07-25-sensor-comparison`(Stage 3, 2단) · `2026-07-25-root-lot-control-group`(Stage 2) ·
 `2026-07-24-registry-commonality-realignment` · `2026-07-24-causal-hypothesis-registry` ·

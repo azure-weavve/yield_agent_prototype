@@ -92,3 +92,44 @@ def test_evaluate_passes_requires_status_ok(fx_db, monkeypatch):
     res = engine.evaluate({"id": "eqp_ch", "legend": EQP_CH}, ["G1", "G2", "G3"], ["C1", "C2", "C3"])
     assert res["candidates"]
     assert all(c["passes"] is False for c in res["candidates"])
+
+
+def test_evaluate_issues_claim_id_per_candidate(fx_db):
+    """claim_id 는 게이트가 조회할 유일한 키다 — 도구가 발급해 결과에 실어 보낸다."""
+    res = engine.evaluate({"id": "eqp_ch", "legend": EQP_CH},
+                          ["G1", "G2", "G3"], ["C1", "C2", "C3"])
+    by_key = {c["key"]: c for c in res["candidates"]}
+    assert by_key["ETCH9_B"]["claim_id"] == "eqp_ch:chamber:Etch:ETCH9_B"
+    # 모든 후보가 발급받는다 (통과 여부와 무관 — 반려 사유를 돌려주려면 미통과도 조회돼야 한다)
+    assert all(c["claim_id"] for c in res["candidates"])
+
+
+def test_claim_id_is_namespaced_by_hypothesis(fx_db):
+    """같은 legend 를 다른 가설 id 로 돌리면 후보는 같고 claim_id 만 갈린다.
+
+    legend 가 다른 두 도구(EQP_CH vs PPID)로 비교하면 애초에 key 가 안 겹쳐서,
+    구현에서 id 접두어를 지워도 통과하는 공허한 테스트가 된다.
+    """
+    a = engine.evaluate({"id": "eqp_ch", "legend": EQP_CH},
+                        ["G1", "G2", "G3"], ["C1", "C2", "C3"])
+    b = engine.evaluate({"id": "eqp_ch_v2", "legend": EQP_CH},
+                        ["G1", "G2", "G3"], ["C1", "C2", "C3"])
+    keys = [c["key"] for c in a["candidates"]]
+    assert keys and keys == [c["key"] for c in b["candidates"]]   # 같은 후보 집합인지 먼저
+    assert not ({c["claim_id"] for c in a["candidates"]} &
+                {c["claim_id"] for c in b["candidates"]})
+
+
+def test_claim_id_is_issued_for_failing_candidates_too(fx_db, monkeypatch):
+    """미통과 후보도 발급받는다 - 게이트가 반려 사유를 돌려주려면 조회돼야 한다.
+
+    fx_db 기본 시나리오는 후보가 전부 passes=True 라, 임계를 올려 미통과 후보를
+    만들지 않으면 이 요구가 한 번도 검증되지 않는다.
+    """
+    monkeypatch.setattr(config, "COMMONALITY_PASS_MIN_SCORE", 1.5)
+    res = engine.evaluate({"id": "eqp_ch", "legend": EQP_CH},
+                          ["G1", "G2", "G3"], ["C1", "C2", "C3"])
+    failing = [c for c in res["candidates"] if not c["passes"]]
+    assert failing, "미통과 후보가 없으면 이 테스트는 아무것도 지키지 않는다"
+    by_key = {c["key"]: c for c in failing}
+    assert by_key["ETCH9_B"]["claim_id"] == "eqp_ch:chamber:Etch:ETCH9_B"

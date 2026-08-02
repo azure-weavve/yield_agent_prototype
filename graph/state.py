@@ -22,7 +22,8 @@ class AgentState(TypedDict, total=False):
     status_summary: str                             # 현황파악 요약 (리포트 재료)
     loop_count: int                                 # 순환 횟수 (가드레일)
     finalize_accepted: bool                         # 게이트 승인 여부
-    finalize_status: str    # confirmed | inconclusive | no_anomaly | unknown_target | isolated | control_insufficient | eds_lookup_failed
-    final_hypothesis: str                           # 승인된 원인 가설
+    finalize_status: str    # confirmed | no_signal | inconclusive | no_anomaly | unknown_target | isolated | control_insufficient | eds_lookup_failed
+    final_hypothesis: str                           # 승인된 원인 가설 (LLM 서술)
     final_confidence: float                         # 승인 시 확신도
+    final_claim: dict                               # 승인된 claim (게이트가 확인한 근거 수치)
     report: str                                     # 최종 리포트

@@ -33,11 +33,13 @@ class LLMClient(ABC):
         hypothesis: str | None,
         confidence: float | None,
         finalize_status: str | None = None,
+        claim: dict | None = None,
     ) -> str:
         """감사 기록을 근거로 원인 리포트 생성.
 
         finalize_status 가 "inconclusive"(루프 한계 도달)면 결론을 확정 톤이 아니라
         "미확정 + 유력 가설(후보)" 톤으로 서술해야 한다.
+        claim 이 있으면 게이트가 확인한 근거 수치다 - 그대로 인용하고 바꾸지 않는다.
         """
         ...
 
@@ -45,9 +47,12 @@ class LLMClient(ABC):
 class ScriptedMockLLMClient(LLMClient):
     """사내망 밖 데모용. 그룹 대조 시나리오를 따라가는 결정론적 스크립트.
 
-    finalize(0.6, 게이트가 반려) → hyp_eqp_ch_commonality(1단: 어느 챔버)
-    → compare_sensor_distribution(2단: 왜) → finalize(0.9, 승인) 순서로 진행하며,
-    각 단계 인자는 seed 메시지의 GROUPS_JSON 과 직전 ToolMessage(json) 를 파싱해 이어받는다.
+    finalize(claim_id="", confidence=0.6, 게이트가 반려) → hyp_eqp_ch_commonality(1단: 어느 챔버)
+    → (EQP_CH 에 통과 후보가 없으면 hyp_ppid_commonality 로 폴백, 2차 legend)
+    → compare_sensor_distribution(2단: 왜) → finalize(claim_id=<통과 후보>, confidence=0.9, 승인)
+    순서로 진행하며, 각 단계 인자는 seed 메시지의 GROUPS_JSON 과 직전 ToolMessage(json) 를
+    파싱해 이어받는다. 등록 가설(EQP_CH·PPID)을 다 돌렸는데도 분리되는 후보가 없으면
+    claim_id 를 비운 채 confidence=0.2 로 물러선다(게이트가 no_signal 로 판정).
 
     라벨(defect_type)을 쓰지 않는다 — 실데이터에 없기 때문이다.
     """
@@ -64,7 +69,8 @@ class ScriptedMockLLMClient(LLMClient):
         if "finalize" not in done:
             return self._call(
                 "finalize",
-                {"hypothesis": f"불량 그룹 {len(target)}장이 한 사건으로 묶였다 — "
+                {"claim_id": "",
+                 "hypothesis": f"불량 그룹 {len(target)}장이 한 사건으로 묶였다 - "
                                f"공통 원인 존재 추정",
                  "confidence": 0.6},
                 "그룹은 묶였지만 공정 근거가 아직 없다. 이 정도로 종료를 제안해 본다.")
@@ -77,15 +83,26 @@ class ScriptedMockLLMClient(LLMClient):
         res = self._result(tool_msgs, "hyp_eqp_ch_commonality")
         passing = [c for c in res.get("candidates", []) if c["passes"]]
         if not passing:
-            # 분리되는 후보가 없다 — **원인 없음이 아니라 lot 내부 대조로는 안 보인다**는 뜻.
-            # 억지로 후보를 집으면 허위 확정이므로 낮은 확신도로 물러선다(게이트가 반려하고,
-            # 루프 한계에 닿아 '미확정' 리포트로 끝난다).
+            # EQP_CH 로 안 갈렸다. YAML 이 2차 legend 로 선언한 PPID 를 먼저 써 본다 -
+            # 첫 no_signal 로 물러서면 등록된 가설 하나를 안 써보고 포기하는 셈이다.
+            if "hyp_ppid_commonality" not in done:
+                return self._call(
+                    "hyp_ppid_commonality", {"group_ids": target, "control_ids": control},
+                    "EQP_CH 로는 두 그룹이 안 갈렸다. 2차 legend(PPID)로 대조한다.")
+            res = self._result(tool_msgs, "hyp_ppid_commonality")
+            passing = [c for c in res.get("candidates", []) if c["passes"]]
+
+        if not passing:
+            # 등록 가설을 다 돌렸는데 분리되는 후보가 없다 - **원인 없음이 아니라 lot
+            # 내부 대조로는 안 보인다**는 뜻. 억지로 후보를 집으면 허위 확정이므로
+            # 지목 없이 물러선다(게이트가 no_signal 로 판정한다).
             return self._call(
                 "finalize",
-                {"hypothesis": "lot 내부 대조로는 타깃만 거친 설비/챔버가 없다 — "
+                {"claim_id": "",
+                 "hypothesis": "lot 내부 대조로는 타깃만 거친 설비/챔버/PPID 가 없다 - "
                                "원인이 root_lot 전체에 걸렸을 수 있어 lot 밖 대조군이 필요하다",
                  "confidence": 0.2},
-                "대조 결과에 분리되는 후보가 없다. 확정할 근거가 없으므로 물러선다.")
+                "등록 가설을 다 돌렸으나 분리되는 후보가 없다. 확정할 근거가 없으므로 물러선다.")
         top = passing[0]
 
         if "compare_sensor_distribution" not in done:
@@ -105,19 +122,22 @@ class ScriptedMockLLMClient(LLMClient):
             # 내면 없는 근거를 있다고 말하는 꼴이라, 이 Stage 가 없앤 조용한 오확증이 된다.
             return self._call(
                 "finalize",
-                {"hypothesis": hyp + " — 다만 2단 센서 근거는 확보하지 못했다",
+                {"claim_id": top["claim_id"],
+                 "hypothesis": hyp + " - 다만 2단 센서 근거는 확보하지 못했다",
                  "confidence": 0.5},
                 f"1단은 갈렸지만 2단이 근거를 못 냈다(status={sensor.get('status')}). "
                 f"'왜' 없이 확정하지 않는다.")
         c = sensor["candidates"][0]
-        hyp += f" — {c['sensor_name']} 효과크기 {c['effect_size']}"
+        hyp += f" - {c['sensor_name']} 효과크기 {c['effect_size']}"
         return self._call(
-            "finalize", {"hypothesis": hyp, "confidence": 0.9},
+            "finalize",
+            {"claim_id": top["claim_id"], "hypothesis": hyp, "confidence": 0.9},
             "챔버 편중에 센서 근거까지 붙었다. 근거 충분.")
 
     # -------------------------------------------------- report
     def generate_report(self, target_wafers, target_source, target_group, status_summary,
-                        findings, hypothesis, confidence, finalize_status=None) -> str:
+                        findings, hypothesis, confidence, finalize_status=None,
+                        claim=None) -> str:
         lines = [
             f"[분석 대상 입력] ({target_source}) {', '.join(target_wafers) or '없음'}",
             f"[불량 그룹] {', '.join(target_group) or '없음'}",
@@ -133,6 +153,10 @@ class ScriptedMockLLMClient(LLMClient):
                 lines.append(f"     - 게이트: {f['result']}")
         if finalize_status == "inconclusive":
             conclusion = f"미확정 (루프 한계 도달) — 유력 가설: {hypothesis or '없음'}"
+        elif finalize_status == "no_signal":
+            conclusion = ("신호 없음 - lot 내부 대조로는 타깃만 거친 설비/챔버/PPID 가 없다. "
+                          "원인 없음이 아니라 원인이 root_lot 전체에 걸렸을 수 있다는 뜻이며, "
+                          "lot 밖 대조군이 필요하다.")
         elif finalize_status == "no_anomaly":
             conclusion = "이상 없음 — 수율 임계 미만 lot 이 없다."
         elif finalize_status == "unknown_target":
@@ -151,6 +175,8 @@ class ScriptedMockLLMClient(LLMClient):
             conclusion = hypothesis or "원인 미확정"
         conf = f" (확신도 {confidence})" if confidence is not None else ""
         lines += ["", f"[결론] {conclusion}{conf}"]
+        # [근거] 줄은 여기서 붙이지 않는다 - report_node 가 코드로 붙인다(운영 클라이언트도
+        # 동일하게 보장하려고 두 클라이언트 밖으로 뺐다). 여기서 또 붙이면 줄이 두 번 나온다.
         return "\n".join(lines)
 
     # -------------------------------------------------- 내부
@@ -200,13 +226,17 @@ class OpenAILLMClient(LLMClient):
         return self.analyzer.invoke(messages)
 
     def generate_report(self, target_wafers, target_source, target_group, status_summary,
-                        findings, hypothesis, confidence, finalize_status=None) -> str:
+                        findings, hypothesis, confidence, finalize_status=None,
+                        claim=None) -> str:
         sys = (
             "현장 반도체 엔지니어에게 한국어 높임말로 원인 분석 리포트를 쓴다. "
             "분석 과정(findings)의 수치는 절대 임의로 바꾸지 말고 그대로 인용하라. "
             "구성: 분석 대상/현황 → 분석 과정 요약 → 결론(원인 가설과 근거). "
             "판정이 inconclusive 면 결론을 확정하지 말고 '미확정(루프 한계 도달)'과 "
             "유력 후보·추가 조사 필요 항목으로 서술하라. "
+            "판정이 no_signal 이면 '신호 없음'으로 서술하라 - 원인 없음이 아니라 "
+            "lot 내부 대조로는 보이지 않는다는 뜻이며 lot 밖 대조군이 필요하다는 "
+            "후속 조치를 명시하고, 확정 결론을 쓰지 마라. "
             "판정이 no_anomaly 면 '이상 없음'으로 서술하라. "
             "판정이 isolated/control_insufficient/unknown_target/eds_lookup_failed 이면 "
             "'분석 미수행'과 그 사유를 명시하고 확정 결론을 쓰지 마라."
@@ -218,6 +248,9 @@ class OpenAILLMClient(LLMClient):
             f"결론 가설: {hypothesis or '미확정'} / 확신도: {confidence} / "
             f"판정: {finalize_status or '미상'}"
         )
+        if claim:
+            user += (f"\n게이트가 확인한 근거(수치를 그대로 인용하라): "
+                     f"{json.dumps(claim, ensure_ascii=False)}")
         resp = self.llm.invoke([SystemMessage(content=sys), HumanMessage(content=user)])
         return resp.content.strip()
 

@@ -8,7 +8,7 @@
                       └─────────────▶ (고정)
 
 골격(status→…→report)은 고정 엣지, analyze ⇄ tools 만 LLM 자율 순환.
-종료는 tools 노드의 finalize 게이트(확신도)와 _after_tools 의 MAX_LOOPS 가드레일이 통제한다.
+종료는 tools 노드의 finalize 게이트(claim_id 조회 + 근거 판정)와 _after_tools 의 MAX_LOOPS 가드레일이 통제한다.
 """
 
 from langgraph.graph import END, StateGraph

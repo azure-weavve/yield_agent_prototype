@@ -4,8 +4,8 @@ LLM 이 읽는 것은 함수의 이름·docstring·인자 스키마다 — 여�
 곧 LLM 의 tool 선택 판단 재료이므로 '언제 쓰는지'를 명확히 적는다.
 
 finalize 는 실행되는 tool 이 아니라 "분석 종료 제안" 신호다.
-graph/nodes.py 의 tools 노드(게이트)가 confidence 를 검사해 승인/반려하므로
-TOOLS_BY_NAME 에는 넣지 않는다.
+graph/nodes.py 의 tools 노드(게이트)가 claim_id 로 EvidenceBundle 을 조회해
+승인/반려하므로(confidence 는 그 위에 얹는 보조 조건이다) TOOLS_BY_NAME 에는 넣지 않는다.
 """
 
 from langchain_core.tools import tool
@@ -43,10 +43,14 @@ def compare_sensor_distribution(step_seq: str, group_ids: list[str],
 
 
 @tool
-def finalize(hypothesis: str, confidence: float) -> str:
-    """원인을 특정 공정/장비까지 좁혔고 근거가 충분하다고 판단될 때만 호출해
-    분석 종료를 제안한다. hypothesis=원인 가설(공정·장비·파라미터 명시),
-    confidence=0~1 확신도. 확신도가 낮으면 반려되고 추가 분석을 지시받는다."""
+def finalize(claim_id: str = "", hypothesis: str = "", confidence: float = 0.0) -> str:
+    """원인을 특정 후보까지 좁혔고 근거가 충분하다고 판단될 때만 호출해 분석 종료를 제안한다.
+
+    claim_id: 가설 도구(hyp_*) 결과의 후보에 실려 온 claim_id 를 **그대로** 옮긴다.
+      이것이 승인 판정의 유일한 근거다. 지어내면 반려된다. 지목할 근거가 없어
+      물러설 때는 빈 문자열로 둔다.
+    hypothesis: 현장 엔지니어가 읽을 원인 서술. 판정에는 쓰이지 않는다.
+    confidence: 0~1 확신도. 확신도만 높고 claim_id 가 없으면 반려된다."""
     return "finalize 는 게이트가 처리한다"  # 직접 실행되지 않음
 
 

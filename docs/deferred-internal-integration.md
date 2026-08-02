@@ -19,9 +19,11 @@ git log·코드로 먼저 확인한다 (1·2·3번은 이미 구현 완료 — �
 ## 3. ~~게이트에 결정론적 증거 조건 추가~~ (2026-07-13 구현 완료)
 
 - 구현: `_finalize_gate` 가 findings 에서 판별 통과 후보의 토큰을 모아, 가설이 그것을
-  포함해야 승인. (2026-07-13 당시에는 `compare_process_logs` 의 suspect_equipment 를 봤고,
-  Stage 0 에서 레지스트리 결과의 `candidates` 로, Stage 5 에서 그 도구 자체가 삭제됐다 —
-  현재 구현은 `graph/nodes.py` 의 `_collect_evidence`.)
+  포함해야 승인 — 이었다. (2026-07-13 당시에는 `compare_process_logs` 의 suspect_equipment 를
+  봤고, Stage 0 에서 레지스트리 결과의 `candidates` 로, Stage 5 에서 그 도구 자체가 삭제됐다.
+  이 substring 매칭은 2026-08-01 "게이트 강화(EvidenceBundle)" 에서 없어졌다 — 현재는
+  LLM 이 지목한 `claim_id` 로 `EvidenceBundle` 을 조회해 판정하고, 그 근거 투영(findings →
+  Claim 사전)은 `graph/evidence.py` 의 `build_bundle` 이 한다.)
   MAX_LOOPS 강제 종료는 `finalize_status="inconclusive"` 로 구분 기록되고
   리포트 결론도 "미확정(루프 한계 도달)" 톤으로 분기. 테스트: `tests/test_graph_nodes.py`
 
