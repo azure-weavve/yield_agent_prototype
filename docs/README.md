@@ -17,7 +17,8 @@
 |---|---|
 | [`stages.md`](stages.md) | **Stage 순서의 단일 출처.** "다음에 뭐 하지" 는 여기부터. Stage 0~5 완료, 5.5(실데이터)는 사내 리소스 대기 |
 | [`../README.md`](../README.md) | 시스템 구조·실행법·더미 설계의 정본 |
-| [`사내-데이터-변환시-할일.md`](사내-데이터-변환시-할일.md) | 사내 실데이터 전환 체크리스트. ETL 돌릴 때 손에 들 것 |
+| [`사내-데이터-변환시-할일.md`](사내-데이터-변환시-할일.md) | 사내 실데이터 전환 체크리스트. **무엇을 바꿔야 하는가** |
+| [`사내-투입-점검표.md`](사내-투입-점검표.md) | 사내망에서 처음 돌릴 때의 **확인 절차와 판독법.** 적재 검증 → tool 단위 → E2E 순. 4장(조용히 틀리는 것들)이 핵심 |
 | [`internal-data-integration.md`](internal-data-integration.md) | ETL 적재 규칙·ID 체계·조인 키 합성. §2·§3-1 에 Stage 5 갱신 블록 있음 |
 | [`deferred-internal-integration.md`](deferred-internal-integration.md) | 사내 연동(`LLM_MODE=openai`/`EDS_MODE=http`) 전에는 실행 경로가 없어 미룬 항목. **착수 시 작업 목록**. `codex.md` 항목들의 처리 상태도 여기서 추적 |
 | [`2026-07-24-domain-corrections.md`](2026-07-24-domain-corrections.md) | 도메인 지식으로 **뒤집힌** 설계 결정들. 되돌리지 않으려면 읽어야 함 |
