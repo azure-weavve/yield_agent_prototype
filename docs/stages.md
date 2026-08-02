@@ -207,8 +207,9 @@ Stage 축은 **"실데이터에서 돌게 만든다"** 이고, `evidence_based_a
 **Stage 5 를 다 끝내도 결론 정확도를 측정할 수단은 없습니다.** Stage A Task 4 의 적대적
 케이스가 Phase 축으로 넘어가는 첫 다리입니다.
 
-Phase 축 소관(여기서 안 다룸): EvidenceBundle 게이트 강화(게이트가 여전히 문자열 매칭),
-시간축(장비 이벤트·PM·recipe 이력), 사람 검토 폐루프, 다인성(독립 원인 2개가 타깃을 절반씩 설명).
+Phase 축 소관(여기서 안 다룸): ~~EvidenceBundle 게이트 강화~~ (2026-08-01 완료 —
+`docs/superpowers/specs/2026-08-01-evidence-bundle-gate-design.md`), 시간축(장비 이벤트·PM·recipe 이력),
+사람 검토 폐루프, 다인성(독립 원인 2개가 타깃을 절반씩 설명).
 
 ---
 

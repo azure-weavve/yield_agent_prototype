@@ -138,7 +138,13 @@ status ──(대상 있음)──▶ analyze ──(tool call)──▶ tools �
 | `isolated` | 형제가 없다 (컷오프 미만) | 고립 패턴 — 자동 분석 범위 밖, 수동 판단 |
 | `control_insufficient` | 같은 root_lot 의 비타깃 wafer 가 `CONTROL_MIN_SIZE` 미만 | 대조군을 만들 수 없음 — 대조 없이 결론 내지 않습니다 |
 
-나머지 둘(`confirmed`·`inconclusive`)은 루프를 돈 뒤의 종료 사유입니다.
+루프를 돈 뒤의 종료 사유는 셋입니다.
+
+| `finalize_status` | 언제 | 사람이 할 일 |
+|---|---|---|
+| `confirmed` | 게이트가 claim_id 를 조회해 근거를 확인했다 (통과 후보 + 그 도구 안 최고 점수 + 확신도 충족) | 리포트의 `[근거]` 줄을 보고 현장 확인 |
+| `no_signal` | 등록 가설을 전부 대조했으나 타깃만 거친 후보가 없다 | 원인 없음이 아니라 lot 내부 대조의 한계 — 대조군을 lot 밖으로 넓혀야 합니다 |
+| `inconclusive` | 루프 한계까지 근거를 좁히지 못했다 | 분석 기록을 보고 사람이 이어받습니다 |
 
 ## 디렉토리 구조
 
