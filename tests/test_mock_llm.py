@@ -152,16 +152,25 @@ def test_scripted_survives_tool_error_string():
                                 "(KeyError: 'legend'). 인자를 확인하고 다시 호출하라.",
                                 ensure_ascii=False))]
 
-    ai = llm.analyze_step(msgs)                      # 4) 그래도 죽지 않고 물러선다
+    ai = llm.analyze_step(msgs)                      # 4) 남은 등록 가설도 오류를 낸다
+    assert ai.tool_calls[0]["name"] == "hyp_step_passage_commonality"
+    msgs += [ai, _tm("hyp_step_passage_commonality",
+                     json.dumps("오류: hyp_step_passage_commonality 실행 실패 "
+                                "(KeyError: 'legend'). 인자를 확인하고 다시 호출하라.",
+                                ensure_ascii=False))]
+
+    ai = llm.analyze_step(msgs)                      # 5) 그래도 죽지 않고 물러선다
     assert ai.tool_calls[0]["name"] == "finalize"
     assert ai.tool_calls[0]["args"]["confidence"] == 0.2   # '후보 없음' 후퇴 분기
     assert ai.content
 
 
-def test_scripted_falls_back_to_ppid_when_eqp_ch_is_silent():
-    """EQP_CH 로 안 갈리면 2차 legend(PPID)를 돌린다 — YAML 이 선언한 폴백 순서다.
+def test_scripted_walks_every_registered_hypothesis_before_backing_off():
+    """EQP_CH 로 안 갈리면 남은 등록 가설을 순서대로 다 돌린 뒤에야 물러선다.
 
-    첫 no_signal 로 물러서면 등록된 가설 하나를 안 써보고 포기하는 셈이다.
+    첫 no_signal 로 물러서면 등록된 가설을 안 써보고 포기하는 셈이고, 게이트도
+    no_signal 을 선언하지 않는다(등록 가설을 전부 돌린 뒤에만 판정한다). 그러면
+    데모가 루프 한계까지 가서 사유가 틀린 inconclusive 로 끝난다.
     """
     llm = ScriptedMockLLMClient()
     msgs = [HUMAN]
@@ -178,10 +187,23 @@ def test_scripted_falls_back_to_ppid_when_eqp_ch_is_silent():
     msgs += [ai, _tm("hyp_ppid_commonality", {"hypothesis_id": "ppid_commonality",
                                               "status": "no_signal", "candidates": []})]
 
-    ai = llm.analyze_step(msgs)                                        # 4) 물러선다
+    ai = llm.analyze_step(msgs)                                        # 4) 폴백 스텝 통과
+    assert ai.tool_calls[0]["name"] == "hyp_step_passage_commonality"
+    msgs += [ai, _tm("hyp_step_passage_commonality",
+                     {"hypothesis_id": "step_passage_commonality",
+                      "status": "no_signal", "candidates": []})]
+
+    ai = llm.analyze_step(msgs)                                        # 5) 물러선다
     assert ai.tool_calls[0]["name"] == "finalize"
     assert ai.tool_calls[0]["args"]["confidence"] == 0.2
     assert ai.tool_calls[0]["args"]["claim_id"] == ""    # 지목할 근거가 없다
+
+    # 각본이 등록 가설을 하나도 빠뜨리지 않았는지 레지스트리와 대조한다 —
+    # 하드코딩된 이름 목록만 보면 YAML 에 가설이 늘어도 이 테스트는 초록이다
+    from domain import registry
+    called = {c["name"] for m in msgs if getattr(m, "tool_calls", None)
+              for c in m.tool_calls}
+    assert {f"hyp_{s['id']}" for s in registry.load_hypotheses()} <= called
 
 
 def test_scripted_uses_ppid_claim_when_eqp_ch_is_silent():

@@ -102,7 +102,7 @@ def test_every_wafer_has_the_full_step_path_except_the_planted_gap():
     이력이 조용히 빠지면 commonality 의 분모가 줄어 점수가 부풀지만 다른 테스트는
     초록이다 — 실데이터 쪽은 load_internal.validate() 검사 #4 가 같은 것을 막는다.
     """
-    from data.generate_dummy import ADV_MISSING_WAFER, SH_STEPS
+    from data.generate_dummy import ADV_MISSING_WAFER, SH_STEPS, IRREG_TARGETS
 
     with _conn() as conn:
         counts = {r["wafer_id"]: r["n"] for r in conn.execute(
@@ -110,7 +110,9 @@ def test_every_wafer_has_the_full_step_path_except_the_planted_gap():
         all_wafers = {r["wafer_id"] for r in conn.execute("SELECT wafer_id FROM yield")}
 
     assert all_wafers - set(counts) == {ADV_MISSING_WAFER}   # 결측은 심어둔 1장뿐
-    assert set(counts.values()) == {len(SH_STEPS)}           # 나머지는 전 스텝 보유
+    # 비정규 스텝 케이스의 타깃만 정상 경로 + 1 (심어둔 초과분). 나머지는 정확히 정상 경로.
+    # wafer 별로 고정한다 — 값의 집합만 보면 초과분이 어느 wafer 에 붙든 통과한다.
+    assert counts == {w: len(SH_STEPS) + (1 if w in IRREG_TARGETS else 0) for w in counts}
 
 
 def test_step_seq_is_a_sequence_code_and_area_holds_the_process_name():
@@ -119,13 +121,20 @@ def test_step_seq_is_a_sequence_code_and_area_holds_the_process_name():
     더미가 `"Etch"` 같은 이름을 그 컬럼에 담던 시절로 되돌아가면 여기서 잡힌다.
     이름이 담긴 더미로는 리포트가 실데이터와 다르게 읽혀, 데모는 초록인데 사내에서만
     읽히지 않는 상태가 된다. 공정명은 `area` 에 있고 스텝 하나에 하나씩 대응한다.
+
+    비정규 스텝은 뒤에 `EC` 가 붙는다("CC002000EC"). 정규식을 그만큼 넓혔으므로,
+    **그 케이스가 실제로 더미에 있다는 것도 함께 고정한다** — 안 그러면 넓힌 정규식이
+    진짜 형식 위반을 통과시켜도 아무도 모른다.
     """
+    from data.generate_dummy import IRREG_STEP
+
     with _conn() as conn:
         rows = conn.execute(
             "SELECT DISTINCT step_seq, area FROM step_history").fetchall()
 
     assert rows
-    assert all(re.fullmatch(r"[A-Z]{2}\d{6}", r["step_seq"]) for r in rows)
+    assert all(re.fullmatch(r"[A-Z]{2}\d{6}(EC)?", r["step_seq"]) for r in rows)
+    assert IRREG_STEP in {r["step_seq"] for r in rows}
     assert all(r["area"] for r in rows)                      # 공정명 결측 없음
     assert len({r["step_seq"] for r in rows}) == len(rows)   # step_seq 1개 = area 1개
 

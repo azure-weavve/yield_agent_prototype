@@ -77,7 +77,9 @@ EVIDENCE_FINDING_NEW = {
     "thought": "챔버 편중",
 }
 
-# 등록 가설이 둘이므로, no_signal 종료를 시험하려면 PPID 도 돌아야 한다
+# no_signal 종료는 **등록 가설을 전부 돌린 뒤에만** 판정된다. 그래서 이 시험에는
+# hypotheses.yaml 의 가설 수만큼 침묵 finding 이 필요하다 — 가설을 추가하면 여기도
+# 늘려야 하고, 안 늘리면 게이트가 "아직 안 돌린 가설이 있다" 로 반려한다.
 PPID_SILENT = {
     "loop": 3, "tool": "hyp_ppid_commonality", "args": {},
     "result": {"hypothesis_id": "ppid_commonality", "status": "no_signal",
@@ -90,6 +92,13 @@ EQP_CH_SILENT = {
                "candidates": []},
     "thought": "1차 legend",
 }
+STEP_PASSAGE_SILENT = {
+    "loop": 4, "tool": "hyp_step_passage_commonality", "args": {},
+    "result": {"hypothesis_id": "step_passage_commonality", "status": "no_signal",
+               "candidates": []},
+    "thought": "스텝 통과 여부",
+}
+ALL_SILENT = [EQP_CH_SILENT, PPID_SILENT, STEP_PASSAGE_SILENT]
 
 
 def test_gate_rejects_text_only_claim():
@@ -233,7 +242,7 @@ def test_gate_declares_no_signal_after_all_hypotheses_are_silent():
     """
     ai = _ai_finalize(0.2, hypothesis="lot 내부 대조로는 안 보인다", claim_id="")
     out = nodes.tools_node({"messages": [ai], "loop_count": 2,
-                            "findings": [EQP_CH_SILENT, PPID_SILENT]})
+                            "findings": ALL_SILENT})
     assert out["finalize_accepted"] is True
     assert out["finalize_status"] == "no_signal"
     assert "신호 없음" in out["messages"][0].content
@@ -243,7 +252,7 @@ def test_gate_no_signal_beats_max_loops():
     """루프 한계에 닿아도 사유가 분명하면 no_signal 로 보고한다 (inconclusive 아님)."""
     ai = _ai_finalize(0.2, claim_id="")
     out = nodes.tools_node({"messages": [ai], "loop_count": 6,
-                            "findings": [EQP_CH_SILENT, PPID_SILENT]})
+                            "findings": ALL_SILENT})
     assert out["finalize_status"] == "no_signal"
 
 

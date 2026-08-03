@@ -137,6 +137,19 @@ SPLIT_TARGETS = [f"{SPLIT_ROOT_LOT}_{i:02d}" for i in (1, 2, 3, 4)]
 SPLIT_CONTROLS = [f"{SPLIT_ROOT_LOT}_{i:02d}" for i in (5, 6, 7, 8)]
 SPLIT_WAFERS = set(SPLIT_TARGETS + SPLIT_CONTROLS)
 
+# ---------------------------------------------------------------- 비정규 스텝 케이스
+# 사내 step_seq 는 비정규 스텝이면 뒤에 `EC` 가 붙는다("CC002000EC"). 지나는 lot 과
+# 안 지나는 lot 이 갈리고, 거기서 문제가 생겨 조치한 이력이 있어 **통과 여부 자체가
+# 분석 대상**이다. 그런데 설비/PPID 축은 "그 스텝 안에서 무엇을 썼는가" 만 보므로
+# 이 신호를 못 잡는다 — 타깃이 비정규 스텝을 **제각각 다른 설비·PPID 로** 거치면
+# 후보가 wafer 수만큼 쪼개져 전부 판별선 아래로 떨어진다.
+# 그래서 이 케이스는 step_passage 축이 **아니면 못 잡는다**는 것을 고정한다.
+IRREG_ROOT_LOT = "E2419"
+IRREG_STEP = ETCH_SEQ + "EC"                                   # "CC002000EC"
+IRREG_TARGETS = [f"{IRREG_ROOT_LOT}_{i:02d}" for i in (1, 2, 3, 4)]
+IRREG_CONTROLS = [f"{IRREG_ROOT_LOT}_{i:02d}" for i in (5, 6, 7, 8)]
+IRREG_WAFERS = set(IRREG_TARGETS + IRREG_CONTROLS)
+
 # ---------------------------------------------------------------- 센서 (2단 깔때기)
 # 트레이스가 아니라 **wafer 1장의 구간 통계값**이다. 구간·통계 종류는 센서 이름에
 # 들어 있다(rf_power_steady_avg) — 사내 FDC 추출물 형태.
@@ -299,9 +312,23 @@ def generate():
             vectors.append(_unit(rng.standard_normal(DIM)))
             wafer_ids.append(wid)
 
+    # ---------------- 비정규 스텝 lot — 기존 난수열 뒤에 붙인다
+    for wid in IRREG_TARGETS + IRREG_CONTROLS:
+        rows.append({
+            "wafer_id": wid,
+            "lot_id": f"{IRREG_ROOT_LOT}.1",
+            "yield": ADV_TARGET_YIELD if wid in IRREG_TARGETS else ADV_CONTROL_YIELD,
+            "_truth_defect": "none",       # 라벨 없음 — 실데이터와 같은 조건
+            "_truth_step": IRREG_STEP,     # 심어둔 정답: 비정규 스텝 통과
+            "date": RECENT_DATE,
+            "root_lot_id": IRREG_ROOT_LOT,
+        })
+        vectors.append(_unit(rng.standard_normal(DIM)))
+        wafer_ids.append(wid)
+
     _augment_yield(rows)
     steps = (_make_step_history(rows) + _make_adversarial_steps()
-             + _make_split_lot_steps())
+             + _make_split_lot_steps() + _make_irregular_step_steps())
     sensors = _make_sensor_log(rows)
     _write_sqlite(rows, steps, sensors)
     _write_index(vectors, wafer_ids)
@@ -333,7 +360,7 @@ def _make_step_history(rows):
     steps = []
     for r in rows:
         wid = r["wafer_id"]
-        if wid in ADV_WAFERS or wid in SPLIT_WAFERS:   # 전용 생성기가 따로 만든다
+        if wid in ADV_WAFERS or wid in SPLIT_WAFERS or wid in IRREG_WAFERS:  # 전용 생성기
             continue
         for seq, area in SH_STEPS:
             eqp, ch, ppid = f"{area.upper()[:4]}1", "A", "PPID_Z"   # 기본: 공통 경로
@@ -413,6 +440,31 @@ def _make_split_lot_steps():
                 "eqp_id": eqp, "ch_id": ch, "ppid": ppid,
                 "timestamp": RECENT_DATE + " 10:00:00",
             })
+    return steps
+
+
+def _make_irregular_step_steps():
+    """비정규 스텝 lot 의 wafer×스텝 이력 (rng 미사용).
+
+    정상 4스텝은 타깃·대조군이 **완전히 같게** 돈다(그래서 정상 스텝은 분리 점수 0).
+    타깃 4장만 추가로 IRREG_STEP 을 거치는데, **설비도 PPID 도 wafer 마다 다르다** —
+    설비/PPID 축에서는 후보가 1/4 씩 쪼개져 판별선(0.5)을 못 넘고, 통과 여부 축에서만
+    1.0 으로 갈린다. 이 대비가 이 케이스의 전부다.
+    """
+    steps = []
+    for wid in IRREG_TARGETS + IRREG_CONTROLS:
+        for seq, area in SH_STEPS:
+            steps.append({
+                "wafer_id": wid, "step_seq": seq, "area": area,
+                "eqp_id": f"{area.upper()[:4]}1", "ch_id": "A", "ppid": "PPID_Z",
+                "timestamp": RECENT_DATE + " 10:00:00",
+            })
+    for i, wid in enumerate(IRREG_TARGETS, start=1):
+        steps.append({
+            "wafer_id": wid, "step_seq": IRREG_STEP, "area": "Etch",
+            "eqp_id": f"ETCH{i}", "ch_id": "A", "ppid": f"PPID_E{i}",
+            "timestamp": RECENT_DATE + " 11:00:00",
+        })
     return steps
 
 
