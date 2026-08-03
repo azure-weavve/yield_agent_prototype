@@ -20,6 +20,8 @@
   ⚠️ `step_seq` 는 **문자 2자리(제품군) + 숫자 6자리(스텝 순서)** 다 ("CC001000").
       스텝의 **공정명이 아니다** — 공정명은 원천의 별개 컬럼 `area` 에 있고, 그 스텝이
       무슨 공정인지 확인할 때 그쪽을 본다. 분석은 step_seq 를 축으로 돈다.
+      뒤에 **`EC` 가 붙는 값이 있다**("AA110000EC"). **비정규 스텝** 표시이고 정상적으로
+      실려 오는 값이다. 원천 값을 그대로 싣는다 — 접미를 떼지 않는다.
 
   ⚠️ ppid 는 **그 wafer 가 그 스텝을 돌 때 쓴 PPID** — wafer×스텝 단위다.
       lot 단위나 recipe 마스터 단위로 넣으면 에러 없이 틀린 집계가 나온다.
@@ -187,7 +189,7 @@ CREATE TABLE yield (
 
 CREATE TABLE step_history (
     wafer_id     TEXT NOT NULL,      -- 합성 조인 키
-    step_seq     TEXT NOT NULL,      -- 제품군 2자리 + 스텝 순서 6자리 ("CC001000")
+    step_seq     TEXT NOT NULL,      -- 제품군 2자리 + 순서 6자리 (+ 비정규 스텝이면 "EC")
     area         TEXT,               -- 그 스텝의 공정명 (NULL 허용, 해석용)
     eqp_id       TEXT NOT NULL,
     ch_id        TEXT,               -- NULL 허용
@@ -280,7 +282,9 @@ def load(yield_records, step_records, db_path: Path,
 _WID = re.compile(r"^.+_\d{2}$")
 # 제품군 2자리 + 스텝 순서 6자리. 사내에 문자3+숫자5 체계도 있으나 이 팀은 안 쓴다 —
 # 그 체계를 쓰는 데이터를 받게 되면 이 정규식부터 넓힐 것.
-_STEP_SEQ = re.compile(r"^[A-Z]{2}\d{6}$")
+# 접미 `EC` 는 **비정규 스텝** 표시다("AA110000EC"). 정상적으로 실려 오는 값이므로
+# 형식 위반이 아니다. 접미가 붙은 값은 commonality 에서 **별개 스텝 키**가 된다.
+_STEP_SEQ = re.compile(r"^[A-Z]{2}\d{6}(EC)?$")
 
 
 def validate(conn: sqlite3.Connection, n_yield: int, n_steps: int) -> dict:
@@ -316,7 +320,8 @@ def validate(conn: sqlite3.Connection, n_yield: int, n_steps: int) -> dict:
                if not _STEP_SEQ.match(r["step_seq"])]
     if bad_seq:
         issues.append(f"step_seq 형식 위반 {len(bad_seq)}종 (예: {bad_seq[:3]}): "
-                      f"기대 형식은 제품군 2자리 + 순번 6자리('CC001000'). "
+                      f"기대 형식은 제품군 2자리 + 순번 6자리('CC001000') 이고 "
+                      f"비정규 스텝이면 뒤에 'EC' 가 붙는다('AA110000EC'). "
                       f"area 컬럼과 뒤바뀌지 않았는지 확인")
 
     # 3. step_history 고아 (이력엔 있으나 yield 에 없는 wafer) — 조인 키 불일치의 주 증상

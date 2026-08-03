@@ -106,6 +106,29 @@ def test_a_process_name_in_step_seq_is_flagged(tmp_path):
     assert not report["fatal"] and report["swapped"]
 
 
+def test_irregular_step_suffix_is_not_a_format_violation(tmp_path):
+    """비정규 스텝 표시 `EC` 접미는 정상 값이다 ("AA110000EC").
+
+    정규식을 `[A-Z]{2}\\d{6}$` 로 좁히면 실데이터의 비정규 스텝 전종이 경고에 실려
+    사람이 진짜 위반(area 와 뒤바뀜)을 그 안에서 못 찾는다. 접미를 **떼서** 실어도
+    안 된다 — 정규 스텝과 같은 키로 뭉쳐 commonality 분모가 조용히 달라진다.
+    """
+    st = ([dict(s, step_seq="AA110000EC") for s in STEPS] +
+          [dict(s, step_seq="AA110000") for s in STEPS])
+    report = li.load(YIELDS, st, tmp_path / "t.db", verbose=False)
+
+    assert not any("step_seq 형식 위반" in i for i in report["issues"])
+    assert _step_seqs(tmp_path / "t.db") == ["AA110000", "AA110000EC"]   # 원천 값 그대로
+
+
+def _step_seqs(db):
+    conn = sqlite3.connect(db)
+    try:
+        return sorted(r[0] for r in conn.execute("SELECT DISTINCT step_seq FROM step_history"))
+    finally:
+        conn.close()
+
+
 def test_padded_step_seq_does_not_split_one_step_into_two(tmp_path):
     """고정폭 원천의 앞뒤 공백이 같은 스텝을 두 군으로 쪼개면 안 된다.
 
