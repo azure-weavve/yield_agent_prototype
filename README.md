@@ -27,7 +27,7 @@ $ PYTHONUTF8=1 python main.py
 [분석 루프 — 감사 기록]
   1. finalize  args={'claim_id': '', 'hypothesis': '불량 그룹 7장이 한 사건으로 묶였다 - 공통 원인 존재 추정', 'confidence': 0.6}
      판단: 그룹은 묶였지만 공정 근거가 아직 없다. 이 정도로 종료를 제안해 본다.
-     게이트: 반려: 통과한 후보가 없다. 아직 실행하지 않은 가설 도구가 있다: hyp_eqp_ch_commonality, hyp_ppid_commonality. 먼저 호출하라.
+     게이트: 반려: 통과한 후보가 없다. 아직 실행하지 않은 가설 도구가 있다: hyp_eqp_ch_commonality, hyp_ppid_commonality, hyp_step_passage_commonality. 먼저 호출하라.
   2. hyp_eqp_ch_commonality  args={'group_ids': ['W2406_06', 'W2406_02', 'W2413_cen4', ...], 'control_ids': ['W2401_001', ...]}
      판단: 종료 제안이 반려됐다. 챔버 편중 가설로 두 그룹을 대조한다.
   3. compare_sensor_distribution  args={'step_seq': 'CC002000', 'group_ids': ['W2406_06', 'W2406_02', 'W2413_cen4', ...], 'control_ids': ['W2401_001', ...]}
@@ -106,6 +106,11 @@ status ──(대상 있음)──▶ analyze ──(tool call)──▶ tools �
 - **hyp_eqp_ch_commonality** (1차): 타깃 전원이 거쳤고 대조군은 안 거친 (공정 스텝, 설비/챔버)를
   찾습니다. 설비 롤업과 챔버 세부를 함께 냅니다 — 엔지니어가 가장 먼저 돌리는 주 분석입니다.
 - **hyp_ppid_commonality** (2차): 설비/챔버로 두 그룹이 안 갈릴 때 PPID 축으로 다시 봅니다.
+- **hyp_step_passage_commonality**: "그 스텝을 **거쳤는가**" 자체를 후보로 냅니다. 비정규 스텝
+  (`step_seq` 접미 `EC`)처럼 지나는 lot 과 안 지나는 lot 이 갈리는 축을 잡습니다. 위 두 가설은
+  "그 스텝 안에서 무엇을 썼는가" 만 보므로, 타깃이 같은 비정규 스텝을 제각각 다른 설비로
+  거치면 후보가 쪼개져 신호가 사라집니다. 전원이 거치는 정상 스텝은 분리 점수가 0 이라
+  자동으로 탈락합니다.
 - **compare_sensor_distribution** (2단): 1단이 지목한 스텝에서 두 그룹의 센서 통계값
   분포를 비교해 효과크기 top-K 를 냅니다. 1단이 "어느 챔버" 라면 2단은 "왜" 입니다.
   센서 값은 트레이스가 아니라 wafer 1장의 구간 통계값이며, 구간·통계 종류가 센서

@@ -44,6 +44,18 @@ class LLMClient(ABC):
         ...
 
 
+# EQP_CH 로 안 갈릴 때 순서대로 써 보는 나머지 등록 가설 (이름, 그 tool 을 고른 이유).
+# **hypotheses.yaml 에 가설을 추가하면 여기도 추가해야 한다** — 게이트는 등록 가설을
+# 전부 돌린 뒤에만 no_signal 을 선언하므로, 빠뜨리면 데모가 루프 한계까지 가서
+# inconclusive 로 끝난다(사유가 틀린 보고가 된다).
+_FALLBACK_HYPOTHESES = [
+    ("hyp_ppid_commonality",
+     "EQP_CH 로는 두 그룹이 안 갈렸다. 2차 legend(PPID)로 대조한다."),
+    ("hyp_step_passage_commonality",
+     "PPID 로도 안 갈렸다. 스텝 통과 여부(비정규 스텝 포함)로 대조한다."),
+]
+
+
 class ScriptedMockLLMClient(LLMClient):
     """사내망 밖 데모용. 그룹 대조 시나리오를 따라가는 결정론적 스크립트.
 
@@ -51,8 +63,9 @@ class ScriptedMockLLMClient(LLMClient):
     → (EQP_CH 에 통과 후보가 없으면 hyp_ppid_commonality 로 폴백, 2차 legend)
     → compare_sensor_distribution(2단: 왜) → finalize(claim_id=<통과 후보>, confidence=0.9, 승인)
     순서로 진행하며, 각 단계 인자는 seed 메시지의 GROUPS_JSON 과 직전 ToolMessage(json) 를
-    파싱해 이어받는다. 등록 가설(EQP_CH·PPID)을 다 돌렸는데도 분리되는 후보가 없으면
-    claim_id 를 비운 채 confidence=0.2 로 물러선다(게이트가 no_signal 로 판정).
+    파싱해 이어받는다. 등록 가설(EQP_CH → `_FALLBACK_HYPOTHESES` 순)을 다 돌렸는데도
+    분리되는 후보가 없으면 claim_id 를 비운 채 confidence=0.2 로 물러선다
+    (게이트가 no_signal 로 판정).
 
     라벨(defect_type)을 쓰지 않는다 — 실데이터에 없기 때문이다.
     """
@@ -82,14 +95,15 @@ class ScriptedMockLLMClient(LLMClient):
 
         res = self._result(tool_msgs, "hyp_eqp_ch_commonality")
         passing = [c for c in res.get("candidates", []) if c["passes"]]
-        if not passing:
-            # EQP_CH 로 안 갈렸다. YAML 이 2차 legend 로 선언한 PPID 를 먼저 써 본다 -
-            # 첫 no_signal 로 물러서면 등록된 가설 하나를 안 써보고 포기하는 셈이다.
-            if "hyp_ppid_commonality" not in done:
-                return self._call(
-                    "hyp_ppid_commonality", {"group_ids": target, "control_ids": control},
-                    "EQP_CH 로는 두 그룹이 안 갈렸다. 2차 legend(PPID)로 대조한다.")
-            res = self._result(tool_msgs, "hyp_ppid_commonality")
+        for name, why in _FALLBACK_HYPOTHESES:
+            # EQP_CH 로 안 갈렸다. 남은 등록 가설을 순서대로 써 본다 - 첫 no_signal 로
+            # 물러서면 안 써 본 가설을 남긴 채 포기하는 셈이고, 게이트도 no_signal 을
+            # 선언하지 않는다(등록 가설을 전부 돌린 뒤에만 판정한다).
+            if passing:
+                break
+            if name not in done:
+                return self._call(name, {"group_ids": target, "control_ids": control}, why)
+            res = self._result(tool_msgs, name)
             passing = [c for c in res.get("candidates", []) if c["passes"]]
 
         if not passing:
@@ -114,8 +128,13 @@ class ScriptedMockLLMClient(LLMClient):
 
         sensor = self._result(tool_msgs, "compare_sensor_distribution")
         val = top["value"][-1]
-        hyp = (f"{top['value'][0]} 공정 {val} 편중(분리 점수 {top.get('score')}, "
-               f"불량군 {top['target_pass']}장 전용)이 원인")
+        if top["level"] == "step_passage":
+            # 이 축은 키가 스텝 자체다 - "무엇을 썼는가" 가 아니라 "거쳤는가" 가 결론이다
+            hyp = (f"불량군만 {top['step_seq']} 스텝을 거쳤다(분리 점수 {top.get('score')}, "
+                   f"불량군 {top['target_pass']}장 전용)")
+        else:
+            hyp = (f"{top['value'][0]} 공정 {val} 편중(분리 점수 {top.get('score')}, "
+                   f"불량군 {top['target_pass']}장 전용)이 원인")
         if sensor.get("status") != "ok":
             # 2단이 갈리지 않았거나(no_signal) 아예 못 돌았다(fetch_failed/insufficient_sample).
             # 1단 근거는 그대로 남기되 확신도를 낮춰 물러선다 — 센서 결과를 안 보고 0.9 를

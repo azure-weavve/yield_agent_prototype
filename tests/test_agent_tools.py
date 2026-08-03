@@ -7,6 +7,7 @@ def test_tool_names():
     assert {t.name for t in at.ALL_TOOLS} == {
         "get_wafer", "search_similar", "compare_sensor_distribution",
         "hyp_eqp_ch_commonality", "hyp_ppid_commonality",
+        "hyp_step_passage_commonality",
         "finalize",
     }
     assert "finalize" not in at.TOOLS_BY_NAME  # finalize 는 게이트가 처리
