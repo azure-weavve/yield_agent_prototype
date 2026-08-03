@@ -8,14 +8,14 @@
 import sqlite3
 import statistics
 
-import config
+import ya_config
 from data.generate_dummy import (GROUP_WAFERS, CONTROL_WAFERS, SENSOR_COLLINEAR,
                                  SENSOR_DECOYS, SENSOR_MISSING_WAFER, SENSOR_REAL,
                                  SENSOR_STEP, SENSOR_VAR_ONLY)
 
 
 def _vals(sensor_name, wafer_ids):
-    conn = sqlite3.connect(config.DB_PATH)
+    conn = sqlite3.connect(ya_config.DB_PATH)
     try:
         ph = ",".join("?" * len(wafer_ids))
         rows = conn.execute(
@@ -28,7 +28,7 @@ def _vals(sensor_name, wafer_ids):
 
 
 def test_sensor_log_table_exists_with_expected_columns():
-    conn = sqlite3.connect(config.DB_PATH)
+    conn = sqlite3.connect(ya_config.DB_PATH)
     try:
         cols = {r[1] for r in conn.execute("PRAGMA table_info(sensor_log)")}
     finally:

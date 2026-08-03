@@ -3,7 +3,7 @@
 import sqlite3
 import pytest
 
-import config
+import ya_config
 from domain import engine
 
 EQP_CH = [{"level": "equipment", "columns": ["eqp_id"]},
@@ -37,7 +37,7 @@ def fx_db(tmp_path, monkeypatch):
         conn.execute("INSERT INTO step_history VALUES (?,?,?,?,?,?)",
                      (w, "Photo", "PHOTO1", "A", "PPID_Z", "t"))
     conn.commit(); conn.close()
-    monkeypatch.setattr(config, "DB_PATH", db)
+    monkeypatch.setattr(ya_config, "DB_PATH", db)
     return db
 
 
@@ -63,7 +63,7 @@ def test_evaluate_ppid_legend(fx_db):
 
 def test_evaluate_passes_false_below_threshold(fx_db, monkeypatch):
     # 임계를 1.0 초과로 올리면 score 1.0 후보도 passes=False
-    monkeypatch.setattr(config, "COMMONALITY_PASS_MIN_SCORE", 1.5)
+    monkeypatch.setattr(ya_config, "COMMONALITY_PASS_MIN_SCORE", 1.5)
     res = engine.evaluate({"id": "eqp_ch", "legend": EQP_CH}, ["G1", "G2", "G3"], ["C1", "C2", "C3"])
     assert all(not c["passes"] for c in res["candidates"])
 
@@ -126,7 +126,7 @@ def test_claim_id_is_issued_for_failing_candidates_too(fx_db, monkeypatch):
     fx_db 기본 시나리오는 후보가 전부 passes=True 라, 임계를 올려 미통과 후보를
     만들지 않으면 이 요구가 한 번도 검증되지 않는다.
     """
-    monkeypatch.setattr(config, "COMMONALITY_PASS_MIN_SCORE", 1.5)
+    monkeypatch.setattr(ya_config, "COMMONALITY_PASS_MIN_SCORE", 1.5)
     res = engine.evaluate({"id": "eqp_ch", "legend": EQP_CH},
                           ["G1", "G2", "G3"], ["C1", "C2", "C3"])
     failing = [c for c in res["candidates"] if not c["passes"]]

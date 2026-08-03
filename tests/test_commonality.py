@@ -7,7 +7,7 @@ step_history 는 ETL 선적재 대상이라 아직 더미 DB 에 없다.
 
 import sqlite3
 
-import config
+import ya_config
 from tools import commonality as cm
 
 
@@ -27,7 +27,7 @@ def _make_db(tmp_path, monkeypatch, yield_rows, history_rows):
     conn.executemany("INSERT INTO step_history VALUES (?,?,?,?,?)", history_rows)
     conn.commit()
     conn.close()
-    monkeypatch.setattr(config, "DB_PATH", db)
+    monkeypatch.setattr(ya_config, "DB_PATH", db)
 
 
 def _y(wid, root, lot_type="prod"):
@@ -287,7 +287,7 @@ def _make_db_ppid(tmp_path, monkeypatch, yield_rows, history_rows):
     conn.executemany("INSERT INTO step_history VALUES (?,?,?,?,?,?)", history_rows)
     conn.commit()
     conn.close()
-    monkeypatch.setattr(config, "DB_PATH", db)
+    monkeypatch.setattr(ya_config, "DB_PATH", db)
 
 
 def test_ppid_legend_finds_group_exclusive_ppid(tmp_path, monkeypatch):

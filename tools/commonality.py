@@ -30,12 +30,12 @@ score = 1.0 이면 타깃 전원이 거쳤고 대조군은 아무도 안 거친 
 import sqlite3
 from contextlib import contextmanager
  
-import config
+import ya_config
  
 # config 에 없으면 쓰는 기본값 (실데이터 보고 조정 — 지금 못 박지 않는다)
-MIN_TARGET = getattr(config, "COMMONALITY_MIN_TARGET", 2)
-TOP_K = getattr(config, "COMMONALITY_TOP_K", 20)
-MIN_SCORE = getattr(config, "COMMONALITY_MIN_SCORE", 0.0)
+MIN_TARGET = getattr(ya_config, "COMMONALITY_MIN_TARGET", 2)
+TOP_K = getattr(ya_config, "COMMONALITY_TOP_K", 20)
+MIN_SCORE = getattr(ya_config, "COMMONALITY_MIN_SCORE", 0.0)
 
 # 기본 legend — EQP_CH (legend 인자 없으면 이 동작). 레벨 순서 = 롤업(설비) → 세부(챔버).
 EQP_CH_LEGEND = [
@@ -46,7 +46,7 @@ EQP_CH_LEGEND = [
 
 @contextmanager
 def _conn():
-    conn = sqlite3.connect(config.DB_PATH)
+    conn = sqlite3.connect(ya_config.DB_PATH)
     conn.row_factory = sqlite3.Row
     try:
         yield conn

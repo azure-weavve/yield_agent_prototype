@@ -7,7 +7,7 @@
 import json
 from abc import ABC, abstractmethod
 
-import config
+import ya_config
 
 
 class EDSSearcher(ABC):
@@ -27,14 +27,14 @@ class LocalEDSSearcher(EDSSearcher):
     def __init__(self):
         import hnswlib  # 지연 import: http 모드에선 불필요
 
-        meta = json.loads((config.EMB_DIR / "labels.json").read_text(encoding="utf-8"))
+        meta = json.loads((ya_config.EMB_DIR / "labels.json").read_text(encoding="utf-8"))
         self.wafer_ids: list[str] = meta["wafer_ids"]
         self.dim: int = meta["dim"]
         self._id_of = {w: i for i, w in enumerate(self.wafer_ids)}
 
         self.index = hnswlib.Index(space="cosine", dim=self.dim)
         self.index.load_index(
-            str(config.EMB_DIR / "index.bin"), max_elements=len(self.wafer_ids)
+            str(ya_config.EMB_DIR / "index.bin"), max_elements=len(self.wafer_ids)
         )
         self.index.set_ef(50)
 
@@ -55,7 +55,7 @@ class LocalEDSSearcher(EDSSearcher):
             if cand == wafer_id:
                 continue
             sim = round(float(1 - dist), 3)
-            if sim < config.EDS_MIN_SIMILARITY:
+            if sim < ya_config.EDS_MIN_SIMILARITY:
                 continue
             out.append({"wafer_id": cand, "similarity": sim})
             if len(out) == k:
@@ -70,14 +70,14 @@ class HttpEDSSearcher(EDSSearcher):
         import requests
 
         resp = requests.post(
-            config.EDS_HTTP_URL,
+            ya_config.EDS_HTTP_URL,
             json={
                 "line_id": "S3",
                 "product": "All Products",
                 "wafer_id": wafer_id,
                 "n_results": k,
             },
-            verify=config.EDS_HTTP_VERIFY,
+            verify=ya_config.EDS_HTTP_VERIFY,
             timeout=10,
         )
         resp.raise_for_status()
@@ -121,8 +121,8 @@ def get_searcher() -> EDSSearcher:
 
 def _build_searcher() -> EDSSearcher:
     """config.EDS_MODE 에 따라 구현 선택."""
-    if config.EDS_MODE == "local":
+    if ya_config.EDS_MODE == "local":
         return LocalEDSSearcher()
-    if config.EDS_MODE == "http":
+    if ya_config.EDS_MODE == "http":
         return HttpEDSSearcher()
-    raise ValueError(f"알 수 없는 EDS_MODE: {config.EDS_MODE}")
+    raise ValueError(f"알 수 없는 EDS_MODE: {ya_config.EDS_MODE}")

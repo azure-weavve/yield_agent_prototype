@@ -1,6 +1,6 @@
 """2단 센서 비교 — 효과크기 랭킹, 집계값만 반환, 재현 키."""
 
-import config
+import ya_config
 from data.generate_dummy import (CONTROL_WAFERS, GROUP_WAFERS, SENSOR_REAL,
                                  SENSOR_STEP, SENSOR_VAR_ONLY)
 from tools import sensor_compare as sc
@@ -29,7 +29,7 @@ def test_variance_only_shift_is_a_candidate():
 def test_return_is_bounded_and_carries_raw_counts():
     """반환은 top-K 로 유계이고, wafer 별 원본값을 싣지 않는다."""
     res = _run()
-    assert len(res["candidates"]) <= config.SENSOR_TOP_K
+    assert len(res["candidates"]) <= ya_config.SENSOR_TOP_K
     c = res["candidates"][0]
     assert set(c) == {"sensor_name", "effect_size", "target_mean", "control_mean",
                       "target_std", "control_std", "n_target", "n_control"}

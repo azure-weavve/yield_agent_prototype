@@ -3,16 +3,16 @@
 from langchain_core.messages import HumanMessage
 from langgraph.graph import END, StateGraph
 
-import config
+import ya_config
 from graph.state import AgentState
 
 
 def test_loop_config_exists():
-    assert config.MAX_LOOPS == 6
-    assert config.CONFIDENCE_THRESHOLD == 0.8
-    assert config.SIBLING_MIN_SIMILARITY == 0.8
-    assert config.CONTROL_MIN_SIZE == 3
-    assert config.SIBLING_SEARCH_K == 50
+    assert ya_config.MAX_LOOPS == 6
+    assert ya_config.CONFIDENCE_THRESHOLD == 0.8
+    assert ya_config.SIBLING_MIN_SIMILARITY == 0.8
+    assert ya_config.CONTROL_MIN_SIZE == 3
+    assert ya_config.SIBLING_SEARCH_K == 50
 
 
 def test_messages_and_findings_accumulate():

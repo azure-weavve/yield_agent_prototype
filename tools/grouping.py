@@ -7,7 +7,7 @@ status 입력 재설계(2026-07-18 문서 3절)의 두 입력 형태를 한 형�
 라벨(defect_type)은 쓰지 않는다 — 실데이터에 없다. 묶는 것은 EDS 뿐이다.
 """
 
-import config
+import ya_config
 from tools import yield_tools as yt
 from tools.eds_search import get_searcher    # 캐시는 그쪽 모듈에 하나만 있다
 
@@ -22,12 +22,12 @@ def normalize_target(wafers: list[str]) -> dict:
     eds_error = None
     if mode == "single" and not unknown:
         try:
-            cands = get_searcher().search(wafers[0], k=config.SIBLING_SEARCH_K)
+            cands = get_searcher().search(wafers[0], k=ya_config.SIBLING_SEARCH_K)
         except Exception as e:
             # yield DB 엔 있으나 EDS 인덱스엔 없는 wafer (local=KeyError, http=요청 예외).
             # 입력 실수가 아니라 인덱스↔DB 동기화 문제다 — 흐름 판단은 status_node 가 한다.
             cands, eds_error = [], f"{type(e).__name__}: {e}"
-        raw = [c for c in cands if c["similarity"] >= config.SIBLING_MIN_SIMILARITY]
+        raw = [c for c in cands if c["similarity"] >= ya_config.SIBLING_MIN_SIMILARITY]
         # EDS 인덱스와 yield DB 는 별도 시스템이라 동기화가 어긋날 수 있다.
         # yield DB 에 실재하는 형제만 분석 대상에 넣고, 미확인분은 unmatched_siblings 로 분리한다
         # (없는 wafer 를 target 에 넣으면 뒤 tool 들이 조용히 빈 데이터를 반환해 오분석된다).
@@ -61,8 +61,8 @@ def _yield_summary(control_rows: list[dict]) -> dict | None:
     median = ys[mid] if len(ys) % 2 else (ys[mid - 1] + ys[mid]) / 2
     return {
         "median": round(median, 1),
-        "n_below_threshold": sum(1 for y in ys if y < config.YIELD_THRESHOLD),
-        "threshold": config.YIELD_THRESHOLD,
+        "n_below_threshold": sum(1 for y in ys if y < ya_config.YIELD_THRESHOLD),
+        "threshold": ya_config.YIELD_THRESHOLD,
     }
 
 
@@ -82,6 +82,6 @@ def select_control(target_group: list[str]) -> dict:
     return {
         "control_group": control,
         "sources": {rl: sorted(ws) for rl, ws in sources.items()},
-        "insufficient": len(control) < config.CONTROL_MIN_SIZE,
+        "insufficient": len(control) < ya_config.CONTROL_MIN_SIZE,
         "yield_summary": _yield_summary(control_rows),
     }

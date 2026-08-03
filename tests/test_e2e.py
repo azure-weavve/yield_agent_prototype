@@ -1,6 +1,6 @@
 """End-to-End: mock 그룹 대조 루프가 현황→순환(반려 포함)→승인→리포트까지 완주하는지."""
 
-import config
+import ya_config
 from graph.build import build_graph
 
 
@@ -46,7 +46,7 @@ def test_sensor_failure_is_not_reported_as_confirmed(monkeypatch):
     센서 결과를 보지 않고 확신도 0.9 를 내면 이 Stage 가 없앤 조용한 오확증이
     2단에서 되살아난다 — 없는 근거를 있다고 말하는 감사 기록이 남는다.
     """
-    monkeypatch.setattr(config, "SENSOR_MODE", "bogus")   # get_store() 가 죽어 fetch_failed
+    monkeypatch.setattr(ya_config, "SENSOR_MODE", "bogus")   # get_store() 가 죽어 fetch_failed
     state = build_graph().invoke(
         {"target_wafers": ["W2406_02"], "target_source": "manual"}
     )
@@ -54,7 +54,7 @@ def test_sensor_failure_is_not_reported_as_confirmed(monkeypatch):
                   if f["tool"] == "compare_sensor_distribution")
     assert sensor["status"] == "fetch_failed"
     assert state["finalize_status"] != "confirmed"
-    assert state["final_confidence"] < config.CONFIDENCE_THRESHOLD
+    assert state["final_confidence"] < ya_config.CONFIDENCE_THRESHOLD
     # 감사 기록도 없는 근거를 있다고 말하지 않는다
     assert not any("센서 근거까지" in f["thought"] for f in state["findings"])
     assert "ETCH9_B" in state["final_hypothesis"]    # 1단 후보는 후보로 남긴다

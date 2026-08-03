@@ -28,7 +28,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from console import say                        # noqa: E402
+from ya_console import say                        # noqa: E402
 
 # ---------------------------------------------------------------- 설정 (문서 9절 기본값)
 SEED = 42

@@ -11,7 +11,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from console import say                        # noqa: E402
+from ya_console import say                        # noqa: E402
 from graph.build import build_graph            # noqa: E402
 from tools import target_selection             # noqa: E402
 

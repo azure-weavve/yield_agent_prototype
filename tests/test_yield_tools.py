@@ -1,6 +1,6 @@
 """tools/yield_tools.py 결정론적 함수 검증 (더미 DB 는 seed 42 고정)."""
 
-import config
+import ya_config
 from tools import yield_tools as yt
 
 
@@ -32,5 +32,5 @@ def test_find_control_candidates_empty_root_lots():
 
 def test_find_low_yield_lots_threshold_binds_at_runtime(monkeypatch):
     # 문제 9: 기본 인자가 import 시점 값으로 굳으면 런타임 변경이 무시된다
-    monkeypatch.setattr(config, "YIELD_THRESHOLD", 0.0)
+    monkeypatch.setattr(ya_config, "YIELD_THRESHOLD", 0.0)
     assert yt.find_low_yield_lots() == []

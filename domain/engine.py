@@ -5,7 +5,7 @@ commonality 는 판정하지 않는다(후보≠결론). 판별(passes)은 게�
 이미 내장돼 있다(c = 원인 거쳤는데 정상). 임계는 config 상수(실데이터 보며 조정).
 """
 
-import config
+import ya_config
 from tools import commonality as cm
 
 
@@ -22,8 +22,8 @@ def _passes(cand, min_score, min_target, status, ok):
 
 def evaluate(spec: dict, group_ids: list[str], control_ids: list[str]) -> dict:
     """spec['legend'] 로 commonality 실행 후 각 후보를 게이트 계약으로 매핑."""
-    min_score = spec.get("min_score", config.COMMONALITY_PASS_MIN_SCORE)
-    min_target = spec.get("min_target", config.COMMONALITY_PASS_MIN_TARGET)
+    min_score = spec.get("min_score", ya_config.COMMONALITY_PASS_MIN_SCORE)
+    min_target = spec.get("min_target", ya_config.COMMONALITY_PASS_MIN_TARGET)
     res = cm.find_commonality(group_ids, control_ids, legend=spec["legend"])
     status = res.get("status")
     ok = status == "ok"

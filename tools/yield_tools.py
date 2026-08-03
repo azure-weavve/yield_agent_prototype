@@ -6,12 +6,12 @@
 import sqlite3
 from contextlib import contextmanager
 
-import config
+import ya_config
 
 
 @contextmanager
 def _conn():
-    conn = sqlite3.connect(config.DB_PATH)
+    conn = sqlite3.connect(ya_config.DB_PATH)
     conn.row_factory = sqlite3.Row
     try:
         yield conn
@@ -25,7 +25,7 @@ def find_low_yield_lots(threshold: float | None = None) -> list[dict]:
     각 lot 에 대해 가장 수율 낮은 wafer(worst_wafer) 를 함께 담아,
     자동 대상 선정(tools/target_selection.py)의 재료로 쓴다.
     """
-    threshold = config.YIELD_THRESHOLD if threshold is None else threshold
+    threshold = ya_config.YIELD_THRESHOLD if threshold is None else threshold
     with _conn() as conn:
         lots = conn.execute(
             """

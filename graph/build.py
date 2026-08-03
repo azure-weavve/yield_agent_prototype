@@ -13,7 +13,7 @@
 
 from langgraph.graph import END, StateGraph
 
-import config
+import ya_config
 from graph import nodes
 from graph.state import AgentState
 
@@ -34,7 +34,7 @@ def _after_analyze(state: dict) -> str:
 def _after_tools(state: dict) -> str:
     if state.get("finalize_accepted"):
         return "report"
-    if state["loop_count"] >= config.MAX_LOOPS:  # 가드레일: 무한루프 차단 (정확히 MAX_LOOPS 회)
+    if state["loop_count"] >= ya_config.MAX_LOOPS:  # 가드레일: 무한루프 차단 (정확히 MAX_LOOPS 회)
         return "report"
     return "analyze"
 

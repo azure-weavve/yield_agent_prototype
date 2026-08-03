@@ -20,7 +20,7 @@ Stage 5 에서 `yield` 도 같은 방식으로 얼렸다 — Stage 4 때 더미(
 
 import sqlite3
 
-import config
+import ya_config
 from domain import registry
 from tools import commonality as cm
 
@@ -49,7 +49,7 @@ def _internal_cols(table: str, with_null: bool = False):
 
 def _dummy_cols(table: str, with_null: bool = False):
     """더미 DB 의 컬럼 (개발·테스트가 실제로 밟는 것)."""
-    conn = sqlite3.connect(config.DB_PATH)
+    conn = sqlite3.connect(ya_config.DB_PATH)
     try:
         return _read_cols(conn, table, with_null)
     finally:
@@ -116,7 +116,7 @@ def test_dummy_db_has_exactly_the_three_tables():
 
     process_log 가 되살아나면 여기서 먼저 걸린다.
     """
-    conn = sqlite3.connect(config.DB_PATH)
+    conn = sqlite3.connect(ya_config.DB_PATH)
     try:
         names = {r[0] for r in conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' "

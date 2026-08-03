@@ -2,7 +2,7 @@
 
 import pytest
 
-import config
+import ya_config
 from data.generate_dummy import GROUP_WAFERS, SENSOR_REAL, SENSOR_STEP
 from tools import sensor_store as ss
 
@@ -21,8 +21,8 @@ def test_local_store_empty_wafer_list():
 
 
 def test_get_store_honors_mode(monkeypatch):
-    monkeypatch.setattr(config, "SENSOR_MODE", "local")
+    monkeypatch.setattr(ya_config, "SENSOR_MODE", "local")
     assert isinstance(ss.get_store(), ss.LocalSensorStore)
-    monkeypatch.setattr(config, "SENSOR_MODE", "nope")
+    monkeypatch.setattr(ya_config, "SENSOR_MODE", "nope")
     with pytest.raises(ValueError, match="SENSOR_MODE"):
         ss.get_store()

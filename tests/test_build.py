@@ -4,7 +4,7 @@ from langchain_core.messages import AIMessage
 
 from graph.build import _after_analyze, _after_status, _after_tools
 
-import config
+import ya_config
 
 
 def _ai(with_call: bool):
@@ -31,7 +31,7 @@ def test_tools_not_accepted_loops_back():
 
 def test_tools_at_max_loops_forced_to_report():
     # 가드레일: finalize 없이 MAX_LOOPS 를 채우면 강제로 리포팅 (정확히 6회에서 멈춘다)
-    assert _after_tools({"loop_count": config.MAX_LOOPS}) == "report"
+    assert _after_tools({"loop_count": ya_config.MAX_LOOPS}) == "report"
 
 
 def test_status_without_early_exit_goes_analyze():

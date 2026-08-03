@@ -9,7 +9,7 @@
 
 import statistics
 
-import config
+import ya_config
 from tools.sensor_store import get_store
 
 
@@ -41,12 +41,12 @@ def compare_sensor_distribution(step_seq: str, group_ids: list[str],
     base = {"candidates": [], "truncated": 0,
             "refetch_key": {"step_seq": step_seq,
                             "target_wafers": targets, "control_wafers": controls,
-                            "sensors": [], "store_mode": config.SENSOR_MODE}}
+                            "sensors": [], "store_mode": ya_config.SENSOR_MODE}}
 
-    if len(targets) < config.SENSOR_MIN_SAMPLE or len(controls) < config.SENSOR_MIN_SAMPLE:
+    if len(targets) < ya_config.SENSOR_MIN_SAMPLE or len(controls) < ya_config.SENSOR_MIN_SAMPLE:
         return {**base, "status": "insufficient_sample",
                 "note": (f"타깃 {len(targets)}장 / 대조군 {len(controls)}장 — "
-                         f"최소 {config.SENSOR_MIN_SAMPLE}장 미만이라 비교하지 않는다. "
+                         f"최소 {ya_config.SENSOR_MIN_SAMPLE}장 미만이라 비교하지 않는다. "
                          f"표본 2장짜리 효과크기는 허상이다.")}
 
     try:
@@ -79,8 +79,8 @@ def compare_sensor_distribution(step_seq: str, group_ids: list[str],
         })
 
     candidates.sort(key=lambda r: (-r["effect_size"], r["sensor_name"]))
-    truncated = max(0, len(candidates) - config.SENSOR_TOP_K)
-    candidates = candidates[:config.SENSOR_TOP_K]
+    truncated = max(0, len(candidates) - ya_config.SENSOR_TOP_K)
+    candidates = candidates[:ya_config.SENSOR_TOP_K]
 
     base["refetch_key"]["sensors"] = [c["sensor_name"] for c in candidates]
     if not candidates:

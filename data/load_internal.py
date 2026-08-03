@@ -49,8 +49,8 @@ import re
 import sqlite3
 from pathlib import Path
 
-import config
-from console import say as _say     # cp949 콘솔에서 리포트가 통째로 사라지는 것을 막는다
+import ya_config
+from ya_console import say as _say     # cp949 콘솔에서 리포트가 통째로 사라지는 것을 막는다
 
 BATCH = 20_000          # step_history 는 wafer 당 ~1000행이라 배치로 넣는다
 
@@ -468,14 +468,14 @@ def main():
     ap = argparse.ArgumentParser(description="사내 실데이터 → yield + step_history 적재")
     # help 문구는 argparse 가 직접 찍는다 — `_say` 가 못 덮으므로 cp949 밖 글자를 쓰면
     # `--help` 자체가 UnicodeEncodeError 로 죽는다 (em-dash·⚠️ 금지)
-    ap.add_argument("--db", default=str(config.DB_PATH),
-                    help=f"적재 대상 DB (기본 {config.DB_PATH}: 더미와 동일, 덮어씀 주의)")
+    ap.add_argument("--db", default=str(ya_config.DB_PATH),
+                    help=f"적재 대상 DB (기본 {ya_config.DB_PATH}: 더미와 동일, 덮어씀 주의)")
     ap.add_argument("--force", action="store_true",
                     help="치명적 정합성 오류가 있어도 기존 DB 를 교체한다")
     args = ap.parse_args()
 
     db = Path(args.db)
-    if db == Path(config.DB_PATH):
+    if db == Path(ya_config.DB_PATH):
         _say(f"[주의] {db} 는 더미 DB 와 같은 경로입니다. 기존 내용이 대체됩니다.")
 
     yield_records, step_records = _extract()

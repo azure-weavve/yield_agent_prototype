@@ -7,12 +7,12 @@
 import re
 import sqlite3
 
-import config
+import ya_config
 from data.generate_dummy import CONTROL_WAFERS, ETCH_SEQ, GROUP_WAFERS
 
 
 def _conn():
-    conn = sqlite3.connect(config.DB_PATH)
+    conn = sqlite3.connect(ya_config.DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -30,12 +30,12 @@ def test_recent_lot_has_group_and_control():
             "W2406_07",
         }
         for wid in ("W2406_02", "W2406_04", "W2406_06"):
-            assert by_id[wid]["yield"] < config.YIELD_THRESHOLD
+            assert by_id[wid]["yield"] < ya_config.YIELD_THRESHOLD
         for wid in ("W2406_01", "W2406_03", "W2406_05"):
-            assert by_id[wid]["yield"] >= config.YIELD_THRESHOLD
+            assert by_id[wid]["yield"] >= ya_config.YIELD_THRESHOLD
         # lot 평균이 임계 미만이어야 시나리오 1(find_low_yield_lots)에 잡힌다
         avg = sum(r["yield"] for r in rows) / len(rows)
-        assert avg < config.YIELD_THRESHOLD
+        assert avg < ya_config.YIELD_THRESHOLD
 
 
 def test_hole_case_ungrouped_low_yield_lot():
@@ -47,12 +47,12 @@ def test_hole_case_ungrouped_low_yield_lot():
         ).fetchall()
         assert len(rows) == 3
         avg = sum(r["yield"] for r in rows) / len(rows)
-        assert avg < config.YIELD_THRESHOLD
+        assert avg < ya_config.YIELD_THRESHOLD
 
 
 def test_yield_has_root_lot_and_lot_type():
-    import sqlite3, config
-    conn = sqlite3.connect(config.DB_PATH); conn.row_factory = sqlite3.Row
+    import sqlite3, ya_config
+    conn = sqlite3.connect(ya_config.DB_PATH); conn.row_factory = sqlite3.Row
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(yield)")}
     assert {"root_lot_id", "lot_type"} <= cols
     # RECENT_LOT 타깃·대조군이 같은 root_lot 을 공유(commonality 층화 성립)
@@ -166,7 +166,7 @@ def test_control_shares_equipment_but_not_chamber():
 
 
 def test_step_history_planted_eqp_ch_and_ppid_separation():
-    import config
+    import ya_config
     from tools import commonality as cm
     t = ["W2406_02", "W2406_04", "W2406_06"]
     c = ["W2406_01", "W2406_03", "W2406_05"]

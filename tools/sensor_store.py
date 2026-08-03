@@ -14,7 +14,7 @@
 import sqlite3
 from abc import ABC, abstractmethod
 
-import config
+import ya_config
 
 COLUMNS = ("wafer_id", "step_seq", "sensor_name", "value", "tkout_time")
 
@@ -40,7 +40,7 @@ class LocalSensorStore(SensorStore):
         if not wafer_ids:
             return []
         ph = ",".join("?" * len(wafer_ids))
-        conn = sqlite3.connect(config.DB_PATH)
+        conn = sqlite3.connect(ya_config.DB_PATH)
         conn.row_factory = sqlite3.Row
         try:
             rows = conn.execute(
@@ -61,9 +61,9 @@ class HttpSensorStore(SensorStore):
         if not wafer_ids:
             return []
         resp = requests.post(
-            config.SENSOR_HTTP_URL,
+            ya_config.SENSOR_HTTP_URL,
             json={"step_seq": step_seq, "wafer_ids": wafer_ids},
-            verify=config.EDS_HTTP_VERIFY,      # 같은 사내 인증서 정책
+            verify=ya_config.EDS_HTTP_VERIFY,      # 같은 사내 인증서 정책
             timeout=30,
         )
         resp.raise_for_status()
@@ -73,8 +73,8 @@ class HttpSensorStore(SensorStore):
 
 def get_store() -> SensorStore:
     """config.SENSOR_MODE 에 따라 구현 선택."""
-    if config.SENSOR_MODE == "local":
+    if ya_config.SENSOR_MODE == "local":
         return LocalSensorStore()
-    if config.SENSOR_MODE == "http":
+    if ya_config.SENSOR_MODE == "http":
         return HttpSensorStore()
-    raise ValueError(f"알 수 없는 SENSOR_MODE: {config.SENSOR_MODE}")
+    raise ValueError(f"알 수 없는 SENSOR_MODE: {ya_config.SENSOR_MODE}")

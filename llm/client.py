@@ -13,7 +13,7 @@ from abc import ABC, abstractmethod
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
-import config
+import ya_config
 
 
 class LLMClient(ABC):
@@ -215,9 +215,9 @@ class OpenAILLMClient(LLMClient):
         from tools.agent_tools import ALL_TOOLS
 
         self.llm = ChatOpenAI(
-            base_url=config.LLM_BASE_URL,
-            api_key=config.LLM_API_KEY,
-            model=config.LLM_MODEL,
+            base_url=ya_config.LLM_BASE_URL,
+            api_key=ya_config.LLM_API_KEY,
+            model=ya_config.LLM_MODEL,
             temperature=0,
         )
         self.analyzer = self.llm.bind_tools(ALL_TOOLS, parallel_tool_calls=False)
@@ -256,8 +256,8 @@ class OpenAILLMClient(LLMClient):
 
 
 def get_llm() -> LLMClient:
-    if config.LLM_MODE == "mock":
+    if ya_config.LLM_MODE == "mock":
         return ScriptedMockLLMClient()
-    if config.LLM_MODE == "openai":
+    if ya_config.LLM_MODE == "openai":
         return OpenAILLMClient()
-    raise ValueError(f"알 수 없는 LLM_MODE: {config.LLM_MODE}")
+    raise ValueError(f"알 수 없는 LLM_MODE: {ya_config.LLM_MODE}")

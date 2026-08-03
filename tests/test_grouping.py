@@ -71,11 +71,11 @@ def test_control_is_all_non_targets_in_same_root_lots():
 
 def test_control_reports_yield_distribution_instead_of_filtering():
     """저수율·무라벨 wafer 를 거르지 않고 yield_summary 로 보인다 (spec 결정 2)."""
-    import config
+    import ya_config
 
     res = grouping.select_control(["W2406_02", "W2410_cen1"])
     assert "W2406_07" in res["control_group"]          # 88.5 — 옛 규칙에서는 제외됐다
-    assert res["yield_summary"]["threshold"] == config.YIELD_THRESHOLD
+    assert res["yield_summary"]["threshold"] == ya_config.YIELD_THRESHOLD
     assert res["yield_summary"]["n_below_threshold"] >= 1
     assert res["yield_summary"]["median"] > 0
 

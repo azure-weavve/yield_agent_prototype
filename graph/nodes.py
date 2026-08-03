@@ -13,7 +13,7 @@ from dataclasses import asdict
 
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 
-import config
+import ya_config
 from graph import evidence
 from llm.client import get_llm
 from tools import grouping
@@ -72,7 +72,7 @@ def status_node(state: dict) -> dict:
                 "finalize_status": "eds_lookup_failed"}
     if norm["isolated"]:
         summary = (f"분석 대상 입력 ({source}): {', '.join(targets)}\n"
-                   f"형제 묶기 (EDS, 컷오프 {config.SIBLING_MIN_SIMILARITY}): 형제 없음 — "
+                   f"형제 묶기 (EDS, 컷오프 {ya_config.SIBLING_MIN_SIMILARITY}): 형제 없음 — "
                    f"고립 패턴, 자동 분석 범위 밖.")
         return {"target_group": norm["target_group"], "control_group": [],
                 "status_summary": summary, "findings": findings,
@@ -115,7 +115,7 @@ def _summarize_target(source: str, targets: list[str], norm: dict, ctrl: dict) -
     lines = [f"분석 대상 입력 ({source}): {', '.join(targets)}"]
     if norm["mode"] == "single":
         sib = ", ".join(f"{s['wafer_id']}({s['similarity']})" for s in norm["siblings"])
-        lines.append(f"형제 묶기 (EDS, 컷오프 {config.SIBLING_MIN_SIMILARITY}): "
+        lines.append(f"형제 묶기 (EDS, 컷오프 {ya_config.SIBLING_MIN_SIMILARITY}): "
                      f"{len(norm['target_group'])}장 — 입력 + {sib}")
         if norm.get("unmatched_siblings"):
             lines.append(f"EDS 형제 중 yield DB 미확인 {len(norm['unmatched_siblings'])}장 "
@@ -133,7 +133,7 @@ def _summarize_target(source: str, targets: list[str], norm: dict, ctrl: dict) -
     lines.append(line)
     if ctrl["insufficient"]:
         lines.append(f"대조군 부족: {len(ctrl['control_group'])}장 < "
-                     f"{config.CONTROL_MIN_SIZE} (root_lot 내 대조 한계 — 추후 분석 필요)")
+                     f"{ya_config.CONTROL_MIN_SIZE} (root_lot 내 대조 한계 — 추후 분석 필요)")
     return "\n".join(lines)
 
 
@@ -221,7 +221,7 @@ def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) ->
     # (1) 승인
     if (claim is not None and claim.passes
             and claim.score >= bundle.top_score(claim.tool)
-            and conf >= config.CONFIDENCE_THRESHOLD):
+            and conf >= ya_config.CONFIDENCE_THRESHOLD):
         update["finalize_accepted"] = True
         update["finalize_status"] = "confirmed"
         update["final_hypothesis"] = hypothesis
@@ -242,7 +242,7 @@ def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) ->
                 "lot 내부 대조로는 원인을 좁힐 수 없다. 리포팅으로 진행한다.")
 
     # (3) 루프 한계 도달 강제 종료는 승인이 아니라 '미확정'
-    if loop >= config.MAX_LOOPS:
+    if loop >= ya_config.MAX_LOOPS:
         update["finalize_accepted"] = True
         update["finalize_status"] = "inconclusive"
         update["final_hypothesis"] = hypothesis
@@ -278,7 +278,7 @@ def _gate_rejection(claim_id, claim, bundle, unrun, conf, conf_note) -> str:
                        key=lambda c: c.score)
             return (f"반려: {claim.claim_id}(점수 {claim.score}) 보다 강한 후보가 있다: "
                     f"{best.claim_id}(점수 {best.score}). 근거가 가장 강한 후보를 지목하라.")
-        return (f"반려: 확신도 {conf:.2f} < {config.CONFIDENCE_THRESHOLD}.{conf_note} "
+        return (f"반려: 확신도 {conf:.2f} < {ya_config.CONFIDENCE_THRESHOLD}.{conf_note} "
                 f"근거를 좁힐 tool 을 더 호출하라.")
 
     # claim_id 미제출
