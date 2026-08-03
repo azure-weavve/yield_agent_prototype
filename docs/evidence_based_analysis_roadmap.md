@@ -23,6 +23,13 @@
 > **`yield`·`step_history`·`sensor_log` 3개**이고 `process_log` 는 삭제됐다.
 > '스펙 이탈' 개념 자체가 프로토타입에 없다 — 사내 `step_history` 에 파라미터가 없다.
 >
+> **§40 의 "앞으로" 는 이미 도착했다 (2026-08-02 게이트 강화).** 본문 §40 은 현재 구현이
+> `finalize(hypothesis, confidence)` 이고 코드가 `CONFIDENCE_THRESHOLD` 만 확인한다고
+> 적지만, 지금 시그니처는 **`finalize(claim_id, hypothesis, confidence)`** 이고 승인 실권은
+> 도구가 발급한 `claim_id` 조회에 있다 — 번들에 있는 id 인가 · `passes=True` 인가 ·
+> 같은 도구 안에서 최고 점수인가 · 확신도가 문턱 이상인가. **확신도는 필요조건일 뿐
+> 근거가 아니다.** `hypothesis` 문자열은 판정에 쓰이지 않는다.
+>
 > 현재 상태의 정본은 `stages.md`(Stage 축)와 `README.md`(구조)다.
 
 ## 목적

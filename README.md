@@ -8,7 +8,7 @@ LangGraph 기반 AI Agent가 자연어 질문을 받아 **현황 파악 → 분�
 
 ## 보여주는 것 (세 키워드)
 
-- **Agentic AI** — Agent가 스스로 tool 을 골라 호출하며 근거를 좁히고, 확신도가 찰 때까지 루프를 돈다.
+- **Agentic AI** — Agent가 스스로 tool 을 골라 호출하며 근거를 좁히고, 게이트가 그 근거를 확인해 주면 루프를 끝낸다.
 - **Legacy 연계** — 사내 EDS/LLM에 붙는 구조를 단일 인터페이스로 설계 (mock ↔ 사내 교체).
 - **End-to-End** — 현황 파악부터 원인 규명 리포트까지, 감사 기록(findings)이 남는 한 흐름으로 이어진다.
 
@@ -46,8 +46,8 @@ $ PYTHONUTF8=1 python main.py
 
 현황 파악이 지목한 wafer(`W2406_06`) 를 EDS 유사맵으로 형제 묶기(컷오프 0.8)한 불량 그룹 7장과,
 형제 lot 들의 대조군을 대상으로 Agent 가 tool 을 자율적으로 호출하며 근거를 쌓습니다.
-**게이트는 근거 없는 결론을 반려합니다** — 위 1번처럼 확신도만 높고 공정 근거가 없는 finalize 는
-`analyze` 로 되돌려 보내집니다.
+**게이트는 근거 없는 결론을 반려합니다** — 위 1번처럼 도구가 발급한 `claim_id` 없이 낸 finalize 는
+`analyze` 로 되돌려 보내집니다. 확신도는 넘어야 할 필요조건일 뿐, 승인 근거는 그 claim 입니다.
 
 > 다만 위 반려→재시도 순환은 **mock LLM 각본에서 보이는 모습**입니다. 실제 사내 LLM 은 대개
 > 근거를 먼저 쌓고 finalize 하므로 반려가 나타나지 않습니다 — 정상 동작이며, 볼거리는
@@ -153,7 +153,8 @@ status ──(대상 있음)──▶ analyze ──(tool call)──▶ tools �
 
 ```
 prototype/
-├── config.py              설정 (데이터 경로, EDS/LLM 모드 토글, 임계값, 도구 플래그)
+├── ya_config.py           설정 (데이터 경로, EDS/LLM 모드 토글, 임계값, 도구 플래그)
+├── ya_console.py          콘솔 출력 래퍼 (cp949 에서 인코딩 오류로 산출물을 잃지 않게)
 ├── main.py                실행 진입점 (하이브리드 분석 루프 데모)
 ├── data/
 │   ├── generate_dummy.py  더미 생성 (yield + step_history + 임베딩, 유사 그룹 심기)
@@ -184,12 +185,12 @@ prototype/
 외부 의존성은 추상 인터페이스 뒤에 두고, 모드 하나로 구현을 바꿔 끼웁니다.
 사내망 밖에서는 기본값(local/mock)으로 동일 그래프가 그대로 동작합니다.
 
-설정은 두 갈래입니다 (`config.py` 가 `load_dotenv()` 를 호출합니다):
+설정은 두 갈래입니다 (`ya_config.py` 가 `load_dotenv()` 를 호출합니다):
 
 - **환경변수 / `.env` 로 덮어쓸 수 있는 것** — `LLM_MODE`·`LLM_BASE_URL`·`LLM_API_KEY`·`LLM_MODEL`,
   `SENSOR_MODE`·`SENSOR_HTTP_URL`·`SENSOR_TOP_K`·`SENSOR_MIN_SAMPLE`, 그리고 임계값
   `COMMONALITY_PASS_MIN_SCORE`·`COMMONALITY_PASS_MIN_TARGET`·`SIBLING_MIN_SIMILARITY`·`CONTROL_MIN_SIZE`
-- **아직 `config.py` 파일 상수인 것** — `EDS_MODE`·`EDS_HTTP_URL`·`EDS_HTTP_VERIFY`·
+- **아직 `ya_config.py` 파일 상수인 것** — `EDS_MODE`·`EDS_HTTP_URL`·`EDS_HTTP_VERIFY`·
   `EDS_MIN_SIMILARITY`·`YIELD_THRESHOLD`·`MAX_LOOPS`·`CONFIDENCE_THRESHOLD`
 
 | 설정 | 데모(기본) | 운영(사내) |
