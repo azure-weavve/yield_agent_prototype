@@ -373,3 +373,21 @@ def test_help_text_survives_a_cp949_console():
                           capture_output=True, env=env,
                           cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     assert proc.returncode == 0, proc.stderr.decode("utf-8", "replace")
+
+
+def test_script_path_execution_finds_the_repo_root():
+    """`python data/load_internal.py` (스크립트 경로) 로도 돌아야 한다.
+
+    스크립트 경로로 실행하면 `sys.path[0]` 은 **`data/`** 이고 CWD 는 들어가지 않는다.
+    그래서 모듈 상단의 `sys.path.insert` 가 없으면 `import ya_config` 가 죽는다.
+    사내에서 실제로 이 형태로 실행해 `ModuleNotFoundError` 를 봤고(2026-08-03),
+    방어를 넣었지만 그 세 줄을 지워도 나머지 테스트는 전부 통과한다 — 여기서 잠근다.
+
+    `PYTHONPATH` 를 지우고 돌린다. 안 그러면 상위 프로세스가 저장소 루트를 넘겨줘
+    방어가 없어도 통과하는 공허한 테스트가 된다.
+    """
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+    proc = subprocess.run([sys.executable, os.path.join("data", "load_internal.py"), "--help"],
+                          capture_output=True, env=env, cwd=root)
+    assert proc.returncode == 0, proc.stderr.decode("utf-8", "replace")

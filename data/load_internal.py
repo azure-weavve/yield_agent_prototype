@@ -47,10 +47,15 @@ import argparse
 import os
 import re
 import sqlite3
+import sys
 from pathlib import Path
 
-import ya_config
-from ya_console import say as _say     # cp949 콘솔에서 리포트가 통째로 사라지는 것을 막는다
+# 스크립트 경로(`python data/load_internal.py`)로 실행하면 sys.path[0] 이 data/ 라
+# 저장소 루트가 빠진다. generate_dummy.py 와 같은 방어다.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+import ya_config                       # noqa: E402
+from ya_console import say as _say     # noqa: E402  cp949 콘솔에서 리포트가 통째로 사라지는 것을 막는다
 
 BATCH = 20_000          # step_history 는 wafer 당 ~1000행이라 배치로 넣는다
 
