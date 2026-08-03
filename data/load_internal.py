@@ -378,8 +378,9 @@ def validate(conn: sqlite3.Connection, n_yield: int, n_steps: int) -> dict:
         "steps_per_wafer": ({"min": s["lo"], "max": s["hi"], "avg": round(s["avg"], 1)}
                             if s else None),
         # area 결측률 — step_seq 는 순번 코드라 그 자체로는 무슨 공정인지 안 보인다.
-        # 전부 NULL 이면 리포트의 스텝을 사람이 읽을 수 없는데, 분석은 멀쩡히 돌아
-        # 증상이 없다. ch_id·ppid 와 같은 이유로 숫자를 싣는다.
+        # 주의: **리포트는 area 를 싣지 않는다** (읽는 코드가 아직 없다 — commonality 의
+        # SELECT 에도 legend 에도 없다). 그래서 이 값이 0.0 이어도 리포트의 스텝은
+        # `CC002000` 뿐이다. area 는 사람이 DB 를 직접 조회할 때 쓴다.
         "area_null_rate": round(
             one("SELECT COUNT(*) FROM step_history WHERE area IS NULL")
             / max(n_steps, 1), 3),

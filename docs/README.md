@@ -22,6 +22,7 @@
 | [`internal-data-integration.md`](internal-data-integration.md) | ETL 적재 규칙·ID 체계·조인 키 합성. §2·§3-1 에 Stage 5 갱신 블록 있음 |
 | [`deferred-internal-integration.md`](deferred-internal-integration.md) | 사내 연동(`LLM_MODE=openai`/`EDS_MODE=http`) 전에는 실행 경로가 없어 미룬 항목. **착수 시 작업 목록**. `codex.md` 항목들의 처리 상태도 여기서 추적 |
 | [`2026-07-24-domain-corrections.md`](2026-07-24-domain-corrections.md) | 도메인 지식으로 **뒤집힌** 설계 결정들. 되돌리지 않으려면 읽어야 함 |
+| [`2026-08-03-사내투입-진단정리.md`](2026-08-03-사내투입-진단정리.md) | **실데이터 첫 적재(2,800만 행)의 진단 결과와 후속 목록.** §4-A(문서)·§4-B(grain)·§4-C(회귀 테스트)는 **2026-08-03 처리 완료** — 남은 것은 §4-D 보류 3건과 §5 조사 스크립트다. §1 의 "조치 완료" 는 사내 머신 기준이었고 저장소 반영은 `3c45aba` |
 
 ## 2. 방향은 유효하나 세부가 낡음 — 상태 블록을 먼저 읽을 것
 
