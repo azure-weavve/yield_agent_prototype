@@ -24,8 +24,10 @@
   ⚠️ ppid 는 **그 wafer 가 그 스텝을 돌 때 쓴 PPID** — wafer×스텝 단위다.
       lot 단위나 recipe 마스터 단위로 넣으면 에러 없이 틀린 집계가 나온다.
       hyp_ppid_commonality(2차 legend)가 이 컬럼 위에서 돈다.
-      `validate()` 가 이걸 실제로 검사한다(리포트의 `ppid_grain`, `[grain]` 줄) —
-      단 "전 데이터에 반례 0건" 일 때만 의심하는 전역 조건이므로 확정 판정은 아니다.
+      **적재된 테이블만으로는 이걸 검증할 수 없다.** lot×스텝 마스터에서 조인한 값과
+      제대로 실린 값은 이 테이블 안에서 완전히 같은 모양이다(둘 다 스텝마다 갈리고
+      lot 안에서는 대개 안 갈린다 — 후자는 도메인상 정상이다). 그래서 조인 단위는
+      **사람이 원천 추출 쿼리에서 확인**해야 한다. 점검표 1장 참조.
 
   ⚠️ **이름 겹침 주의 (이 스크립트에서 가장 헷갈리는 지점)**
       원천의 `wafer_id`  = 두 자리 **순번** ("01", "13", "25")
@@ -349,43 +351,14 @@ def validate(conn: sqlite3.Connection, n_yield: int, n_steps: int) -> dict:
     if dup:
         issues.append(f"wafer×스텝 중복 이력 {dup}건: 재작업(rework)인지 확인 필요")
 
-    # 7. ppid grain — 결측률이 못 보는 실패. ppid 를 lot/recipe 마스터에서 조인해 오면
-    #    결측률 0.0(초록)인데 lot 전원이 같은 값이 되어 hyp_ppid_commonality 가 에러 없이
-    #    틀린 집계를 낸다. 한 lot 이 한 PPID 로 도는 건 정상인 스텝도 많으므로 lot 개별
-    #    판정은 오경보가 잦다 — 반례(한 군에서 ppid 2값) 1건이면 wafer 단위가 증명되니
-    #    "전 데이터에 반례 0건" 이라는 전역 조건으로만 의심한다.
-    #
-    #    판정 대상(`checkable`)은 **설비·챔버가 wafer 마다 갈리는 군**으로 좁힌다. 그런
-    #    군에서는 원천이 그 스텝에서 wafer 단위 세부를 실제로 주고 있음이 증명되므로,
-    #    "챔버는 갈리는데 ppid 는 한 번도 안 갈린다" 가 비로소 의심스러운 조건이 된다.
-    #    설비·챔버도 안 갈리는 군(= lot 전원이 같은 장비로 돈 정상 케이스)을 포함하면
-    #    정상 데이터에 경고가 뜬다. 좁힌 대가로, 스텝마다 단일 장비만 쓰는 공정에서는
-    #    검사가 침묵한다 — 그 경우 원천이 wafer 단위를 주는지 자체가 안 보이므로 정직하다.
-    #
-    #    ppid·장비 모두 **wafer 단위로 먼저 접는다**(안쪽 GROUP BY). 행 단위로 세면 한
-    #    wafer 의 재작업 2행이 값만 다를 때 wafer 간 변이가 0인데도 반례로 잡히고, 판정이
-    #    전역이라 그런 행 하나로 검사 전체가 조용히 꺼진다 (검사 #6 참조: 실데이터에
-    #    중복 이력은 예상되는 상태다).
-    #    `COUNT(DISTINCT tool) > 1` 이 "wafer 2장 이상" 을 함의하므로 별도 조건을 안 둔다.
-    gr = q("""SELECT COUNT(*) checkable, COALESCE(SUM(nd > 1), 0) varying FROM (
-                  SELECT COUNT(DISTINCT p) nd
-                  FROM (SELECT y.lot_id lot, h.step_seq step, h.wafer_id w,
-                               MIN(h.ppid) p,
-                               MIN(h.eqp_id || '|' || IFNULL(h.ch_id, '')) tool
-                        FROM step_history h JOIN yield y USING (wafer_id)
-                        WHERE h.ppid IS NOT NULL
-                        GROUP BY 1, 2, 3)
-                  GROUP BY lot, step
-                  HAVING COUNT(DISTINCT tool) > 1)""")[0]
-    ppid_grain = {"checkable": gr["checkable"], "varying": gr["varying"]}
-    if ppid_grain["checkable"] and ppid_grain["varying"] == 0:
-        # 확정 판정이 아니라는 것을 **문구 안에** 적는다. 콘솔에서 이 줄을 보는 사람은
-        # 이 파일의 docstring 을 읽지 않으므로, 여기 없으면 없는 조인 버그를 쫓게 된다.
-        issues.append(
-            f"설비·챔버는 wafer 마다 갈리는데 ppid 는 한 번도 안 갈린다 "
-            f"(검사 가능 {ppid_grain['checkable']}군). "
-            "lot/recipe 마스터 단위 조인 의심 (ppid 는 wafer×스텝 단위여야 한다). "
-            "단 한 lot 을 여러 챔버에 걸쳐 같은 레시피로 돌리는 것도 정상이라 확정은 아니다")
+    # 7번(ppid grain 진단)은 2026-08-03 에 **삭제**했다. 다시 만들지 말 것.
+    #    "설비·챔버는 wafer 마다 갈리는데 ppid 는 한 번도 안 갈린다" 를 lot×스텝 군에서
+    #    세는 검사였는데, 판별력이 없다 — lot 안에서 ppid 가 안 갈리는 것은 도메인상
+    #    **정상**이기 때문이다(같은 root_lot 을 PPID 시험용으로 나눌 때만 갈린다).
+    #    lot 마스터 조인이든 lot×스텝 마스터 조인이든 정상이든 세 경우가 이 지표에서
+    #    같은 모양이라, 실데이터에서 사람을 틀린 판단으로 이끌었다(2026-08-03).
+    #    조인 단위는 원천 추출 쿼리를 사람이 보는 수밖에 없다 — 점검표 1장이 그 항목을
+    #    사람 확인 사항으로 들고 있다.
 
     lot_types = {r["lot_type"]: r["c"] for r in
                  q("SELECT lot_type, COUNT(*) c FROM yield GROUP BY 1")}
@@ -419,8 +392,6 @@ def validate(conn: sqlite3.Connection, n_yield: int, n_steps: int) -> dict:
         "ppid_null_rate": round(
             one("SELECT COUNT(*) FROM step_history WHERE ppid IS NULL")
             / max(n_steps, 1), 3),
-        # grain 진단 — checkable 0 이면 판정 불가(설비·챔버가 갈리면서 ppid 도 있는 군이 없다)
-        "ppid_grain": ppid_grain,
         "fatal": fatal,
         "issues": issues,
     }
@@ -432,10 +403,6 @@ def _print(r: dict) -> None:
          f"· lot_type {r['lot_types']}")
     _say(f"[이력] wafer 당 스텝 {r['steps_per_wafer']} · ch_id 결측률 {r['ch_id_null_rate']}"
          f" · ppid 결측률 {r['ppid_null_rate']} · area 결측률 {r['area_null_rate']}")
-    # 경고가 안 뜬 이유를 구분하려면 숫자가 보여야 한다 (wafer 단위 확인됨 vs 판정 불가)
-    g = r["ppid_grain"]
-    _say(f"[grain] ppid wafer 단위 증거 {g['varying']}/{g['checkable']}군"
-         f"{' (판정 불가: 설비·챔버가 wafer 마다 갈리면서 ppid 도 있는 군이 없다)' if not g['checkable'] else ''}")
     _say(f"[라벨] defect_type 보유 {r['defect_labeled']}건 (없으면 EDS 로 그룹을 만든다)")
     if r["issues"]:
         _say("[정합성 경고]")

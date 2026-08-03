@@ -72,6 +72,11 @@ spec 이 없다(그 spec 은 하루 앞선 `2026-07-23-...-design.md`).
 `find_counterexamples` · `validate_data_completeness` · `compare_process_logs` ·
 `compare_parameter_distribution`. 현재 스키마는 **`yield`·`step_history`·`sensor_log` 3개**다.
 
+**삭제된 진단**: `validate()` 의 `ppid_grain` 과 리포트 `[grain]` 줄 (2026-08-03).
+lot 안에서 ppid 가 안 갈리는 것을 조인 오류의 신호로 읽었는데 그게 도메인상 **정상**이라
+판별력이 없었고, 실데이터에서 사람을 틀린 판단으로 이끌었다. 대체물은 코드가 아니라
+**사람의 원천 쿼리 확인**이다 — `사내-투입-점검표.md` 4-2 가 경위와 절차를 들고 있다.
+
 **개명된 심볼**: `process_step` → **`step_seq`** (2026-07-31, 사내 원천 이름에 맞춤 —
 세 테이블·후보 dict 키·도구 파라미터·FDC 요청 키 전부). 문서에서 `process_step` 이
 보이면 낡은 서술이다. 값도 공정명(`"Etch"`)이 아니라 **순번 코드**(`"CC002000"` =
