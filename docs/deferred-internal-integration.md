@@ -29,7 +29,7 @@ git log·코드로 먼저 확인한다 (1·2·3번은 이미 구현 완료 — �
 
 ## 4. TLS 검증 기본값을 켜짐으로 (codex 4번)
 
-- 위치: `config.py` `EDS_HTTP_VERIFY = False`
+- 위치: `ya_config.py` `EDS_HTTP_VERIFY = False`
 - 문제: http 모드를 켜는 것만으로 인증서 검증 없이 사내 데이터 전송
 - 처방: 사내 루트 인증서(.pem) 확보 → `EDS_HTTP_VERIFY = "인증서경로"` 를 기본값으로, 우회는 개발 환경에서만 명시적으로
 
@@ -55,7 +55,7 @@ git log·코드로 먼저 확인한다 (1·2·3번은 이미 구현 완료 — �
 
 ## 8. 기타 경미 (여유 있을 때)
 
-- `config.py` 상수의 환경변수 오버라이드 (`os.getenv`) — 코드 수정 없는 모드 전환
+- `ya_config.py` 상수의 환경변수 오버라이드 (`os.getenv`) — 코드 수정 없는 모드 전환
 - `tools/yield_tools.py` `find_low_yield_lots` 기본 인자가 import 시점 바인딩 — 런타임 threshold 변경이 기본값에 반영 안 됨 → 2026-07-19 status 입력 재설계에서 해소
 - ~~`graph/nodes.py` 모듈 레벨 `_llm = get_llm()` — import 시점에 구현 고정, 지연 획득으로 전환하면 테스트·모드 전환 유연~~ — **2026-07-31 완료.** `_llm_lazy()` 로 전환. `tests/test_graph_nodes.py::test_importing_nodes_does_not_acquire_the_llm` 이 별도 프로세스에서 "import 만으로는 안 잡힌다" 를 고정한다
 - `llm/client.py` 리포트 결론 fallback "원인 미확정"이 원인(수율 이상 lot 없음 vs 루프 한계 도달)을 구분하지 않음 — 이상 없음 경로는 "이상 없음" 문구로 분기하고, 한계 도달은 3번 항목의 "미확정(한계 도달)" 구분 기록과 함께 처리
@@ -87,6 +87,6 @@ git log·코드로 먼저 확인한다 (1·2·3번은 이미 구현 완료 — �
 
 ## 11. SIBLING_SEARCH_K=50 이 실제 인덱스 규모에서 형제를 잘라내지 않는지 검증
 
-- 위치: `config.py` `SIBLING_SEARCH_K = 50`, 사용처 `tools/grouping.py` `normalize_target`
+- 위치: `ya_config.py` `SIBLING_SEARCH_K = 50`, 사용처 `tools/grouping.py` `normalize_target`
 - 문제: 한 사건의 형제 수가 50 을 넘으면 knn 조회 폭에서 잘려 형제 묶기가 불완전해짐 (더미 데이터에선 여유)
 - 처방: 사내 양산 규모 인덱스에서 최대 형제 군집 크기를 실측해 K 를 조정하거나, 컷오프 기반 조회로 전환 검토

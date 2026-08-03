@@ -534,7 +534,7 @@ def _write_index(vectors, wafer_ids):
 
 def _report(rows, vectors, wafer_ids):
     # DB·임베딩을 다 쓴 **뒤** 라서, print 가 콘솔 인코딩에 걸려 죽으면 산출물은 남고
-    # 리포트만 사라진다. 출력은 전부 `say` 로 한다 (console.py 참조).
+    # 리포트만 사라진다. 출력은 전부 `say` 로 한다 (ya_console.py 참조).
     say(f"총 wafer: {len(rows)}  (정상 {N_NORMAL} + 패턴 {len(rows) - N_NORMAL})")
     say(f"임베딩: {len(vectors)} x {DIM}d  -> {EMB_DIR / 'index.bin'}")
     say(f"SQLite: {DB_PATH}")

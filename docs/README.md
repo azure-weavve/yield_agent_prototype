@@ -76,3 +76,7 @@ spec 이 없다(그 spec 은 하루 앞선 `2026-07-23-...-design.md`).
 세 테이블·후보 dict 키·도구 파라미터·FDC 요청 키 전부). 문서에서 `process_step` 이
 보이면 낡은 서술이다. 값도 공정명(`"Etch"`)이 아니라 **순번 코드**(`"CC002000"` =
 제품군 2자리 + 스텝 순서 6자리)로 바뀌었고, 공정명은 신규 컬럼 **`area`** 에 있다.
+
+**개명된 모듈**: `config.py` → **`ya_config.py`** · `console.py` → **`ya_console.py`**
+(2026-08-03). 사내에서 돌리니 `import config` 가 저장소 밖의 다른 패키지로 잡혔다.
+과거 문서·플랜의 `import config` / `config.py:NN` 은 그대로 두었으니 읽을 때 치환할 것.

@@ -21,7 +21,7 @@ def run(target_wafers: list[str], source: str) -> None:
     state = app.invoke({"target_wafers": target_wafers, "target_source": source})
 
     # 출력은 전부 `say` 로 한다 — 그래프를 다 돌린 **뒤** 라서, print 한 줄이 콘솔
-    # 인코딩에 걸려 죽으면 분석 결과를 통째로 잃는다 (console.py 참조).
+    # 인코딩에 걸려 죽으면 분석 결과를 통째로 잃는다 (ya_console.py 참조).
     say(f"[분석 대상 입력] ({source}) {', '.join(target_wafers) or '없음'}\n")
     say(f"[현황 파악 — 고정 골격]\n{state['status_summary']}\n")
     tg = state["target_group"]
