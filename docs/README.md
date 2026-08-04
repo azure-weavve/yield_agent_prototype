@@ -38,7 +38,7 @@
 
 | 문서 | 무엇 |
 |---|---|
-| [`사내LLM연동_변경분_정리.md`](사내LLM연동_변경분_정리.md) | 2026-07-16 에 **끝난** 사내 LLM 연동 재현 기록. 기준선 63 passed(현재 191) |
+| [`사내LLM연동_변경분_정리.md`](사내LLM연동_변경분_정리.md) | 2026-07-16 에 **끝난** 사내 LLM 연동 재현 기록. 기준선 63 passed(현재 200) |
 | [`2026-07-18-status-node-review-and-redesign.md`](2026-07-18-status-node-review-and-redesign.md) | status_node 재설계 논의. 후속 구현은 `plans/2026-07-19-status-input-redesign.md` |
 | [`2026-07-25-dummy-first-stage-reorder.md`](2026-07-25-dummy-first-stage-reorder.md) | 더미 우선 Stage 재배열 계획. **완료** — 체크박스와 "이 플랜을 구현하라" 지시가 남아 있지만 실행하지 말 것. 결과는 `stages.md` |
 | [`codex.md`](codex.md) | 2026-07-13 codex 리뷰 **원문**(헤더 없음). 1번은 수정됨(`tools/target_selection.py:13`), 4번(TLS 기본값)·5번은 `deferred-internal-integration.md` 가 추적 중 |
