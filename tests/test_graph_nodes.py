@@ -808,3 +808,108 @@ def test_report_node_passes_the_approved_claim_to_the_report():
 
     assert received.get("claim") == approved
     assert "eqp_ch_commonality:chamber:CC002000:ETCH9_B" in out["report"]
+
+# ---------------------------------------------------------------- LLM 호출 실패
+# 사내 LLM 은 타임아웃·5xx 를 낸다. `ya_console.say` 가 막으려던 것과 같은 유실이
+# 여기서 다른 경로로 난다 - 그래프를 다 돌린 결과가 예외 하나로 통째로 사라진다.
+# `tools_node` 는 도구 실패를 ToolMessage 로 복구하는데(미룸 1번) LLM 쪽만 무방비였다.
+
+class _FailingLLM:
+    """analyze/report 양쪽이 사내 LLM 처럼 터지는 스텁."""
+
+    def analyze_step(self, messages):
+        raise TimeoutError("사내 LLM 응답 없음")
+
+    def generate_report(self, **kwargs):
+        raise TimeoutError("사내 LLM 응답 없음")
+
+
+def _with_failing_llm(fn):
+    original = nodes._llm
+    nodes._llm = _FailingLLM()
+    try:
+        return fn()
+    finally:
+        nodes._llm = original
+
+
+def test_analyze_node_survives_an_llm_failure():
+    """LLM 호출이 터져도 노드가 죽지 않고 사유를 상태에 남긴다."""
+    out = _with_failing_llm(lambda: nodes.analyze_node(
+        {"messages": [], "loop_count": 2}))
+    assert out["finalize_status"] == "llm_call_failed"
+    assert "TimeoutError" in out["findings"][0]["result"]
+
+
+def test_analyze_node_failure_routes_to_report():
+    """실패한 analyze 는 리포팅으로 나가야 한다 (루프에 갇히면 안 된다).
+
+    `_after_analyze` 는 마지막 메시지의 tool_calls 로 갈림길을 정한다. 실패 시
+    tool_calls 없는 메시지를 남기면 기존 안전망이 그대로 report 로 보낸다.
+    """
+    from graph import build
+
+    out = _with_failing_llm(lambda: nodes.analyze_node(
+        {"messages": [], "loop_count": 2}))
+    assert build._after_analyze({"messages": out["messages"]}) == "report"
+
+
+def test_report_node_survives_an_llm_failure():
+    """리포트 LLM 이 터져도 분석 결과가 통째로 사라지면 안 된다.
+
+    여기서 예외가 나가면 그래프가 죽고, 그때까지의 현황·감사 기록·승인된 근거가
+    전부 유실된다(main.py 는 그래프를 **다 돌린 뒤** 출력한다).
+    """
+    out = _with_failing_llm(lambda: nodes.report_node({
+        "target_wafers": ["W2406_02"], "target_source": "manual",
+        "target_group": ["W2406_02"], "status_summary": "요약", "findings": [],
+        "final_hypothesis": "ETCH9_B 챔버 편중이 원인", "final_confidence": 0.9,
+        "finalize_status": "confirmed",
+    }))
+    assert "ETCH9_B 챔버 편중이 원인" in out["report"]   # 결론이 살아 있다
+    assert "TimeoutError" in out["report"]              # 왜 산문이 없는지도 밝힌다
+
+
+def test_report_node_keeps_the_evidence_line_when_the_llm_fails():
+    """[근거] 줄은 LLM 산문이 없어도 붙어야 한다 - 코드가 붙이는 이유가 그것이다."""
+    claim = {"claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH9_B",
+             "score": 1.0, "target_pass": 3, "target_total": 3,
+             "control_pass": 0, "control_total": 6}
+    out = _with_failing_llm(lambda: nodes.report_node({
+        "target_wafers": ["W2406_02"], "target_source": "manual",
+        "target_group": ["W2406_02"], "status_summary": "요약", "findings": [],
+        "final_hypothesis": "원인은 그 챔버다", "final_confidence": 0.9,
+        "finalize_status": "confirmed", "final_claim": claim,
+    }))
+    assert "[근거]" in out["report"]
+    assert "eqp_ch_commonality:chamber:CC002000:ETCH9_B" in out["report"]
+
+
+def test_graph_completes_when_the_llm_is_down():
+    """LLM 이 통째로 죽어도 그래프는 완주해 리포트를 낸다 (E2E).
+
+    노드 단위 방어가 있어도 배선이 어긋나면 여전히 예외가 밖으로 나간다.
+    """
+    from graph.build import build_graph
+
+    state = _with_failing_llm(lambda: build_graph().invoke(
+        {"target_wafers": ["W2406_02"], "target_source": "manual"}))
+    assert state["report"]
+    assert state["finalize_status"] == "llm_call_failed"
+
+
+def test_report_states_the_llm_failure_when_only_analyze_died():
+    """analyze 만 터지고 리포트 LLM 은 살아난 경우, 결론이 그 사실을 밝혀야 한다.
+
+    이때 산문은 정상 생성되므로 report_node 의 실패 대체 경로를 안 탄다.
+    분기가 없으면 결론이 "원인 미확정" 으로 나가, 분석이 돌았는데 못 찾은 것과
+    아예 못 돌린 것이 구분되지 않는다.
+    """
+    out = nodes.report_node({
+        "target_wafers": ["W2406_02"], "target_source": "manual",
+        "target_group": ["W2406_02"], "status_summary": "요약", "findings": [],
+        "final_hypothesis": "", "final_confidence": 0.0,
+        "finalize_status": "llm_call_failed",
+    })
+    assert "분석 미수행" in out["report"]
+    assert "LLM" in out["report"]
