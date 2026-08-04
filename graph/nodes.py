@@ -264,9 +264,17 @@ def _confidence(raw) -> tuple[float, str]:
 def _gate_rejection(claim_id, claim, bundle, unrun, conf, conf_note) -> str:
     """왜 승인하지 않았는지를 LLM 이 다음 행동으로 옮길 수 있게 돌려준다."""
     if claim_id and claim is None:
-        valid = sorted(bundle.claims)
-        avail = ("유효한 claim_id: " + ", ".join(valid)) if valid else "아직 유효한 claim 이 없다"
-        return f"반려: claim_id '{claim_id}' 는 도구 결과에 없다. {avail}."
+        # 안내 대상은 **통과 후보뿐**이다. 번들 전체를 안내하면 LLM 이 거기서
+        # 미통과 후보를 골라 다시 제출하고 또 반려당하는 왕복이 생긴다 -
+        # claim_id 미제출 분기(아래)와 같은 것을 안내해야 한다.
+        valid = sorted(c.claim_id for c in bundle.passing())
+        if valid:
+            return (f"반려: claim_id '{claim_id}' 는 도구 결과에 없다. "
+                    f"통과 후보: {', '.join(valid)}.")
+        # 지목할 대상이 아예 없으면 목록 대신 다음 행동을 안내한다 - 여기서 멈추면
+        # LLM 이 할 일을 못 찾아 루프 한계까지 왕복만 한다.
+        return (f"반려: claim_id '{claim_id}' 는 도구 결과에 없다. "
+                f"{_no_candidate_action(bundle, unrun)}")
 
     if claim is not None:
         if not claim.passes:
@@ -286,13 +294,23 @@ def _gate_rejection(claim_id, claim, bundle, unrun, conf, conf_note) -> str:
     if valid:
         return (f"반려: claim_id 를 제출하지 않았다. 결론은 도구가 발급한 claim_id 로 "
                 f"지목해야 한다. 통과 후보: {', '.join(valid)}.")
+    return f"반려: {_no_candidate_action(bundle, unrun)}"
+
+
+def _no_candidate_action(bundle, unrun) -> str:
+    """지목할 통과 후보가 하나도 없을 때 LLM 이 다음에 할 일.
+
+    claim_id 를 지어낸 경로와 아예 안 낸 경로가 같은 막다른 상태에 도달하므로
+    안내도 같아야 한다 - 한쪽만 다음 행동을 알려주면 다른 쪽은 왕복만 하다
+    루프 한계로 끝난다.
+    """
     if unrun:
-        return (f"반려: 통과한 후보가 없다. 아직 실행하지 않은 가설 도구가 있다: "
+        return (f"통과한 후보가 없다. 아직 실행하지 않은 가설 도구가 있다: "
                 f"{', '.join(unrun)}. 먼저 호출하라.")
     if bundle.ran:
-        return ("반려: 등록 가설을 다 돌렸으나 판별선을 넘은 후보가 없다. "
+        return ("등록 가설을 다 돌렸으나 판별선을 넘은 후보가 없다. "
                 "2단 센서로 근거를 더 좁히거나 대조군을 다시 보라.")
-    return "반려: 그룹 대조 근거가 없다. 가설 도구(hyp_*)로 두 그룹을 먼저 대조하라."
+    return "그룹 대조 근거가 없다. 가설 도구(hyp_*)로 두 그룹을 먼저 대조하라."
 
 
 # ------------------------------------------------ 고정 골격: 리포팅
