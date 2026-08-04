@@ -383,6 +383,57 @@ def test_gate_does_not_declare_no_signal_when_candidates_only_missed_the_line():
     assert "finalize_accepted" not in out
 
 
+def test_gate_declares_no_comparable_data_on_the_first_uncomputable_hypothesis():
+    """가설이 **계산 자체를 못 한** 상태면 그 자리에서 사유를 밝히고 끝낸다.
+
+    `no_paired_stratum`(같은 root_lot 대조 짝 없음)·`insufficient_group`(타깃 부족)은
+    legend 와 무관한 **그룹 수준** 사실이라, 다른 가설을 돌려도 똑같은 답이 나온다.
+    그래서 `unrun` 이 남아 있어도 기다리지 않는다 - 기다리면 LLM 이 루프 한계까지
+    왕복하다 `inconclusive`("확정 근거 없음")로 끝나, 진짜 사유인 **데이터 결측**이
+    리포트에서 사라진다.
+    """
+    no_pair = {
+        "loop": 1, "tool": "hyp_eqp_ch_commonality", "args": {},
+        "result": {"hypothesis_id": "eqp_ch_commonality",
+                   "status": "no_paired_stratum", "candidates": []},
+        "thought": "1차 legend",
+    }
+    ai = _ai_finalize(0.2, hypothesis="비교할 짝이 없다", claim_id="")
+    out = nodes.tools_node({"messages": [ai], "loop_count": 1, "findings": [no_pair]})
+    assert out["finalize_accepted"] is True
+    assert out["finalize_status"] == "no_comparable_data"
+    assert "no_paired_stratum" in out["messages"][0].content   # 사유를 그대로 실어 보낸다
+
+
+def test_gate_does_not_declare_no_comparable_data_when_another_hypothesis_computed():
+    """한 가설이 계산 불가여도 다른 가설이 계산됐으면 '데이터 결측'이 아니다.
+
+    결측 판정은 **돌아간 가설 전부**가 계산 불가일 때만 성립한다. 한쪽이라도
+    후보를 냈다면 조치가 다르다(더 좁힐 여지가 있다) - 뭉개면 안 된다.
+    """
+    no_pair = {
+        "loop": 1, "tool": "hyp_eqp_ch_commonality", "args": {},
+        "result": {"hypothesis_id": "eqp_ch_commonality",
+                   "status": "no_paired_stratum", "candidates": []},
+        "thought": "1차 legend",
+    }
+    weak_ppid = {
+        "loop": 2, "tool": "hyp_ppid_commonality", "args": {},
+        "result": {"hypothesis_id": "ppid_commonality", "status": "ok", "candidates": [
+            {"claim_id": "ppid_commonality:ppid:PPID001:P1", "step_seq": "PPID001",
+             "key": "P1", "level": "ppid", "passes": False,
+             "reject_reason": "분리 점수 0.2 < 0.5",
+             "score": 0.2, "target_pass": 4, "target_total": 4,   # 4/4 - 4/5 = 0.2
+             "control_pass": 4, "control_total": 5},
+        ]},
+        "thought": "2차 legend",
+    }
+    ai = _ai_finalize(0.2, hypothesis="약한 후보뿐", claim_id="")
+    out = nodes.tools_node({"messages": [ai], "loop_count": 2,
+                            "findings": [no_pair, weak_ppid]})
+    assert "finalize_accepted" not in out
+
+
 def test_gate_accepts_chamber_hypothesis():
     ai = _ai_finalize(0.9, hypothesis="Etch 공정 ETCH9_B 챔버 편중이 원인",
                       claim_id="eqp_ch_commonality:chamber:CC002000:ETCH9_B")
@@ -545,6 +596,23 @@ def test_report_node_marks_inconclusive_conclusion():
     })
     assert "미확정" in out["report"]
     assert "ETCH-9" in out["report"]  # 유력 가설은 후보로는 남긴다
+
+
+def test_report_node_marks_no_comparable_data_conclusion():
+    """계산 불가 종료의 결론은 '분석 미수행 - 비교 가능한 데이터 없음' 이어야 한다.
+
+    `inconclusive`("근거를 못 찾았다")와 조치가 다르다 - 이쪽은 사람이 적재/추출
+    범위를 봐야 한다. 문구가 같으면 엔지니어가 엉뚱한 곳을 뒤진다.
+    """
+    out = nodes.report_node({
+        "target_wafers": ["W2406_02"], "target_source": "manual",
+        "target_group": ["W2406_02"], "status_summary": "요약",
+        "findings": [], "final_hypothesis": "", "final_confidence": 0.2,
+        "finalize_status": "no_comparable_data",
+    })
+    assert "분석 미수행" in out["report"]
+    assert "미확정" not in out["report"]
+
 
 def test_tools_node_recovers_from_unknown_tool_name():
     ai = AIMessage(content="", tool_calls=[
@@ -740,3 +808,108 @@ def test_report_node_passes_the_approved_claim_to_the_report():
 
     assert received.get("claim") == approved
     assert "eqp_ch_commonality:chamber:CC002000:ETCH9_B" in out["report"]
+
+# ---------------------------------------------------------------- LLM 호출 실패
+# 사내 LLM 은 타임아웃·5xx 를 낸다. `ya_console.say` 가 막으려던 것과 같은 유실이
+# 여기서 다른 경로로 난다 - 그래프를 다 돌린 결과가 예외 하나로 통째로 사라진다.
+# `tools_node` 는 도구 실패를 ToolMessage 로 복구하는데(미룸 1번) LLM 쪽만 무방비였다.
+
+class _FailingLLM:
+    """analyze/report 양쪽이 사내 LLM 처럼 터지는 스텁."""
+
+    def analyze_step(self, messages):
+        raise TimeoutError("사내 LLM 응답 없음")
+
+    def generate_report(self, **kwargs):
+        raise TimeoutError("사내 LLM 응답 없음")
+
+
+def _with_failing_llm(fn):
+    original = nodes._llm
+    nodes._llm = _FailingLLM()
+    try:
+        return fn()
+    finally:
+        nodes._llm = original
+
+
+def test_analyze_node_survives_an_llm_failure():
+    """LLM 호출이 터져도 노드가 죽지 않고 사유를 상태에 남긴다."""
+    out = _with_failing_llm(lambda: nodes.analyze_node(
+        {"messages": [], "loop_count": 2}))
+    assert out["finalize_status"] == "llm_call_failed"
+    assert "TimeoutError" in out["findings"][0]["result"]
+
+
+def test_analyze_node_failure_routes_to_report():
+    """실패한 analyze 는 리포팅으로 나가야 한다 (루프에 갇히면 안 된다).
+
+    `_after_analyze` 는 마지막 메시지의 tool_calls 로 갈림길을 정한다. 실패 시
+    tool_calls 없는 메시지를 남기면 기존 안전망이 그대로 report 로 보낸다.
+    """
+    from graph import build
+
+    out = _with_failing_llm(lambda: nodes.analyze_node(
+        {"messages": [], "loop_count": 2}))
+    assert build._after_analyze({"messages": out["messages"]}) == "report"
+
+
+def test_report_node_survives_an_llm_failure():
+    """리포트 LLM 이 터져도 분석 결과가 통째로 사라지면 안 된다.
+
+    여기서 예외가 나가면 그래프가 죽고, 그때까지의 현황·감사 기록·승인된 근거가
+    전부 유실된다(main.py 는 그래프를 **다 돌린 뒤** 출력한다).
+    """
+    out = _with_failing_llm(lambda: nodes.report_node({
+        "target_wafers": ["W2406_02"], "target_source": "manual",
+        "target_group": ["W2406_02"], "status_summary": "요약", "findings": [],
+        "final_hypothesis": "ETCH9_B 챔버 편중이 원인", "final_confidence": 0.9,
+        "finalize_status": "confirmed",
+    }))
+    assert "ETCH9_B 챔버 편중이 원인" in out["report"]   # 결론이 살아 있다
+    assert "TimeoutError" in out["report"]              # 왜 산문이 없는지도 밝힌다
+
+
+def test_report_node_keeps_the_evidence_line_when_the_llm_fails():
+    """[근거] 줄은 LLM 산문이 없어도 붙어야 한다 - 코드가 붙이는 이유가 그것이다."""
+    claim = {"claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH9_B",
+             "score": 1.0, "target_pass": 3, "target_total": 3,
+             "control_pass": 0, "control_total": 6}
+    out = _with_failing_llm(lambda: nodes.report_node({
+        "target_wafers": ["W2406_02"], "target_source": "manual",
+        "target_group": ["W2406_02"], "status_summary": "요약", "findings": [],
+        "final_hypothesis": "원인은 그 챔버다", "final_confidence": 0.9,
+        "finalize_status": "confirmed", "final_claim": claim,
+    }))
+    assert "[근거]" in out["report"]
+    assert "eqp_ch_commonality:chamber:CC002000:ETCH9_B" in out["report"]
+
+
+def test_graph_completes_when_the_llm_is_down():
+    """LLM 이 통째로 죽어도 그래프는 완주해 리포트를 낸다 (E2E).
+
+    노드 단위 방어가 있어도 배선이 어긋나면 여전히 예외가 밖으로 나간다.
+    """
+    from graph.build import build_graph
+
+    state = _with_failing_llm(lambda: build_graph().invoke(
+        {"target_wafers": ["W2406_02"], "target_source": "manual"}))
+    assert state["report"]
+    assert state["finalize_status"] == "llm_call_failed"
+
+
+def test_report_states_the_llm_failure_when_only_analyze_died():
+    """analyze 만 터지고 리포트 LLM 은 살아난 경우, 결론이 그 사실을 밝혀야 한다.
+
+    이때 산문은 정상 생성되므로 report_node 의 실패 대체 경로를 안 탄다.
+    분기가 없으면 결론이 "원인 미확정" 으로 나가, 분석이 돌았는데 못 찾은 것과
+    아예 못 돌린 것이 구분되지 않는다.
+    """
+    out = nodes.report_node({
+        "target_wafers": ["W2406_02"], "target_source": "manual",
+        "target_group": ["W2406_02"], "status_summary": "요약", "findings": [],
+        "final_hypothesis": "", "final_confidence": 0.0,
+        "finalize_status": "llm_call_failed",
+    })
+    assert "분석 미수행" in out["report"]
+    assert "LLM" in out["report"]

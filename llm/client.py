@@ -176,6 +176,15 @@ class ScriptedMockLLMClient(LLMClient):
             conclusion = ("신호 없음 - lot 내부 대조로는 타깃만 거친 설비/챔버/PPID 가 없다. "
                           "원인 없음이 아니라 원인이 root_lot 전체에 걸렸을 수 있다는 뜻이며, "
                           "lot 밖 대조군이 필요하다.")
+        elif finalize_status == "llm_call_failed":
+            conclusion = ("분석 미수행 - LLM 분석 호출이 실패해 루프를 돌지 못했다. "
+                          "원인을 못 찾은 것이 아니라 분석 자체가 안 돌았다는 뜻이며, "
+                          "LLM 서빙 상태를 확인하고 재실행해야 한다.")
+        elif finalize_status == "no_comparable_data":
+            conclusion = ("분석 미수행 - 비교 가능한 데이터가 없다. 타깃과 같은 root_lot 의 "
+                          "대조군이 없거나 그 wafer 들의 설비 이력이 없어 계산이 성립하지 "
+                          "않았다. 근거를 못 찾은 것이 아니라 볼 것이 없었다는 뜻이며, "
+                          "적재 범위와 추출 조건을 확인해야 한다.")
         elif finalize_status == "no_anomaly":
             conclusion = "이상 없음 - 수율 임계 미만 lot 이 없다."
         elif finalize_status == "unknown_target":
@@ -238,6 +247,8 @@ class OpenAILLMClient(LLMClient):
             api_key=ya_config.LLM_API_KEY,
             model=ya_config.LLM_MODEL,
             temperature=0,
+            timeout=ya_config.LLM_TIMEOUT,
+            max_retries=ya_config.LLM_MAX_RETRIES,
         )
         self.analyzer = self.llm.bind_tools(ALL_TOOLS, parallel_tool_calls=False)
 
@@ -256,6 +267,11 @@ class OpenAILLMClient(LLMClient):
             "판정이 no_signal 이면 '신호 없음'으로 서술하라 - 원인 없음이 아니라 "
             "lot 내부 대조로는 보이지 않는다는 뜻이며 lot 밖 대조군이 필요하다는 "
             "후속 조치를 명시하고, 확정 결론을 쓰지 마라. "
+            "판정이 no_comparable_data 면 '분석 미수행 - 비교 가능한 데이터 없음'으로 "
+            "서술하라 - 근거를 못 찾은 것이 아니라 대조에 쓸 짝이 없어 계산이 성립하지 "
+            "않은 것이며, 적재 범위와 추출 조건 확인이 후속 조치다. 확정 결론을 쓰지 마라. "
+            "판정이 llm_call_failed 면 '분석 미수행 - LLM 분석 호출 실패'로 서술하라 - "
+            "분석 루프가 아예 안 돌았으니 확정 결론을 쓰지 말고 재실행을 권하라. "
             "판정이 no_anomaly 면 '이상 없음'으로 서술하라. "
             "판정이 isolated/control_insufficient/unknown_target/eds_lookup_failed 이면 "
             "'분석 미수행'과 그 사유를 명시하고 확정 결론을 쓰지 마라."

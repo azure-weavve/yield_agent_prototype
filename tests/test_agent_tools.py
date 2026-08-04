@@ -1,5 +1,8 @@
 """@tool 래퍼: 이름·스키마·실행 검증."""
 
+import pytest
+from langchain_core.utils.function_calling import convert_to_openai_tool
+
 from tools import agent_tools as at
 
 
@@ -17,6 +20,44 @@ def test_tool_names():
 def test_docstrings_exist():
     # docstring 이 곧 LLM 의 tool 선택 판단 재료
     assert all(t.description for t in at.ALL_TOOLS)
+
+
+def test_every_tool_argument_declares_a_json_type():
+    """LLM 에 나가는 스키마의 모든 인자에 `type` 이 있어야 한다.
+
+    `@tool` 데코레이터로 만든 도구는 타입 힌트에서 스키마가 나오지만, YAML 로
+    동적 생성되는 `hyp_*` (domain/registry.py) 는 힌트를 안 붙이면 인자가
+    `{}` (타입 없음)로 나간다. 그러면 LLM 이 리스트 자리에 문자열을 넣어도
+    스키마 위반이 아니게 되고, 그 사고는
+    `test_hypothesis_tool_rejects_a_string_where_a_list_is_required` 가 보여주듯
+    **에러 없이 틀린 결과**로 끝난다.
+
+    도구가 늘어날 때마다 같은 구멍이 다시 생기므로 전수로 잠근다.
+    """
+    typeless = []
+    for tool in at.ALL_TOOLS:
+        props = convert_to_openai_tool(tool)["function"]["parameters"]["properties"]
+        typeless += [f"{tool.name}.{arg}" for arg, spec in props.items()
+                     if "type" not in spec and "anyOf" not in spec]
+    assert not typeless, (
+        f"타입 없는 인자: {sorted(typeless)}. 도구 함수에 타입 힌트를 붙여야 한다 "
+        f"(hyp_* 는 domain/registry.py 의 `_run`)."
+    )
+
+
+def test_hypothesis_tool_rejects_a_string_where_a_list_is_required():
+    """가설 도구에 wafer 목록 대신 문자열이 오면 실패해야 한다.
+
+    타입 없는 스키마에서는 문자열이 `set()` 으로 들어가 글자 단위로 쪼개지고,
+    결과가 `status="no_paired_stratum"` (= "이력 결측 확인 필요") 로 나왔다.
+    LLM 의 인자 실수가 엔지니어에게 **데이터 결측으로 보고**되는 조용한 오류다.
+    실패해야 `tools_node` 가 오류 ToolMessage 로 돌려주고 LLM 이 스스로 고친다.
+    """
+    with pytest.raises(Exception):
+        at.TOOLS_BY_NAME["hyp_eqp_ch_commonality"].invoke({
+            "group_ids": "W2406_02,W2406_04,W2406_06",
+            "control_ids": "W2406_01,W2406_03,W2406_05",
+        })
 
 
 def test_hyp_eqp_ch_commonality_tool_invokes():

@@ -11,11 +11,12 @@
 import json
 from dataclasses import asdict
 
-from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 import ya_config
 from graph import evidence
 from llm.client import get_llm
+from tools import commonality as cm
 from tools import grouping
 from tools import yield_tools as yt
 from tools.agent_tools import TOOLS_BY_NAME
@@ -139,8 +140,28 @@ def _summarize_target(source: str, targets: list[str], norm: dict, ctrl: dict) -
 
 # ------------------------------------------------ 자유 루프: 분석 (LLM)
 def analyze_node(state: dict) -> dict:
-    ai = _llm_lazy().analyze_step(state["messages"])
-    return {"messages": [ai], "loop_count": state.get("loop_count", 0) + 1}
+    """LLM 이 다음 행동을 고른다. 호출 실패는 예외로 내보내지 않는다.
+
+    사내 LLM 은 타임아웃·5xx 를 낸다. 여기서 예외가 밖으로 나가면 그래프가 죽고,
+    `main.py` 는 그래프를 **다 돌린 뒤** 출력하므로 현황·감사 기록이 통째로 사라진다
+    (`ya_console.py` 가 막으려던 유실과 같은 것이 다른 경로로 나는 셈이다).
+    도구 실패를 ToolMessage 로 복구하는 `tools_node` 와 같은 원칙으로, 실패를
+    **사실로 기록하고** 리포팅으로 흘려보낸다 - tool_calls 없는 메시지를 남기면
+    `_after_analyze` 의 기존 안전망이 report 로 보낸다.
+    """
+    loop = state.get("loop_count", 0) + 1
+    try:
+        ai = _llm_lazy().analyze_step(state["messages"])
+    except Exception as e:
+        note = f"LLM 분석 호출 실패 ({type(e).__name__}: {e})"
+        return {
+            "messages": [AIMessage(content=note)],   # tool_calls 없음 -> report 로
+            "loop_count": loop,
+            "findings": [{"loop": loop, "tool": "analyze", "args": {},
+                          "result": note, "thought": ""}],
+            "finalize_status": "llm_call_failed",
+        }
+    return {"messages": [ai], "loop_count": loop}
 
 
 # ------------------------------------------------ 자유 루프: 도구 실행 + 게이트
@@ -207,8 +228,9 @@ def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) ->
     판정은 위에서부터 처음 걸리는 줄로 결정된다:
       (1) 지목한 claim 이 통과 + 최고 점수 + 확신도 충족 -> confirmed
       (2) 등록 가설을 다 돌렸는데 통과 후보 0 + no_signal 있음 -> no_signal
-      (3) 루프 한계 -> inconclusive (승인이 아니라 '미확정')
-      (4) 그 외 -> 반려. 무엇이 모자란지 그대로 돌려준다.
+      (3) 돌아간 가설이 전부 '계산 불가' -> no_comparable_data
+      (4) 루프 한계 -> inconclusive (승인이 아니라 '미확정')
+      (5) 그 외 -> 반려. 무엇이 모자란지 그대로 돌려준다.
     """
     bundle = evidence.build_bundle(findings)
     conf, conf_note = _confidence(args.get("confidence", 0.0))
@@ -241,7 +263,20 @@ def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) ->
         return ("신호 없음 (등록 가설 전부 대조 완료, 분리되는 후보 없음): "
                 "lot 내부 대조로는 원인을 좁힐 수 없다. 리포팅으로 진행한다.")
 
-    # (3) 루프 한계 도달 강제 종료는 승인이 아니라 '미확정'
+    # (3) 계산 불가 - 돌아간 가설이 전부 그룹 수준 사실(대조 짝 없음·타깃 부족)에서 멈췄다.
+    #     이 상태는 legend 와 무관하므로 **아직 안 돌린 가설을 기다리지 않는다** - 기다리면
+    #     LLM 이 루프 한계까지 왕복하다 inconclusive("확정 근거 없음")로 끝나고, 진짜 사유인
+    #     데이터 결측이 리포트에서 사라진다. 사람이 할 일도 다르다(적재/추출 범위 확인).
+    ran_statuses = set(bundle.statuses.values())
+    if ran_statuses and ran_statuses <= cm.NO_DATA_STATUSES:
+        update["finalize_accepted"] = True
+        update["finalize_status"] = "no_comparable_data"
+        update["final_hypothesis"] = hypothesis
+        update["final_confidence"] = conf
+        return (f"비교 가능한 데이터 없음 ({', '.join(sorted(ran_statuses))}): "
+                f"대조에 쓸 짝이 없어 계산이 성립하지 않는다. 리포팅으로 진행한다.")
+
+    # (4) 루프 한계 도달 강제 종료는 승인이 아니라 '미확정'
     if loop >= ya_config.MAX_LOOPS:
         update["finalize_accepted"] = True
         update["finalize_status"] = "inconclusive"
@@ -249,7 +284,7 @@ def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) ->
         update["final_confidence"] = conf
         return "미확정 (루프 한계 도달): 확정 근거 없이 리포팅으로 진행한다."
 
-    # (4) 반려
+    # (5) 반려
     return _gate_rejection(claim_id, claim, bundle, unrun, conf, conf_note)
 
 
@@ -316,17 +351,27 @@ def _no_candidate_action(bundle, unrun) -> str:
 # ------------------------------------------------ 고정 골격: 리포팅
 def report_node(state: dict) -> dict:
     claim = state.get("final_claim")
-    report = _llm_lazy().generate_report(
-        target_wafers=state.get("target_wafers", []),
-        target_source=state.get("target_source", "manual"),
-        target_group=state["target_group"],
-        status_summary=state["status_summary"],
-        findings=state["findings"],
-        hypothesis=state.get("final_hypothesis"),
-        confidence=state.get("final_confidence"),
-        finalize_status=state.get("finalize_status"),
-        claim=claim,
-    )
+    try:
+        report = _llm_lazy().generate_report(
+            target_wafers=state.get("target_wafers", []),
+            target_source=state.get("target_source", "manual"),
+            target_group=state["target_group"],
+            status_summary=state["status_summary"],
+            findings=state["findings"],
+            hypothesis=state.get("final_hypothesis"),
+            confidence=state.get("final_confidence"),
+            finalize_status=state.get("finalize_status"),
+            claim=claim,
+        )
+    except Exception as e:
+        # 여기가 마지막 노드다 - 예외를 내보내면 분석을 다 해 놓고 결과를 전부 버린다.
+        # 산문만 포기하고 결론은 코드로 적는다. 현황·감사 기록은 main.py 가 상태에서
+        # 따로 찍으므로, 여기서 필요한 것은 '왜 산문이 없는지'와 결론뿐이다.
+        report = (f"[리포트 생성 실패] LLM 호출이 실패해 산문 리포트를 만들지 못했다 "
+                  f"({type(e).__name__}: {e}). 아래는 코드가 적은 결론이다.\n"
+                  f"[판정] {state.get('finalize_status') or '미상'}\n"
+                  f"[결론] {state.get('final_hypothesis') or '원인 미확정'}"
+                  f" (확신도 {state.get('final_confidence')})")
     if claim:
         # [근거] 줄은 클라이언트(LLM)가 아니라 여기서 코드로 붙인다 - 운영에서도
         # 근거가 리포트에서 사라지지 않게 하려는 것이 이 기능의 목적이다.

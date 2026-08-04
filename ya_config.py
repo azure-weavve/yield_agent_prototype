@@ -28,6 +28,11 @@ LLM_MODE = os.getenv("LLM_MODE", "mock")
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://<사내-llm-호스트>/v1")
 LLM_API_KEY = os.getenv("LLM_API_KEY", "dummy")
 LLM_MODEL = os.getenv("LLM_MODEL", "<사내-모델명>")
+# 응답이 안 오면 언젠가는 포기해야 한다. 이 값이 없으면 사내 서빙이 멈췄을 때 예외가
+# 영영 안 나고 프로세스가 매달린다 - graph/nodes.py 의 LLM 실패 방어가 탈 경로 자체가
+# 사라진다. 실측 후 조정 (사내 모델 응답 시간을 아직 모른다).
+LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "60"))
+LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "2"))
 
 # 분석 루프 통제 (analysis_loop_design.md 부품 4b)
 MAX_LOOPS = 6              # 가드레일: 최대 순환 횟수 (무한루프 차단)

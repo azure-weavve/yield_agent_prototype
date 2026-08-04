@@ -37,7 +37,12 @@ def load_hypotheses(path=None):
 def build_tools(specs):
     tools = []
     for spec in specs:
-        def _run(group_ids, control_ids, reason="", _spec=spec):
+        # 타입 힌트는 장식이 아니다 — LLM 에 나가는 인자 스키마가 여기서 나온다.
+        # 빼면 인자가 `{}` (타입 없음)로 나가고, LLM 이 문자열을 넘겨도 스키마 위반이
+        # 아니게 되어 글자 단위로 쪼개진 채 "이력 결측" 결과가 나온다(에러 없이 오답).
+        # tests/test_agent_tools.py 가 전 도구에 대해 이것을 잠근다.
+        def _run(group_ids: list[str], control_ids: list[str],
+                 reason: str = "", _spec=spec):
             return engine.evaluate(_spec, group_ids, control_ids)
         tools.append(StructuredTool.from_function(
             func=_run, name=f"hyp_{spec['id']}",
