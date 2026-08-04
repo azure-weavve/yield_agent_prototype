@@ -23,12 +23,12 @@ def run(target_wafers: list[str], source: str) -> None:
     # 출력은 전부 `say` 로 한다 — 그래프를 다 돌린 **뒤** 라서, print 한 줄이 콘솔
     # 인코딩에 걸려 죽으면 분석 결과를 통째로 잃는다 (ya_console.py 참조).
     say(f"[분석 대상 입력] ({source}) {', '.join(target_wafers) or '없음'}\n")
-    say(f"[현황 파악 — 고정 골격]\n{state['status_summary']}\n")
+    say(f"[현황 파악 - 고정 골격]\n{state['status_summary']}\n")
     tg = state["target_group"]
     if tg and not state.get("finalize_status"):
         say(f"[분석 그룹] 불량 {', '.join(tg)}  /  대조 {', '.join(state['control_group'])}\n")
 
-    say("[분석 루프 — 감사 기록]")
+    say("[분석 루프 - 감사 기록]")
     for f in state["findings"]:
         if f["loop"] == 0:
             continue  # 현황파악은 위에서 출력
@@ -38,7 +38,7 @@ def run(target_wafers: list[str], source: str) -> None:
         if f["tool"] == "finalize":
             say(f"     게이트: {f['result']}")
     say()
-    say(f"[리포트 — 고정 골격]\n{state['report']}")
+    say(f"[리포트 - 고정 골격]\n{state['report']}")
 
 
 if __name__ == "__main__":

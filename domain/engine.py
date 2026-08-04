@@ -12,7 +12,7 @@ from tools import commonality as cm
 def _passes(cand, min_score, min_target, status, ok):
     reasons = []
     if not ok:
-        reasons.append(f"상태 {status} — ok 아님")
+        reasons.append(f"상태 {status} - ok 아님")
     if cand["score"] < min_score:
         reasons.append(f"분리 점수 {cand['score']} < {min_score}")
     if cand["target_pass"] < min_target:

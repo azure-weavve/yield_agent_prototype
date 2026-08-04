@@ -601,7 +601,7 @@ def _report(rows, vectors, wafer_ids):
     for r in rows:
         if r["lot_id"] == RECENT_LOT:
             say(f"  {r['wafer_id']}  yield={r['yield']}  "
-                f"defect={r['_truth_defect']} (정답지 — DB 에는 NULL)")
+                f"defect={r['_truth_defect']} (정답지 - DB 에는 NULL)")
 
 
 if __name__ == "__main__":

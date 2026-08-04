@@ -78,7 +78,7 @@ def test_eds_lookup_failure_ends_with_report_not_crash(monkeypatch):
     )
     assert state["finalize_status"] == "eds_lookup_failed"
     assert state["report"]
-    assert "분석 미수행 — EDS 유사맵 조회 실패" in state["report"]   # 결론 문장
+    assert "분석 미수행 - EDS 유사맵 조회 실패" in state["report"]   # 결론 문장
     assert "KeyError" in state["report"]       # 구체 사유는 현황에 그대로 실린다
     assert state["findings"]                   # 감사 기록이 끊기지 않는다
 

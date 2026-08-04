@@ -45,7 +45,7 @@ def compare_sensor_distribution(step_seq: str, group_ids: list[str],
 
     if len(targets) < ya_config.SENSOR_MIN_SAMPLE or len(controls) < ya_config.SENSOR_MIN_SAMPLE:
         return {**base, "status": "insufficient_sample",
-                "note": (f"타깃 {len(targets)}장 / 대조군 {len(controls)}장 — "
+                "note": (f"타깃 {len(targets)}장 / 대조군 {len(controls)}장 - "
                          f"최소 {ya_config.SENSOR_MIN_SAMPLE}장 미만이라 비교하지 않는다. "
                          f"표본 2장짜리 효과크기는 허상이다.")}
 

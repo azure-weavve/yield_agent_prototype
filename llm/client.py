@@ -171,24 +171,24 @@ class ScriptedMockLLMClient(LLMClient):
             if f["tool"] == "finalize":
                 lines.append(f"     - 게이트: {f['result']}")
         if finalize_status == "inconclusive":
-            conclusion = f"미확정 (루프 한계 도달) — 유력 가설: {hypothesis or '없음'}"
+            conclusion = f"미확정 (루프 한계 도달) - 유력 가설: {hypothesis or '없음'}"
         elif finalize_status == "no_signal":
             conclusion = ("신호 없음 - lot 내부 대조로는 타깃만 거친 설비/챔버/PPID 가 없다. "
                           "원인 없음이 아니라 원인이 root_lot 전체에 걸렸을 수 있다는 뜻이며, "
                           "lot 밖 대조군이 필요하다.")
         elif finalize_status == "no_anomaly":
-            conclusion = "이상 없음 — 수율 임계 미만 lot 이 없다."
+            conclusion = "이상 없음 - 수율 임계 미만 lot 이 없다."
         elif finalize_status == "unknown_target":
-            conclusion = "분석 미수행 — 입력 wafer 를 데이터에서 찾을 수 없다. 입력을 확인하라."
+            conclusion = "분석 미수행 - 입력 wafer 를 데이터에서 찾을 수 없다. 입력을 확인하라."
         elif finalize_status == "eds_lookup_failed":
-            conclusion = ("분석 미수행 — EDS 유사맵 조회 실패 (wafer 는 yield DB 에 존재). "
+            conclusion = ("분석 미수행 - EDS 유사맵 조회 실패 (wafer 는 yield DB 에 존재). "
                           "인덱스↔yield DB 동기화 또는 EDS 서비스 상태를 확인하라 "
-                          "— 구체 사유는 [현황] 참조.")
+                          "- 구체 사유는 [현황] 참조.")
         elif finalize_status == "isolated":
-            conclusion = ("분석 미수행 — 고립 패턴: 유사 형제 wafer 가 없어 그룹 대조가 "
+            conclusion = ("분석 미수행 - 고립 패턴: 유사 형제 wafer 가 없어 그룹 대조가 "
                           "불가능하다. 추후 분석 필요.")
         elif finalize_status == "control_insufficient":
-            conclusion = ("분석 미수행 — 대조군 부족 (lot 내 대조 한계). "
+            conclusion = ("분석 미수행 - 대조군 부족 (lot 내 대조 한계). "
                           "root_lot 확장은 ETL(lot_type) 이후 활성화. 추후 분석 필요.")
         else:
             conclusion = hypothesis or "원인 미확정"
