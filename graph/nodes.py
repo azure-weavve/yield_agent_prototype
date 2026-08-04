@@ -264,8 +264,11 @@ def _confidence(raw) -> tuple[float, str]:
 def _gate_rejection(claim_id, claim, bundle, unrun, conf, conf_note) -> str:
     """왜 승인하지 않았는지를 LLM 이 다음 행동으로 옮길 수 있게 돌려준다."""
     if claim_id and claim is None:
-        valid = sorted(bundle.claims)
-        avail = ("유효한 claim_id: " + ", ".join(valid)) if valid else "아직 유효한 claim 이 없다"
+        # 안내 대상은 **통과 후보뿐**이다. 번들 전체를 안내하면 LLM 이 거기서
+        # 미통과 후보를 골라 다시 제출하고 또 반려당하는 왕복이 생긴다 -
+        # claim_id 미제출 분기(아래)와 같은 것을 안내해야 한다.
+        valid = sorted(c.claim_id for c in bundle.passing())
+        avail = ("통과 후보: " + ", ".join(valid)) if valid else "아직 통과한 후보가 없다"
         return f"반려: claim_id '{claim_id}' 는 도구 결과에 없다. {avail}."
 
     if claim is not None:

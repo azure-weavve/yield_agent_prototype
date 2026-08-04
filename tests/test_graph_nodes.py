@@ -36,6 +36,11 @@ def _ai_finalize(confidence, hypothesis="Etch ETCH-9 원인", claim_id="eqp_ch_c
     )
 
 
+# 아래 후보 픽스처들의 `score` 는 임의 값이 아니다 — commonality 의 정의대로
+# `target_pass/target_total - control_pass/control_total` 과 맞춰 둔다. 게이트는
+# score 만 읽어서 어긋나도 안 죽지만, 이 픽스처를 복사해 쓰는 다음 사람이 실제
+# 도구가 낼 수 없는 조합을 근거로 삼게 된다.
+
 # 게이트 증거 검사용(신형): 챔버 가설이 ETCH-9 를 통과 판정한 감사 기록
 EVIDENCE_FINDING = {
     "loop": 2, "tool": "hyp_eqp_ch_commonality",
@@ -131,8 +136,31 @@ def test_gate_rejects_unknown_claim_id():
     assert "CVD-3" in out["messages"][0].content
 
 
-def test_gate_rejects_claim_that_did_not_pass():
-    """미통과 후보를 지목하면 도구가 낸 reject_reason 을 그대로 돌려준다."""
+def test_gate_does_not_advertise_failing_candidates_when_the_claim_id_is_unknown():
+    """지어낸 claim_id 를 반려할 때 안내하는 대상은 **통과 후보뿐**이다.
+
+    claim_id 미제출 분기는 `passing()` 만 안내하는데 이 분기만 번들 전체를 안내하면,
+    LLM 이 그 목록에서 미통과 후보를 골라 다시 제출하고 또 반려당하는 왕복이 생긴다.
+    두 분기가 같은 것을 안내해야 한다.
+    """
+    ai = _ai_finalize(0.9, claim_id="eqp_ch_commonality:chamber:CC002000:NOPE")
+    out = nodes.tools_node({"messages": [ai], "loop_count": 3,
+                            "findings": [EVIDENCE_FINDING_NEW]})
+    msg = out["messages"][0].content
+
+    assert "finalize_accepted" not in out
+    assert "eqp_ch_commonality:chamber:CC002000:ETCH9_B" in msg      # 통과 후보는 안내한다
+    assert "eqp_ch_commonality:chamber:CD004000:PHOTO1_A" not in msg  # 미통과 후보는 안내하지 않는다
+
+
+def test_gate_returns_the_tool_reject_reason_for_a_failing_claim():
+    """미통과 후보를 지목하면 도구가 낸 reject_reason 을 그대로 돌려준다.
+
+    이 픽스처는 미통과 후보의 점수가 통과 후보보다 낮아, 승인 조건의 `claim.passes`
+    검사를 지워도 점수 비교에 걸려 여전히 반려된다 — 즉 **이 테스트가 잠그는 것은
+    반려 사유 전달이지 `passes` 검사 자체가 아니다.** 그 검사를 잠그는 것은
+    `test_gate_rejects_claim_that_did_not_pass_even_when_score_ties_the_top` 이다.
+    """
     ai = _ai_finalize(0.9, claim_id="eqp_ch_commonality:chamber:CD004000:PHOTO1_A")
     out = nodes.tools_node({"messages": [ai], "loop_count": 3,
                             "findings": [EVIDENCE_FINDING_NEW]})
@@ -179,7 +207,7 @@ def test_gate_rejects_lower_scored_claim_and_names_the_stronger_one():
              "control_pass": 0, "control_total": 5},
             {"claim_id": "eqp_ch_commonality:chamber:CD004000:PHOT2_X", "step_seq": "CD004000",
              "key": "PHOT2_X", "level": "chamber", "passes": True, "reject_reason": None,
-             "score": 0.75, "target_pass": 4, "target_total": 4,
+             "score": 0.8, "target_pass": 4, "target_total": 4,
              "control_pass": 1, "control_total": 5},
         ]},
         "thought": "미끼 포함",
@@ -276,8 +304,8 @@ def test_gate_does_not_declare_no_signal_when_candidates_only_missed_the_line():
         "result": {"hypothesis_id": "eqp_ch_commonality", "status": "ok", "candidates": [
             {"claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH9_B", "step_seq": "CC002000",
              "key": "ETCH9_B", "level": "chamber", "passes": False,
-             "reject_reason": "분리 점수 0.3 < 0.6",
-             "score": 0.3, "target_pass": 4, "target_total": 4,
+             "reject_reason": "분리 점수 0.4 < 0.6",
+             "score": 0.4, "target_pass": 4, "target_total": 4,
              "control_pass": 3, "control_total": 5},
         ]},
         "thought": "약한 후보",
@@ -289,7 +317,7 @@ def test_gate_does_not_declare_no_signal_when_candidates_only_missed_the_line():
              "key": "P1", "level": "ppid", "passes": False,
              "reject_reason": "분리 점수 0.2 < 0.6",
              "score": 0.2, "target_pass": 4, "target_total": 4,
-             "control_pass": 3, "control_total": 5},
+             "control_pass": 4, "control_total": 5},
         ]},
         "thought": "약한 후보",
     }
@@ -621,13 +649,38 @@ def test_report_node_appends_evidence_line_regardless_of_client():
 
 
 def test_report_node_passes_the_approved_claim_to_the_report():
-    out = nodes.report_node({
-        "target_wafers": ["W2406_02"], "target_source": "manual",
-        "target_group": ["W2406_02"], "status_summary": "요약", "findings": [],
-        "final_hypothesis": "ETCH9_B 편중", "final_confidence": 0.9,
-        "finalize_status": "confirmed",
-        "final_claim": {"claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH9_B", "score": 1.0,
-                        "target_pass": 3, "target_total": 3,
-                        "control_pass": 0, "control_total": 6},
-    })
+    """승인된 claim 이 **클라이언트까지** 전달돼야 한다 (리포트 본문 확인만으로는 부족).
+
+    `report_node` 는 `[근거]` 줄을 자기가 붙이므로, 리포트 문자열에서 claim_id 를
+    찾는 것만으로는 `generate_report(claim=...)` 인자를 지워도 통과한다. 그 인자는
+    운영 클라이언트의 "수치를 그대로 인용하라" 프롬프트를 만드는 유일한 통로라
+    여기서 인자 자체를 잠근다.
+    """
+    received = {}
+
+    class _RecordingClient:
+        def analyze_step(self, messages):
+            raise NotImplementedError
+
+        def generate_report(self, **kwargs):
+            received.update(kwargs)
+            return "고정된 산문 리포트 (근거 줄 없음)"
+
+    approved = {"claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH9_B", "score": 1.0,
+                "target_pass": 3, "target_total": 3,
+                "control_pass": 0, "control_total": 6}
+    original = nodes._llm
+    nodes._llm = _RecordingClient()
+    try:
+        out = nodes.report_node({
+            "target_wafers": ["W2406_02"], "target_source": "manual",
+            "target_group": ["W2406_02"], "status_summary": "요약", "findings": [],
+            "final_hypothesis": "ETCH9_B 편중", "final_confidence": 0.9,
+            "finalize_status": "confirmed",
+            "final_claim": approved,
+        })
+    finally:
+        nodes._llm = original
+
+    assert received.get("claim") == approved
     assert "eqp_ch_commonality:chamber:CC002000:ETCH9_B" in out["report"]
