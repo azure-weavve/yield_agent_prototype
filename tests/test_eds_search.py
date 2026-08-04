@@ -72,3 +72,28 @@ def test_both_call_paths_share_one_searcher(monkeypatch):
     agent_tools.search_similar.invoke({"wafer_id": "W2406_02", "k": 2})   # 경로 2
 
     assert builds == [1]
+
+
+def test_eds_mode_is_switchable_by_env():
+    """`EDS_MODE` 를 .env 로 바꿀 수 있어야 한다 (점검표 7장 a번).
+
+    상수로 박혀 있으면 사내 EDS 를 쓰려고 **코드를 고쳐야** 하고, 점검표 0-2 가
+    "EDS_MODE 는 .env 로 안 바뀐다" 라는 예외 안내를 계속 들고 있어야 한다.
+    다른 모드 토글(LLM_MODE·SENSOR_MODE)은 이미 env 를 읽는데 이것만 빠져 있었다.
+
+    별도 프로세스로 확인하는 이유: `ya_config` 는 import 시점에 env 를 읽으므로
+    이미 import 된 이 세션에서는 값을 바꿔도 반영되지 않는다.
+    """
+    import os
+    import subprocess
+    import sys
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    proc = subprocess.run(
+        [sys.executable, "-c",
+         "import ya_config, tools.eds_search as e; "
+         "print(ya_config.EDS_MODE, type(e._build_searcher()).__name__)"],
+        capture_output=True, cwd=root, env={**os.environ, "EDS_MODE": "http"})
+
+    assert proc.returncode == 0, proc.stderr.decode("utf-8", "replace")
+    assert proc.stdout.decode().split() == ["http", "HttpEDSSearcher"]

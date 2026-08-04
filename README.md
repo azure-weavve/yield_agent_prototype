@@ -194,11 +194,16 @@ prototype/
 
 설정은 두 갈래입니다 (`ya_config.py` 가 `load_dotenv()` 를 호출합니다):
 
-- **환경변수 / `.env` 로 덮어쓸 수 있는 것** — `LLM_MODE`·`LLM_BASE_URL`·`LLM_API_KEY`·`LLM_MODEL`,
+- **환경변수 / `.env` 로 덮어쓸 수 있는 것** — 외부 연동 3종은 **전부** 여기 있습니다.
+  `LLM_MODE`·`LLM_BASE_URL`·`LLM_API_KEY`·`LLM_MODEL`·`LLM_TIMEOUT`·`LLM_MAX_RETRIES`,
+  `EDS_MODE`·`EDS_URL`·`EDS_HTTP_VERIFY`,
   `SENSOR_MODE`·`SENSOR_HTTP_URL`·`SENSOR_TOP_K`·`SENSOR_MIN_SAMPLE`, 그리고 임계값
   `COMMONALITY_PASS_MIN_SCORE`·`COMMONALITY_PASS_MIN_TARGET`·`SIBLING_MIN_SIMILARITY`·`CONTROL_MIN_SIZE`
-- **아직 `ya_config.py` 파일 상수인 것** — `EDS_MODE`·`EDS_HTTP_URL`·`EDS_HTTP_VERIFY`·
-  `EDS_MIN_SIMILARITY`·`YIELD_THRESHOLD`·`MAX_LOOPS`·`CONFIDENCE_THRESHOLD`
+- **아직 `ya_config.py` 파일 상수인 것** — `EDS_MIN_SIMILARITY`·`SIBLING_SEARCH_K`·
+  `YIELD_THRESHOLD`·`MAX_LOOPS`·`CONFIDENCE_THRESHOLD`
+
+> `SENSOR_MODE` 를 빼먹으면 2단 센서가 조용히 죽습니다 — 기본값 `local` 이 읽는
+> `sensor_log` 는 사내 적재 DB 에 없습니다 (`사내-투입-점검표.md` 4-5).
 
 | 설정 | 데모(기본) | 운영(사내) |
 |------|-----------|-----------|

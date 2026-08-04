@@ -18,10 +18,14 @@ EMB_DIR = BASE_DIR / "data" / "embeddings"
 YIELD_THRESHOLD = 90.0
 
 # EDS 유사맵 도구: "local" = 로컬 hnswlib, "http" = 사내 Flask /search
-EDS_MODE = "local"
+EDS_MODE = os.getenv("EDS_MODE", "local")
 EDS_MIN_SIMILARITY = 0.5  # 이 미만 후보는 제외 (무관 wafer 컷). 그룹~0.92 / 외부~0.10
 EDS_HTTP_URL = os.getenv("EDS_URL")  # 운영 시 교체
-EDS_HTTP_VERIFY = False  # 사내 자체 인증서 → 프로토타입은 우회, 운영은 .pem 경로로 전환
+# 사내 자체 인증서 → 프로토타입은 우회, 운영은 .pem 경로로 전환.
+# .env 에 경로를 주면 그 경로로 검증한다("EDS_HTTP_VERIFY=/etc/ssl/사내루트.pem").
+# ⚠️ **기본값은 여전히 우회(False)다.** 이걸 '켜짐'으로 뒤집는 것은 별건이다
+#    (deferred-internal-integration.md 4번) — 여기서는 경로 지정 통로만 열었다.
+EDS_HTTP_VERIFY = os.getenv("EDS_HTTP_VERIFY") or False
 
 # LLM: "mock" = 규칙 기반(사내망 밖 데모), "openai" = 사내 OpenAI 호환 서빙
 LLM_MODE = os.getenv("LLM_MODE", "mock")
