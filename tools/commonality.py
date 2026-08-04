@@ -154,7 +154,7 @@ def find_commonality(target_wafers: list[str], control_wafers: list[str],
             "n_target": len(targets), "n_control": len(controls),
             "candidates": [],
             "note": (f"타깃 {len(targets)}장 < 최소 {MIN_TARGET}장. "
-                     f"단일 wafer 는 정의상 모든 경로가 '공통'이라 분석 불가 — "
+                     f"단일 wafer 는 정의상 모든 경로가 '공통'이라 분석 불가 - "
                      f"EDS 유사 wafer 로 타깃을 확장해야 한다."),
         }
  
@@ -290,6 +290,6 @@ def find_commonality(target_wafers: list[str], control_wafers: list[str],
     if not candidates:
         result["note"] = (
             "타깃만 거친 설비/챔버가 없다. **원인 없음이 아니라 lot 내부 대조로는 "
-            "보이지 않는다는 뜻**이다 — 원인이 root_lot 전체에 걸리면 타깃과 대조군이 "
+            "보이지 않는다는 뜻**이다 - 원인이 root_lot 전체에 걸리면 타깃과 대조군이 "
             "같은 경로를 거치므로 분리가 나타나지 않는다. lot 밖 대조군이 필요하다.")
     return result

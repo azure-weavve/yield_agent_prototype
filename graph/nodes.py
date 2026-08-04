@@ -39,8 +39,8 @@ ANALYZE_SYSTEM_PROMPT = """너는 반도체 수율 분석 전문가다. 불량 �
 
 규칙:
 - 매 단계, 지금까지의 tool 결과로 원인을 확신할 수 있는지 스스로 평가하라.
-- 확신이 부족하면 근거를 좁힐 tool 을 하나 더 호출하라. 그룹 간 차이(장비·파라미터)가 핵심 근거다 — 가설 도구(hyp_*)로 두 그룹을 대조하라.
-- tool 을 호출할 때는 reason 인자에 현재 가설과 그 tool 을 고른 이유를 한 문장으로 반드시 담아라 — 이 서술이 그대로 분석 감사 기록에 남는다.
+- 확신이 부족하면 근거를 좁힐 tool 을 하나 더 호출하라. 그룹 간 차이(장비·파라미터)가 핵심 근거다 - 가설 도구(hyp_*)로 두 그룹을 대조하라.
+- tool 을 호출할 때는 reason 인자에 현재 가설과 그 tool 을 고른 이유를 한 문장으로 반드시 담아라 - 이 서술이 그대로 분석 감사 기록에 남는다.
 - 원인을 좁혔고 근거가 충분하면 finalize(claim_id, hypothesis, confidence) 로 종료를 제안하라. claim_id 는 가설 도구 결과의 후보에 실려 온 값을 **그대로** 옮겨야 한다 - 지어내거나 문장으로 대신하면 반려된다. 지목할 근거가 없어 물러설 때는 claim_id 를 비우고 낮은 확신도로 제출하라.
 - 수치는 tool 결과를 그대로 인용하고 절대 임의로 만들지 마라."""
 
@@ -65,14 +65,14 @@ def status_node(state: dict) -> dict:
         # 사유를 단정하지 않는다 — 인덱스 미등재·서비스 장애·인덱스 손상이 모두
         # 같은 예외로 온다. 구분은 사내 EDS 오류 응답 실측 뒤에(미룸 6번).
         summary = (f"분석 대상 입력 ({source}): {', '.join(targets)}\n"
-                   f"EDS 유사맵 조회 실패: {norm['eds_error']} — "
+                   f"EDS 유사맵 조회 실패: {norm['eds_error']} - "
                    f"wafer 는 yield DB 에 있으나 형제 묶기를 하지 못했다.")
         return {"target_group": norm["target_group"], "control_group": [],
                 "status_summary": summary, "findings": findings,
                 "finalize_status": "eds_lookup_failed"}
     if norm["isolated"]:
         summary = (f"분석 대상 입력 ({source}): {', '.join(targets)}\n"
-                   f"형제 묶기 (EDS, 컷오프 {ya_config.SIBLING_MIN_SIMILARITY}): 형제 없음 — "
+                   f"형제 묶기 (EDS, 컷오프 {ya_config.SIBLING_MIN_SIMILARITY}): 형제 없음 - "
                    f"고립 패턴, 자동 분석 범위 밖.")
         return {"target_group": norm["target_group"], "control_group": [],
                 "status_summary": summary, "findings": findings,
@@ -116,7 +116,7 @@ def _summarize_target(source: str, targets: list[str], norm: dict, ctrl: dict) -
     if norm["mode"] == "single":
         sib = ", ".join(f"{s['wafer_id']}({s['similarity']})" for s in norm["siblings"])
         lines.append(f"형제 묶기 (EDS, 컷오프 {ya_config.SIBLING_MIN_SIMILARITY}): "
-                     f"{len(norm['target_group'])}장 — 입력 + {sib}")
+                     f"{len(norm['target_group'])}장 - 입력 + {sib}")
         if norm.get("unmatched_siblings"):
             lines.append(f"EDS 형제 중 yield DB 미확인 {len(norm['unmatched_siblings'])}장 "
                          f"제외: {', '.join(norm['unmatched_siblings'])} "
@@ -124,7 +124,7 @@ def _summarize_target(source: str, targets: list[str], norm: dict, ctrl: dict) -
     else:
         lines.append(f"그룹 입력: {len(norm['target_group'])}장 그대로 사용 (묶기 생략)")
     src = ", ".join(f"{rl} {len(ws)}장" for rl, ws in sorted(ctrl["sources"].items()))
-    line = f"대조군 (같은 root_lot 비타깃): {len(ctrl['control_group'])}장 — {src}"
+    line = f"대조군 (같은 root_lot 비타깃): {len(ctrl['control_group'])}장 - {src}"
     ys = ctrl["yield_summary"]
     if ys:
         # 라벨이 없어 저수율 wafer 를 거를 수 없다 — 거르는 대신 분포를 보인다
@@ -133,7 +133,7 @@ def _summarize_target(source: str, targets: list[str], norm: dict, ctrl: dict) -
     lines.append(line)
     if ctrl["insufficient"]:
         lines.append(f"대조군 부족: {len(ctrl['control_group'])}장 < "
-                     f"{ya_config.CONTROL_MIN_SIZE} (root_lot 내 대조 한계 — 추후 분석 필요)")
+                     f"{ya_config.CONTROL_MIN_SIZE} (root_lot 내 대조 한계 - 추후 분석 필요)")
     return "\n".join(lines)
 
 
