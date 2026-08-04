@@ -37,6 +37,12 @@ MIN_TARGET = getattr(ya_config, "COMMONALITY_MIN_TARGET", 2)
 TOP_K = getattr(ya_config, "COMMONALITY_TOP_K", 20)
 MIN_SCORE = getattr(ya_config, "COMMONALITY_MIN_SCORE", 0.0)
 
+# 계산 자체가 성립하지 않은 상태들. **legend 와 무관한 그룹 수준 사실**이라 다른
+# legend 로 다시 돌려도 같은 답이 나온다 — 게이트(graph/nodes.py)가 "남은 가설을 더
+# 돌려라" 대신 그 자리에서 사유를 밝히고 끝내는 근거다. 아래 find_commonality 의
+# status 서술이 원본이고, 여기는 그중 '계산 불가' 만 추린 것이다.
+NO_DATA_STATUSES = frozenset({"insufficient_group", "no_paired_stratum"})
+
 # 기본 legend — EQP_CH (legend 인자 없으면 이 동작). 레벨 순서 = 롤업(설비) → 세부(챔버).
 EQP_CH_LEGEND = [
     {"level": "equipment", "columns": ["eqp_id"]},

@@ -383,6 +383,57 @@ def test_gate_does_not_declare_no_signal_when_candidates_only_missed_the_line():
     assert "finalize_accepted" not in out
 
 
+def test_gate_declares_no_comparable_data_on_the_first_uncomputable_hypothesis():
+    """가설이 **계산 자체를 못 한** 상태면 그 자리에서 사유를 밝히고 끝낸다.
+
+    `no_paired_stratum`(같은 root_lot 대조 짝 없음)·`insufficient_group`(타깃 부족)은
+    legend 와 무관한 **그룹 수준** 사실이라, 다른 가설을 돌려도 똑같은 답이 나온다.
+    그래서 `unrun` 이 남아 있어도 기다리지 않는다 - 기다리면 LLM 이 루프 한계까지
+    왕복하다 `inconclusive`("확정 근거 없음")로 끝나, 진짜 사유인 **데이터 결측**이
+    리포트에서 사라진다.
+    """
+    no_pair = {
+        "loop": 1, "tool": "hyp_eqp_ch_commonality", "args": {},
+        "result": {"hypothesis_id": "eqp_ch_commonality",
+                   "status": "no_paired_stratum", "candidates": []},
+        "thought": "1차 legend",
+    }
+    ai = _ai_finalize(0.2, hypothesis="비교할 짝이 없다", claim_id="")
+    out = nodes.tools_node({"messages": [ai], "loop_count": 1, "findings": [no_pair]})
+    assert out["finalize_accepted"] is True
+    assert out["finalize_status"] == "no_comparable_data"
+    assert "no_paired_stratum" in out["messages"][0].content   # 사유를 그대로 실어 보낸다
+
+
+def test_gate_does_not_declare_no_comparable_data_when_another_hypothesis_computed():
+    """한 가설이 계산 불가여도 다른 가설이 계산됐으면 '데이터 결측'이 아니다.
+
+    결측 판정은 **돌아간 가설 전부**가 계산 불가일 때만 성립한다. 한쪽이라도
+    후보를 냈다면 조치가 다르다(더 좁힐 여지가 있다) - 뭉개면 안 된다.
+    """
+    no_pair = {
+        "loop": 1, "tool": "hyp_eqp_ch_commonality", "args": {},
+        "result": {"hypothesis_id": "eqp_ch_commonality",
+                   "status": "no_paired_stratum", "candidates": []},
+        "thought": "1차 legend",
+    }
+    weak_ppid = {
+        "loop": 2, "tool": "hyp_ppid_commonality", "args": {},
+        "result": {"hypothesis_id": "ppid_commonality", "status": "ok", "candidates": [
+            {"claim_id": "ppid_commonality:ppid:PPID001:P1", "step_seq": "PPID001",
+             "key": "P1", "level": "ppid", "passes": False,
+             "reject_reason": "분리 점수 0.2 < 0.5",
+             "score": 0.2, "target_pass": 4, "target_total": 4,   # 4/4 - 4/5 = 0.2
+             "control_pass": 4, "control_total": 5},
+        ]},
+        "thought": "2차 legend",
+    }
+    ai = _ai_finalize(0.2, hypothesis="약한 후보뿐", claim_id="")
+    out = nodes.tools_node({"messages": [ai], "loop_count": 2,
+                            "findings": [no_pair, weak_ppid]})
+    assert "finalize_accepted" not in out
+
+
 def test_gate_accepts_chamber_hypothesis():
     ai = _ai_finalize(0.9, hypothesis="Etch 공정 ETCH9_B 챔버 편중이 원인",
                       claim_id="eqp_ch_commonality:chamber:CC002000:ETCH9_B")
@@ -545,6 +596,23 @@ def test_report_node_marks_inconclusive_conclusion():
     })
     assert "미확정" in out["report"]
     assert "ETCH-9" in out["report"]  # 유력 가설은 후보로는 남긴다
+
+
+def test_report_node_marks_no_comparable_data_conclusion():
+    """계산 불가 종료의 결론은 '분석 미수행 - 비교 가능한 데이터 없음' 이어야 한다.
+
+    `inconclusive`("근거를 못 찾았다")와 조치가 다르다 - 이쪽은 사람이 적재/추출
+    범위를 봐야 한다. 문구가 같으면 엔지니어가 엉뚱한 곳을 뒤진다.
+    """
+    out = nodes.report_node({
+        "target_wafers": ["W2406_02"], "target_source": "manual",
+        "target_group": ["W2406_02"], "status_summary": "요약",
+        "findings": [], "final_hypothesis": "", "final_confidence": 0.2,
+        "finalize_status": "no_comparable_data",
+    })
+    assert "분석 미수행" in out["report"]
+    assert "미확정" not in out["report"]
+
 
 def test_tools_node_recovers_from_unknown_tool_name():
     ai = AIMessage(content="", tool_calls=[
