@@ -36,10 +36,12 @@ def _ai_finalize(confidence, hypothesis="Etch ETCH-9 원인", claim_id="eqp_ch_c
     )
 
 
-# 아래 후보 픽스처들의 `score` 는 임의 값이 아니다 — commonality 의 정의대로
-# `target_pass/target_total - control_pass/control_total` 과 맞춰 둔다. 게이트는
-# score 만 읽어서 어긋나도 안 죽지만, 이 픽스처를 복사해 쓰는 다음 사람이 실제
-# 도구가 낼 수 없는 조합을 근거로 삼게 된다.
+# 이 파일의 후보 픽스처(모듈 상수 + 각 테스트 함수 안)는 실제 도구가 낼 수 있는
+# 값만 쓴다. 게이트는 `score` 와 `passes` 만 읽어서 어긋나도 안 죽지만, 픽스처를
+# 복사해 쓰는 다음 사람이 실재하지 않는 조합을 근거로 삼게 된다. 두 가지를 맞춘다:
+#   score         = target_pass/target_total - control_pass/control_total (commonality 정의)
+#   reject_reason = domain/engine.py:17-19 형식 + ya_config 실제 임계
+#                   (COMMONALITY_PASS_MIN_SCORE=0.5, COMMONALITY_PASS_MIN_TARGET=2)
 
 # 게이트 증거 검사용(신형): 챔버 가설이 ETCH-9 를 통과 판정한 감사 기록
 EVIDENCE_FINDING = {
@@ -106,6 +108,20 @@ STEP_PASSAGE_SILENT = {
 ALL_SILENT = [EQP_CH_SILENT, PPID_SILENT, STEP_PASSAGE_SILENT]
 
 
+def _assert_covers_every_hypothesis(findings):
+    """이 findings 가 등록된 hyp_* 를 전부 채웠는지 못박는다.
+
+    no_signal 판정은 `unrun` 이 빈 뒤에야 도달한다. 가설이 하나 늘었는데 픽스처를
+    안 늘리면 게이트가 "아직 안 돌린 가설이 있다" 로 **먼저** 반려해서, no_signal
+    판정을 겨눈 테스트가 이름과 무관한 것을 재확인하는 공허한 테스트가 된다.
+    위 81-83행 주석이 경고한 그 일이 3번째 가설 추가(`292b5b8`) 때 실제로 일어났고
+    두 테스트가 조용히 무력화돼 있었다 - 주석 대신 이 단언으로 강제한다.
+    """
+    registered = {n for n in nodes.TOOLS_BY_NAME if n.startswith("hyp_")}
+    missing = registered - {f["tool"] for f in findings}
+    assert not missing, f"등록 가설 미포함: {sorted(missing)} - 픽스처를 늘려야 한다"
+
+
 def test_gate_rejects_text_only_claim():
     """claim_id 없이 hypothesis 문자열만으로는 절대 승인되지 않는다.
 
@@ -153,6 +169,24 @@ def test_gate_does_not_advertise_failing_candidates_when_the_claim_id_is_unknown
     assert "eqp_ch_commonality:chamber:CD004000:PHOTO1_A" not in msg  # 미통과 후보는 안내하지 않는다
 
 
+def test_gate_tells_the_next_action_when_the_claim_id_is_unknown_and_nothing_passed():
+    """지어낸 claim_id 인데 통과 후보도 0 이면, 목록 대신 **다음 행동**을 안내해야 한다.
+
+    안내 대상을 통과 후보로 좁힌 대가로, 이 상태에서 문구가 "통과한 후보가 없다" 로
+    끝나면 LLM 이 다음에 할 일이 없어 루프 한계까지 왕복만 하다 inconclusive 로 끝난다.
+    같은 상태를 만난 claim_id 미제출 분기는 미실행 가설 도구를 알려준다 - 같아야 한다.
+    """
+    ai = _ai_finalize(0.9, claim_id="eqp_ch_commonality:chamber:CC002000:NOPE")
+    out = nodes.tools_node({"messages": [ai], "loop_count": 3,
+                            "findings": [EQP_CH_SILENT]})
+    msg = out["messages"][0].content
+
+    assert "finalize_accepted" not in out
+    assert "eqp_ch_commonality:chamber:CC002000:NOPE" in msg   # 무엇이 틀렸는지
+    assert "hyp_ppid_commonality" in msg                       # 다음에 무엇을 할지
+    assert "hyp_step_passage_commonality" in msg
+
+
 def test_gate_returns_the_tool_reject_reason_for_a_failing_claim():
     """미통과 후보를 지목하면 도구가 낸 reject_reason 을 그대로 돌려준다.
 
@@ -184,7 +218,7 @@ def test_gate_rejects_claim_that_did_not_pass_even_when_score_ties_the_top():
              "control_pass": 1, "control_total": 5},
             {"claim_id": "eqp_ch_commonality:chamber:CD004000:PHOT2_X", "step_seq": "CD004000",
              "key": "PHOT2_X", "level": "chamber", "passes": False,
-             "reject_reason": "타깃 표본 1 < 3",
+             "reject_reason": "타깃 표본 1 < 2",
              "score": 1.0, "target_pass": 1, "target_total": 1,
              "control_pass": 0, "control_total": 5},
         ]},
@@ -268,6 +302,7 @@ def test_gate_declares_no_signal_after_all_hypotheses_are_silent():
     확신도는 보지 않는다 - 물러섬 선언에 높은 확신도를 요구하면 모순이다.
     루프 한계보다 먼저 걸려야 한다(loop 2 에서 종료).
     """
+    _assert_covers_every_hypothesis(ALL_SILENT)
     ai = _ai_finalize(0.2, hypothesis="lot 내부 대조로는 안 보인다", claim_id="")
     out = nodes.tools_node({"messages": [ai], "loop_count": 2,
                             "findings": ALL_SILENT})
@@ -285,10 +320,15 @@ def test_gate_no_signal_beats_max_loops():
 
 
 def test_gate_does_not_declare_no_signal_while_a_passing_claim_exists():
-    """한 가설에 통과 후보가 있으면, 다른 가설이 no_signal 이어도 전체를 신호 없음으로 뭉개면 안 된다."""
+    """한 가설에 통과 후보가 있으면, 다른 가설이 no_signal 이어도 전체를 신호 없음으로 뭉개면 안 된다.
+
+    등록 가설을 **전부** 채워야 `unrun` 이 비어 no_signal 판정선까지 내려간다.
+    빠뜨리면 "안 돌린 가설이 있다" 로 먼저 반려돼 이 테스트가 공허해진다.
+    """
+    findings = [EVIDENCE_FINDING, PPID_SILENT, STEP_PASSAGE_SILENT]
+    _assert_covers_every_hypothesis(findings)
     ai = _ai_finalize(0.2, hypothesis="아직 claim_id 를 못 골랐다", claim_id="")
-    out = nodes.tools_node({"messages": [ai], "loop_count": 3,
-                            "findings": [EVIDENCE_FINDING, PPID_SILENT]})
+    out = nodes.tools_node({"messages": [ai], "loop_count": 3, "findings": findings})
     assert "finalize_accepted" not in out
 
 
@@ -298,14 +338,18 @@ def test_gate_does_not_declare_no_signal_when_candidates_only_missed_the_line():
     no_signal 은 도구가 후보 자체를 못 낸(status no_signal) 구조적 부재를 뜻한다.
     후보는 있는데 판별선만 못 넘은 경우는 조치가 다르므로(더 좁힐 여지가 있다)
     같은 취급을 하면 안 된다.
+
+    세 가설을 **전부 status ok 로** 채워야 이 명제를 겨눈다. 하나라도 빠지면
+    `unrun` 이 안 비어 판정선 앞에서 반려되고, 하나라도 no_signal 로 채우면
+    이번엔 statuses 에 no_signal 이 섞여 다른 케이스(혼합 상태)가 돼 버린다.
     """
     weak_eqp_ch = {
         "loop": 2, "tool": "hyp_eqp_ch_commonality", "args": {},
         "result": {"hypothesis_id": "eqp_ch_commonality", "status": "ok", "candidates": [
             {"claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH9_B", "step_seq": "CC002000",
              "key": "ETCH9_B", "level": "chamber", "passes": False,
-             "reject_reason": "분리 점수 0.4 < 0.6",
-             "score": 0.4, "target_pass": 4, "target_total": 4,
+             "reject_reason": "분리 점수 0.4 < 0.5",
+             "score": 0.4, "target_pass": 4, "target_total": 4,   # 4/4 - 3/5 = 0.4
              "control_pass": 3, "control_total": 5},
         ]},
         "thought": "약한 후보",
@@ -315,15 +359,27 @@ def test_gate_does_not_declare_no_signal_when_candidates_only_missed_the_line():
         "result": {"hypothesis_id": "ppid_commonality", "status": "ok", "candidates": [
             {"claim_id": "ppid_commonality:ppid:PPID001:P1", "step_seq": "PPID001",
              "key": "P1", "level": "ppid", "passes": False,
-             "reject_reason": "분리 점수 0.2 < 0.6",
-             "score": 0.2, "target_pass": 4, "target_total": 4,
+             "reject_reason": "분리 점수 0.2 < 0.5",
+             "score": 0.2, "target_pass": 4, "target_total": 4,   # 4/4 - 4/5 = 0.2
              "control_pass": 4, "control_total": 5},
         ]},
         "thought": "약한 후보",
     }
+    weak_step = {
+        "loop": 4, "tool": "hyp_step_passage_commonality", "args": {},
+        "result": {"hypothesis_id": "step_passage_commonality", "status": "ok", "candidates": [
+            {"claim_id": "step_passage_commonality:step_passage:CE005000:CE005000",
+             "step_seq": "CE005000", "key": "CE005000", "level": "step_passage",
+             "passes": False, "reject_reason": "분리 점수 0.2 < 0.5",
+             "score": 0.2, "target_pass": 4, "target_total": 4,   # 4/4 - 4/5 = 0.2
+             "control_pass": 4, "control_total": 5},
+        ]},
+        "thought": "약한 후보",
+    }
+    findings = [weak_eqp_ch, weak_ppid, weak_step]
+    _assert_covers_every_hypothesis(findings)
     ai = _ai_finalize(0.2, hypothesis="약한 후보뿐", claim_id="")
-    out = nodes.tools_node({"messages": [ai], "loop_count": 3,
-                            "findings": [weak_eqp_ch, weak_ppid]})
+    out = nodes.tools_node({"messages": [ai], "loop_count": 3, "findings": findings})
     assert "finalize_accepted" not in out
 
 
