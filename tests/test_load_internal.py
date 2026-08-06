@@ -275,12 +275,21 @@ def test_a_failure_mid_load_leaves_the_db_untouched(tmp_path):
 
     전체 재적재는 tmp 파일 + os.replace 가 이걸 보장했다. 증분은 살아 있는 DB 를
     고치므로 그 보장을 트랜잭션이 대신한다.
+
+    죽기 전에 처리하는 청크는 seed 에 없는 **새 root_lot**(C88C8)이어야 한다. seed 와
+    같은 lot·같은 내용을 다시 넣으면 삭제 후 재삽입 결과가 원본과 바이트 단위로
+    같아져서, 커밋되든 롤백되든 행 수가 그대로다 - 이 단언이 둘을 구별하지 못하게 된다.
     """
     db = _seed(tmp_path)
     before = _counts(db)
 
+    new_yield = [{"root_lot_id": "C88C8", "wafer_id": "01", "lot_id": "C88C8.1",
+                 "lot_type": "PP", "yield": 70.0, "date": "2026-07-02"}]
+    new_steps = [{"root_lot_id": "C88C8", "wafer_id": "01", "step_seq": "CC002000",
+                 "eqp_id": "ETCH9", "timestamp": "t"}]
+
     def dying_chunks():
-        yield (["A45Z5"], YIELDS, STEPS)      # 한 청크는 적용된 뒤
+        yield (["C88C8"], new_yield, new_steps)      # 한 청크는 적용된 뒤
         raise RuntimeError("추출 중단")
 
     try:
