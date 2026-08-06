@@ -538,6 +538,7 @@ def _write_sqlite(rows, steps, sensors):
     conn.execute("""
         CREATE TABLE step_history (
             wafer_id     TEXT NOT NULL,
+            root_lot_id  TEXT NOT NULL,
             step_seq     TEXT NOT NULL,
             area         TEXT,
             eqp_id       TEXT NOT NULL,
@@ -546,9 +547,16 @@ def _write_sqlite(rows, steps, sensors):
             timestamp    TEXT
         )
     """)
+    # 스텝 생성기들은 wafer_id 만 만든다. root_lot 은 yield 행이 이미 알고 있으므로
+    # 여기서 매핑한다 - 생성기 4개를 고치면 난수열이 흔들려 기존 케이스가 바뀐다.
+    # yield 에 없는 wafer 의 이력이 있으면 KeyError 로 즉시 드러난다 (조용한 NULL 금지).
+    root_of = {r["wafer_id"]: r["root_lot_id"] for r in rows}
+    for s in steps:
+        s["root_lot_id"] = root_of[s["wafer_id"]]
     conn.executemany(
         """INSERT INTO step_history VALUES
-           (:wafer_id, :step_seq, :area, :eqp_id, :ch_id, :ppid, :timestamp)""", steps)
+           (:wafer_id, :root_lot_id, :step_seq, :area, :eqp_id, :ch_id, :ppid,
+            :timestamp)""", steps)
     conn.execute("""
         CREATE TABLE sensor_log (
             wafer_id     TEXT NOT NULL,

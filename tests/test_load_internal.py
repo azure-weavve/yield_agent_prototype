@@ -48,6 +48,17 @@ def test_step_columns_survive_the_write_path(tmp_path):
                     ("A45Z5_02", None, "CMP1", None, None)]   # 결측은 NULL 로
 
 
+def test_root_lot_id_survives_the_write_path(tmp_path):
+    """lot 단위 삭제의 키다. DDL 에만 있고 INSERT 에서 빠지면 NOT NULL 위반으로
+    적재가 죽거나(운이 좋으면), 조용히 틀린 lot 이 실린다."""
+    db, _ = _load(tmp_path)
+    conn = sqlite3.connect(db)
+    rows = conn.execute("""SELECT DISTINCT wafer_id, root_lot_id FROM step_history
+                           ORDER BY wafer_id""").fetchall()
+    conn.close()
+    assert rows == [("A45Z5_01", "A45Z5"), ("A45Z5_02", "A45Z5")]
+
+
 def test_null_rates_reflect_actual_gaps(tmp_path):
     """결측률이 실제 결측을 반영해야 한다 — 0.0 으로 굳으면 '안 실렸다'를 못 본다."""
     _, report = _load(tmp_path)

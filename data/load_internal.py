@@ -152,6 +152,9 @@ def transform_steps(records):
     for r in records:
         yield {
             "wafer_id": build_wafer_id(r["root_lot_id"], _wafer_no(r)),
+            # 증분 적재가 lot 단위로 지우고 다시 넣을 때 쓰는 키. wafer_id 접두와 같은
+            # 값이지만 문자열을 쪼개 쓰면 인덱스를 못 타므로 컬럼으로 둔다.
+            "root_lot_id": r["root_lot_id"],
             # 필수 필드도 공백을 턴다. 원천이 고정폭 CHAR 이면 "CC002000 " 이 섞여 들어와
             # commonality 가 같은 스텝(같은 설비)을 두 군으로 쪼갠다 — 에러 없이 신호만 반토막.
             "step_seq": str(r["step_seq"]).strip(),
@@ -189,6 +192,7 @@ CREATE TABLE yield (
 
 CREATE TABLE step_history (
     wafer_id     TEXT NOT NULL,      -- 합성 조인 키
+    root_lot_id  TEXT NOT NULL,      -- lot 단위 증분 삭제의 키 (wafer_id 접두와 같은 값)
     step_seq     TEXT NOT NULL,      -- 제품군 2자리 + 순서 6자리 (+ 비정규 스텝이면 "EC")
     area         TEXT,               -- 그 스텝의 공정명 (NULL 허용, 해석용)
     eqp_id       TEXT NOT NULL,
@@ -202,8 +206,23 @@ CREATE TABLE step_history (
 INDEXES = """
 CREATE INDEX idx_step_wafer ON step_history(wafer_id);
 CREATE INDEX idx_step_step  ON step_history(step_seq);
+CREATE INDEX idx_step_root  ON step_history(root_lot_id);
 CREATE INDEX idx_yield_root ON yield(root_lot_id);
 """
+
+
+# 적재 SQL — rebuild 와 증분이 같은 문을 쓴다 (한쪽만 고치면 컬럼이 조용히 갈린다)
+YIELD_INSERT = """
+    INSERT INTO yield (wafer_id, lot_id, yield, defect_type, step_seq,
+                       date, root_lot_id, lot_type)
+    VALUES (:wafer_id, :lot_id, :yield, :defect_type, :step_seq,
+            :date, :root_lot_id, :lot_type)"""
+
+STEP_INSERT = """
+    INSERT INTO step_history (wafer_id, root_lot_id, step_seq, area, eqp_id,
+                              ch_id, ppid, timestamp)
+    VALUES (:wafer_id, :root_lot_id, :step_seq, :area, :eqp_id,
+            :ch_id, :ppid, :timestamp)"""
 
 
 def _insert_batched(conn, sql, rows_iter):
@@ -241,17 +260,8 @@ def load(yield_records, step_records, db_path: Path,
         conn.execute("PRAGMA synchronous=OFF")
         conn.executescript(DDL)
 
-        n_y = _insert_batched(conn, """
-            INSERT INTO yield (wafer_id, lot_id, yield, defect_type, step_seq,
-                               date, root_lot_id, lot_type)
-            VALUES (:wafer_id, :lot_id, :yield, :defect_type, :step_seq,
-                    :date, :root_lot_id, :lot_type)""", transform_yield(yield_records))
-
-        n_s = _insert_batched(conn, """
-            INSERT INTO step_history (wafer_id, step_seq, area, eqp_id, ch_id, ppid,
-                                      timestamp)
-            VALUES (:wafer_id, :step_seq, :area, :eqp_id, :ch_id, :ppid, :timestamp)""",
-            transform_steps(step_records))
+        n_y = _insert_batched(conn, YIELD_INSERT, transform_yield(yield_records))
+        n_s = _insert_batched(conn, STEP_INSERT, transform_steps(step_records))
 
         conn.executescript(INDEXES)
         conn.commit()
