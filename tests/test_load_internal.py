@@ -212,3 +212,19 @@ def test_script_path_execution_finds_the_repo_root():
     proc = subprocess.run([sys.executable, os.path.join("data", "load_internal.py"), "--help"],
                           capture_output=True, env=env, cwd=root)
     assert proc.returncode == 0, proc.stderr.decode("utf-8", "replace")
+
+
+def test_rebuild_takes_batches_so_the_caller_need_not_hold_everything(tmp_path):
+    """전체 재적재도 청크로 받는다. 호출부가 2,800만 행을 한 리스트로 들면
+    적재 내내 그 리스트가 살아 있어 메모리가 32GB 까지 오른다(사내 실측)."""
+    b1 = ([YIELDS[0]], [STEPS[0]])
+    b2 = ([YIELDS[1]], [STEPS[1], STEPS[2]])
+    report = li.rebuild([b1, b2], tmp_path / "t.db", verbose=False)
+
+    assert report["n_yield"] == 2 and report["n_steps"] == 3
+    assert report["swapped"] and not report["fatal"]
+
+
+def test_chunked_splits_a_lot_list_into_fixed_size_pieces():
+    assert [len(c) for c in li._chunked(list(range(45)), 20)] == [20, 20, 5]
+    assert list(li._chunked([], 20)) == []

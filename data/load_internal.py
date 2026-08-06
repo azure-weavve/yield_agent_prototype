@@ -225,6 +225,17 @@ STEP_INSERT = """
             :ch_id, :ppid, :timestamp)"""
 
 
+def _chunked(seq, size: int):
+    """리스트를 size 개씩 자른다. 마지막 조각은 짧을 수 있다.
+
+    lot 목록을 이 단위로 잘라 `_extract()` 를 여러 번 부른다. 청크가 끝나면 그
+    DataFrame 과 dict 리스트가 참조를 잃고 해제되므로 메모리가 청크 하나 크기로
+    유계가 된다.
+    """
+    for i in range(0, len(seq), size):
+        yield seq[i:i + size]
+
+
 def _insert_batched(conn, sql, rows_iter):
     n, batch = 0, []
     for row in rows_iter:
@@ -239,9 +250,11 @@ def _insert_batched(conn, sql, rows_iter):
     return n
 
 
-def load(yield_records, step_records, db_path: Path,
-         verbose: bool = True, force: bool = False) -> dict:
-    """임시 파일에 적재 → 검증 통과 시에만 원자적 교체.
+def rebuild(batches, db_path: Path, verbose: bool = True, force: bool = False) -> dict:
+    """전체 재적재. 임시 파일에 만들고 검증 통과 시에만 원자적 교체.
+
+    batches: `(yield_records, step_records)` 튜플의 반복자. 호출부가 lot 청크마다
+             하나씩 흘려보내면 전량을 메모리에 들지 않는다.
 
     운영 DB 를 직접 DROP 하면, 추출 실패·프로세스 중단·검증 실패 시 어제까지 멀쩡하던
     데이터가 사라진 채 남는다(분석이 전부 no_paired_stratum 으로 끝나는데 원인이 안 보임).
@@ -257,13 +270,15 @@ def load(yield_records, step_records, db_path: Path,
     conn = sqlite3.connect(tmp_path)
     try:
         conn.execute("PRAGMA journal_mode=OFF")      # 초기 벌크 적재 — 복구 필요 없음
-        conn.execute("PRAGMA synchronous=OFF")
+        conn.execute("PRAGMA synchronous=OFF")       # (증분 경로에서는 쓰면 안 된다)
         conn.executescript(DDL)
 
-        n_y = _insert_batched(conn, YIELD_INSERT, transform_yield(yield_records))
-        n_s = _insert_batched(conn, STEP_INSERT, transform_steps(step_records))
+        n_y = n_s = 0
+        for yield_records, step_records in batches:
+            n_y += _insert_batched(conn, YIELD_INSERT, transform_yield(yield_records))
+            n_s += _insert_batched(conn, STEP_INSERT, transform_steps(step_records))
 
-        conn.executescript(INDEXES)
+        conn.executescript(INDEXES)                  # 인덱스는 적재 후에 만든다
         conn.commit()
         report = validate(conn, n_y, n_s)
     except BaseException:
@@ -284,6 +299,13 @@ def load(yield_records, step_records, db_path: Path,
     if verbose:
         _print(report)
     return report
+
+
+def load(yield_records, step_records, db_path: Path,
+         verbose: bool = True, force: bool = False) -> dict:
+    """배치 1개짜리 rebuild. 기존 호출부와 테스트가 쓰는 계약을 그대로 둔다."""
+    return rebuild([(yield_records, step_records)], db_path,
+                   verbose=verbose, force=force)
 
 
 # --------------------------------------------------------------------------- #
