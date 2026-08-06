@@ -32,6 +32,10 @@ LLM_MODE = os.getenv("LLM_MODE", "mock")
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://<사내-llm-호스트>/v1")
 LLM_API_KEY = os.getenv("LLM_API_KEY", "dummy")
 LLM_MODEL = os.getenv("LLM_MODEL", "<사내-모델명>")
+# 사내 게이트웨이가 User-Id 헤더로 요구하는 AD ID. 기본값을 두지 않는다 —
+# 아무 값이나 넣으면 남의 ID 로 호출한 기록이 남고, 빈 값이면 헤더가 조용히 비어
+# 나간다. openai 모드로 들어갈 때 llm/client.py 가 비었는지 먼저 확인한다.
+USER_NAME = os.getenv("USER_NAME")
 # 응답이 안 오면 언젠가는 포기해야 한다. 이 값이 없으면 사내 서빙이 멈췄을 때 예외가
 # 영영 안 나고 프로세스가 매달린다 - graph/nodes.py 의 LLM 실패 방어가 탈 경로 자체가
 # 사라진다. 실측 후 조정 (사내 모델 응답 시간을 아직 모른다).

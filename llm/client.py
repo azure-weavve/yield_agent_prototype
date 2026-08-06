@@ -9,6 +9,7 @@
 
 import json
 import re
+import uuid
 from abc import ABC, abstractmethod
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
@@ -242,13 +243,36 @@ class OpenAILLMClient(LLMClient):
 
         from tools.agent_tools import ALL_TOOLS
 
+        # 헤더 값이 None 이면 인증 실패(401)가 아니라 httpx 의 TypeError 로 죽는다 —
+        # 메시지에 USER_NAME 이 안 나와서 원인이 안 읽힌다. 여기서 먼저 멈춘다.
+        if not ya_config.USER_NAME:
+            raise ValueError(
+                "USER_NAME 이 비어 있습니다. .env 에 사내 AD ID 를 넣으세요 "
+                "(사내 LLM 게이트웨이가 User-Id 헤더로 요구합니다)."
+            )
+
         self.llm = ChatOpenAI(
             base_url=ya_config.LLM_BASE_URL,
+            # 인증은 아래 x-dep-ticket 이 하지만, 이 인자를 빼면 ChatOpenAI 가
+            # 생성 시점에 OPENAI_API_KEY 환경변수를 찾다가 "Missing credentials" 로
+            # 죽는다 (langchain_openai 1.3.3 확인). 인증과 무관한 메시지라 넣어 둔다.
             api_key=ya_config.LLM_API_KEY,
             model=ya_config.LLM_MODEL,
             temperature=0,
             timeout=ya_config.LLM_TIMEOUT,
             max_retries=ya_config.LLM_MAX_RETRIES,
+            # 사내 게이트웨이 규약. 값과 이름은 사내 예시를 그대로 따른다.
+            # Msg-Id 두 개는 클라이언트 1개당 한 번만 생성되므로 한 번 실행하는 동안
+            # 모든 요청이 같은 값을 단다. 게이트웨이가 이 값을 어떻게 쓰는지 아직
+            # 모르며, 추적·중복제거에 쓰인다면 호출마다 새로 만들어야 한다.
+            default_headers={
+                "x-dep-ticket": ya_config.LLM_API_KEY,
+                "Send-System-Name": "test_api_1",
+                "User-Id": ya_config.USER_NAME,
+                "User-Type": "AD_ID",
+                "Prompt-Msg-Id": str(uuid.uuid4()),
+                "Completion-Msg-Id": str(uuid.uuid4()),
+            },
         )
         self.analyzer = self.llm.bind_tools(ALL_TOOLS, parallel_tool_calls=False)
 
