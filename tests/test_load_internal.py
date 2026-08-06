@@ -387,3 +387,34 @@ def test_a_lot_id_typed_differently_in_the_two_sources_is_blocked(tmp_path):
     assert report["fatal"] and not report["committed"]
     assert any("step_history 없는" in f for f in report["fatal"])
     assert _counts(db) == before
+
+
+def test_a_lot_typed_differently_from_the_request_is_blocked(tmp_path):
+    """요청한 lot 과 실제로 실려 온 lot 의 표기가 다르면 막혀야 한다.
+
+    고정폭 CHAR 원천의 뒤 공백이 이 사고의 가장 흔한 모양이다("CC002000 " 이
+    commonality 를 두 군으로 쪼갠 전례가 있다 - `test_padded_step_seq_...` 참조).
+    root_lot_id 도 같은 사고에 노출돼 있는데, 이번 배치는 요청("B77B7")과 다른
+    표기("B77B7 ", 뒤 공백)로 yield·step 이 **같이** 실려 온다.
+
+    이 행들은 다른 어떤 검사에도 안 걸린다: yield 와 step 이 같은(틀린) 표기로
+    함께 오므로 자기들끼리는 완전히 정합적이다 - wafer_id 가 서로 조인되고
+    (orphan·no_hist 통과), root_lot_id 컬럼도 자기 wafer_id 접두와 일치한다
+    (검사 2 통과). `_scope` 는 요청한 lot("B77B7")으로만 채워지므로, 실려 온
+    표기("B77B7 ")는 `_in_scope()` 자체를 통과 못 해 검사 1~6 의 그 어떤 SELECT
+    에도 안 잡히고 조용히 스코프 밖으로 빠진다. `DELETE ... WHERE root_lot_id
+    IN ("B77B7")` 도 이 표기를 못 지우므로, 걸러내지 않으면 재적재마다 누적된다.
+    """
+    db = _seed(tmp_path)
+    stray_yield = [{"root_lot_id": "B77B7 ", "wafer_id": "01", "lot_id": "B77B7.1",
+                    "lot_type": "PP", "yield": 88.0, "date": "2026-08-01"}]
+    stray_steps = [{"root_lot_id": "B77B7 ", "wafer_id": "01", "step_seq": "CC002000",
+                    "eqp_id": "ETCH9", "timestamp": "t"}]
+    before = _counts(db)
+
+    report = li.load_incremental([(["B77B7"], stray_yield, stray_steps)], db,
+                                 verbose=False)
+
+    assert report["fatal"] and not report["committed"]
+    assert any("요청하지 않은 root_lot" in f for f in report["fatal"])
+    assert _counts(db) == before

@@ -236,6 +236,18 @@ def _chunked(seq, size: int):
         yield seq[i:i + size]
 
 
+def _collect_lots(records, bag: set):
+    """레코드를 그대로 흘려보내면서 root_lot_id 만 모은다.
+
+    요청한 lot 과 실제로 실려 온 lot 이 다르면 그 행은 삭제 키에 안 걸려
+    지워지지 않고 재적재마다 누적된다. 전량을 메모리에 들지 않으려고
+    제너레이터로 통과시킨다.
+    """
+    for r in records:
+        bag.add(r["root_lot_id"])
+        yield r
+
+
 def _insert_batched(conn, sql, rows_iter):
     n, batch = 0, []
     for row in rows_iter:
@@ -323,10 +335,12 @@ def load_incremental(chunks, db_path: Path, verbose: bool = True,
     conn = sqlite3.connect(db_path)
     conn.isolation_level = None          # 트랜잭션 경계를 이 함수가 직접 잡는다
     lots, n_y, n_s, del_y, del_s = [], 0, 0, 0, 0
+    requested_lots, seen_lots = set(), set()
     try:
         conn.execute("BEGIN")
         for root_lots, yield_records, step_records in chunks:
             root_lots = list(root_lots)
+            requested_lots.update(root_lots)
             ph = ",".join("?" * len(root_lots))
             del_s += conn.execute(
                 f"DELETE FROM step_history WHERE root_lot_id IN ({ph})",
@@ -334,14 +348,26 @@ def load_incremental(chunks, db_path: Path, verbose: bool = True,
             del_y += conn.execute(
                 f"DELETE FROM yield WHERE root_lot_id IN ({ph})",
                 root_lots).rowcount
-            n_y += _insert_batched(conn, YIELD_INSERT, transform_yield(yield_records))
-            n_s += _insert_batched(conn, STEP_INSERT, transform_steps(step_records))
+            n_y += _insert_batched(conn, YIELD_INSERT,
+                                   transform_yield(_collect_lots(yield_records, seen_lots)))
+            n_s += _insert_batched(conn, STEP_INSERT,
+                                   transform_steps(_collect_lots(step_records, seen_lots)))
             lots.extend(root_lots)
         report = validate(conn, n_y, n_s, root_lots=lots)
     except BaseException:
         conn.execute("ROLLBACK")         # 추출 실패·중단·스키마 위반 전부 여기로
         conn.close()
         raise
+
+    # 요청 대 납품 계약 — _scope 는 요청한 lot 으로만 채워지므로, 원천이 요청과
+    # 다른 표기(고정폭 CHAR 의 뒤 공백 등)로 lot 을 실으면 그 행은 삭제 키에도
+    # _in_scope() 에도 안 걸려 검사 1~6 을 전부 통과해버린다. validate() 는 이
+    # 계약을 모르므로(내부는 DB 만 본다) 여기서 직접 비교한다.
+    stray = sorted(seen_lots - requested_lots)
+    if stray:
+        report["fatal"].append(
+            f"요청하지 않은 root_lot 이 실려 왔다 {len(stray)}건 (예: {stray[:3]}): "
+            f"이 행들은 lot 단위 삭제 키에 안 걸려 지워지지 않고 재적재마다 누적된다")
 
     committed = force or not report["fatal"]
     conn.execute("COMMIT" if committed else "ROLLBACK")
