@@ -29,6 +29,11 @@ STEPS = [{"root_lot_id": "A45Z5", "wafer_id": "01", "step_seq": "CC002000",
          {"root_lot_id": "A45Z5", "wafer_id": "02", "step_seq": "CC004000",
           "eqp_id": "CMP1", "timestamp": "t"}]
 
+B_YIELDS = [{"root_lot_id": "B77B7", "wafer_id": "01", "lot_id": "B77B7.1",
+             "lot_type": "PP", "yield": 88.0, "date": "2026-08-01"}]
+B_STEPS = [{"root_lot_id": "B77B7", "wafer_id": "01", "step_seq": "CC002000",
+            "eqp_id": "ETCH9", "timestamp": "t"}]
+
 
 def _load(tmp_path):
     db = tmp_path / "t.db"
@@ -300,3 +305,83 @@ def test_a_failure_mid_load_leaves_the_db_untouched(tmp_path):
         raise AssertionError("예외가 전파되지 않았다")
 
     assert _counts(db) == before
+
+
+def test_a_broken_batch_is_blocked_even_though_the_db_is_mostly_clean(tmp_path):
+    """이번 배치의 고아를 전역 비율로 재면 기존 데이터가 희석해 못 잡는다.
+
+    아래 배치는 wafer 3장 중 2장이 고아(yield 없음)라 그 자체로는 0.67 이지만,
+    DB 전체로 세면 5장 중 2장(0.4)이라 임계 0.5 를 안 넘는다.
+    """
+    db = _seed(tmp_path)                       # A45Z5 wafer 2장, 고아 없음
+    orphans = B_STEPS + [
+        {"root_lot_id": "B77B7", "wafer_id": "09", "step_seq": "CC002000",
+         "eqp_id": "ETCH9", "timestamp": "t"},
+        {"root_lot_id": "B77B7", "wafer_id": "10", "step_seq": "CC002000",
+         "eqp_id": "ETCH9", "timestamp": "t"}]
+
+    report = li.load_incremental([(["B77B7"], B_YIELDS, orphans)], db, verbose=False)
+
+    assert report["fatal"] and not report["committed"]
+    assert _counts(db) == (2, 3)               # 원래 상태 그대로
+
+
+def test_old_orphans_do_not_block_a_clean_batch(tmp_path):
+    """반대 방향. 기존 데이터에 고아가 있어도 이번 배치가 깨끗하면 통과한다."""
+    db = tmp_path / "t.db"
+    dirty = STEPS + [{"root_lot_id": "A45Z5", "wafer_id": "77",
+                      "step_seq": "CC002000", "eqp_id": "ETCH9", "timestamp": "t"}]
+    li.load(YIELDS, dirty, db, verbose=False)  # 고아 1장이 이미 들어 있는 DB
+
+    report = li.load_incremental([(["B77B7"], B_YIELDS, B_STEPS)], db, verbose=False)
+
+    assert report["committed"] and not report["fatal"]
+
+
+def test_incremental_report_correctly_labels_a_committed_load(tmp_path, monkeypatch):
+    """증분 커밋 성공을 '교체 안 함'으로 잘못 찍으면 안 된다.
+
+    `_print` 가 `r.get("swapped")` 로만 분기하면, 증분 report 에는 그 키가 없어 매번
+    이 분기를 타서 커밋에 성공해도 항상 "[교체 안 함] ... 기존 상태 유지" 를 찍는다.
+    성공한 적재를 실패로 읽게 만드는 조용한 거짓말이라 verbose=True 실사용 경로를
+    실제로 돌려서 잠근다 (다른 신규 테스트는 전부 verbose=False 라 이 버그를 못 잡는다).
+    """
+    db = _seed(tmp_path)
+    buf = io.TextIOWrapper(io.BytesIO(), encoding="cp949")
+    monkeypatch.setattr(sys, "stdout", buf)
+
+    report = li.load_incremental([(["B77B7"], B_YIELDS, B_STEPS)], db, verbose=True)
+    buf.flush()
+    out = buf.buffer.getvalue().decode("cp949")
+
+    assert report["committed"] and not report["fatal"]
+    assert "[커밋]" in out
+    assert "[교체 안 함]" not in out
+    assert "[증분]" in out
+    assert "[전체]" in out
+
+
+def test_step_history_root_lot_id_mismatch_blocks_the_load(tmp_path):
+    """step_history.root_lot_id 가 원천 표기 차이로 어긋난 배치는 막혀야 한다.
+
+    이 컬럼은 증분 삭제·검증 범위의 키다. 원천이 yield 와 step_history 에 lot 을
+    다른 표기(공백·대소문자)로 실으면, 그 step 행은 삭제 대상 범위에서 빠져 안
+    지워지고 재적재마다 누적된다 - 에러는 나지 않는다.
+
+    transform_steps 는 wafer_id 를 그 레코드의 root_lot_id 값으로 직접 합성하므로
+    (`build_wafer_id(r["root_lot_id"], ...)`), 어떤 입력을 줘도 step_history 한 행
+    안에서 wafer_id 접두와 root_lot_id 컬럼은 항상 서로 일치한다 - 그래서 신설한
+    2-2 검사(자기 정합성) 자체를 raw SQL 없이 단독으로 재현할 방법은 없다. 대신
+    root_lot_id 를 이 배치의 lot 목록("B77B7")과 다르게 주면, 그 step 은 다른
+    wafer_id("C88C8_01")로 합성돼 B77B7_01 이 이력 없는 wafer 로 잡혀(기존 4번
+    검사) 똑같이 막힌다. 이 테스트는 그 행동 - "표기가 어긋난 배치는 통과하지
+    못한다" - 을 고정한다.
+    """
+    db = _seed(tmp_path)
+    mismatched_steps = [{"root_lot_id": "C88C8", "wafer_id": "01",
+                         "step_seq": "CC002000", "eqp_id": "ETCH9", "timestamp": "t"}]
+
+    report = li.load_incremental([(["B77B7"], B_YIELDS, mismatched_steps)], db,
+                                 verbose=False)
+
+    assert report["fatal"] and not report["committed"]

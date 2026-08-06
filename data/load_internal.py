@@ -337,7 +337,7 @@ def load_incremental(chunks, db_path: Path, verbose: bool = True,
             n_y += _insert_batched(conn, YIELD_INSERT, transform_yield(yield_records))
             n_s += _insert_batched(conn, STEP_INSERT, transform_steps(step_records))
             lots.extend(root_lots)
-        report = validate(conn, n_y, n_s)
+        report = validate(conn, n_y, n_s, root_lots=lots)
     except BaseException:
         conn.execute("ROLLBACK")         # 추출 실패·중단·스키마 위반 전부 여기로
         conn.close()
@@ -365,10 +365,36 @@ _WID = re.compile(r"^.+_\d{2}$")
 _STEP_SEQ = re.compile(r"^[A-Z]{2}\d{6}(EC)?$")
 
 
-def validate(conn: sqlite3.Connection, n_yield: int, n_steps: int) -> dict:
+def _in_scope(alias: str = "") -> str:
+    """검사 범위 조건절. alias 는 조인 질의에서 테이블 별칭("s"/"y")."""
+    p = f"{alias}." if alias else ""
+    return f"{p}root_lot_id IN (SELECT root_lot_id FROM _scope)"
+
+
+def validate(conn: sqlite3.Connection, n_yield: int, n_steps: int,
+             root_lots=None) -> dict:
+    """적재 후 정합성 검사.
+
+    root_lots 를 주면 그 lot 으로 모든 검사를 좁힌다(증분). None 이면 전역(rebuild).
+
+    범위를 좁히는 이유는 성능만이 아니다. 고아 비율을 전역으로 재면 이번에 들어온
+    lot 이 통째로 깨져 있어도 기존 2,800만 행이 희석해 비율이 0.001 로 나온다.
+    안전장치가 있는데 아무것도 못 막는다.
+    """
     conn.row_factory = sqlite3.Row
     q = lambda sql, *a: conn.execute(sql, a).fetchall()
     one = lambda sql, *a: conn.execute(sql, a).fetchone()[0]
+
+    # 검사 범위. 전역일 때는 yield 와 step_history 양쪽의 root_lot 을 다 넣는다 -
+    # yield 에 아예 없는 lot 의 고아 행을 범위 밖으로 밀어내면 안 되기 때문이다.
+    conn.execute("DROP TABLE IF EXISTS temp._scope")
+    conn.execute("CREATE TEMP TABLE _scope (root_lot_id TEXT PRIMARY KEY)")
+    if root_lots is None:
+        conn.execute("INSERT INTO _scope SELECT root_lot_id FROM yield "
+                     "UNION SELECT root_lot_id FROM step_history")
+    else:
+        conn.executemany("INSERT OR IGNORE INTO _scope VALUES (?)",
+                         [(x,) for x in root_lots])
 
     # fatal = 교체 차단 (이 상태로 갈아끼우면 기존 DB 보다 나쁘다)
     # warn  = 교체는 하되 사람이 봐야 하는 것
@@ -379,22 +405,35 @@ def validate(conn: sqlite3.Connection, n_yield: int, n_steps: int) -> dict:
         fatal.append("yield 0행: 추출 결과가 비었다 (교체 중단)")
 
     # 1. 조인 키 형식 (…_NN)
-    bad = [r["wafer_id"] for r in q("SELECT wafer_id FROM yield")
+    bad = [r["wafer_id"] for r in
+           q(f"SELECT wafer_id FROM yield WHERE {_in_scope()}")
            if not _WID.match(r["wafer_id"])]
     if bad:
         fatal.append(f"wafer_id 형식 위반 {len(bad)}건 (예: {bad[:3]})")
 
     # 2. wafer_id 접두 == root_lot_id 교차검증
-    mism = q("""SELECT wafer_id FROM yield
-                WHERE wafer_id <> root_lot_id || '_' || substr(wafer_id, -2)""")
+    mism = q(f"""SELECT wafer_id FROM yield
+                 WHERE wafer_id <> root_lot_id || '_' || substr(wafer_id, -2)
+                   AND {_in_scope()}""")
     if mism:
         fatal.append(f"root_lot_id 불일치 {len(mism)}건 "
                      f"(예: {[r['wafer_id'] for r in mism[:3]]})")
 
+    # 2-2. step_history 도 같은 교차검증. root_lot_id 는 증분 삭제의 키라, 원천이
+    #      yield 와 다른 표기(공백·대소문자)로 실어 보내면 그 행은 범위 필터에서 빠져
+    #      **안 지워지고** 재적재마다 누적된다. 에러는 안 난다.
+    mism_s = q(f"""SELECT DISTINCT wafer_id FROM step_history
+                   WHERE wafer_id <> root_lot_id || '_' || substr(wafer_id, -2)
+                     AND {_in_scope()}""")
+    if mism_s:
+        fatal.append(f"step_history root_lot_id 불일치 {len(mism_s)}건 "
+                     f"(예: {[r['wafer_id'] for r in mism_s[:3]]})")
+
     # 2-1. step_seq 형식 — 원천에서 step_seq 와 area 가 뒤바뀌어 실려도 적재는 통과하고,
     #      공정명("Etch")으로 묶인 후보가 그럴듯하게 나온다. 그 사고를 잡는다.
     #      자릿수 관행이 제품군마다 다를 수 있으므로 경고에 그친다 (교체는 막지 않는다).
-    bad_seq = [r["step_seq"] for r in q("SELECT DISTINCT step_seq FROM step_history")
+    bad_seq = [r["step_seq"] for r in
+               q(f"SELECT DISTINCT step_seq FROM step_history WHERE {_in_scope()}")
                if not _STEP_SEQ.match(r["step_seq"])]
     if bad_seq:
         issues.append(f"step_seq 형식 위반 {len(bad_seq)}종 (예: {bad_seq[:3]}): "
@@ -404,10 +443,11 @@ def validate(conn: sqlite3.Connection, n_yield: int, n_steps: int) -> dict:
 
     # 3. step_history 고아 (이력엔 있으나 yield 에 없는 wafer) — 조인 키 불일치의 주 증상
     # 소수면 경고지만, 대부분이 고아면 조인 키 자체가 어긋난 것이므로 교체를 막는다
-    n_hist_wafers = one("SELECT COUNT(DISTINCT wafer_id) FROM step_history")
-    orphan = q("""SELECT DISTINCT s.wafer_id FROM step_history s
-                  LEFT JOIN yield y ON y.wafer_id = s.wafer_id
-                  WHERE y.wafer_id IS NULL""")
+    n_hist_wafers = one(f"SELECT COUNT(DISTINCT wafer_id) FROM step_history "
+                        f"WHERE {_in_scope()}")
+    orphan = q(f"""SELECT DISTINCT s.wafer_id FROM step_history s
+                   LEFT JOIN yield y ON y.wafer_id = s.wafer_id
+                   WHERE y.wafer_id IS NULL AND {_in_scope('s')}""")
     if orphan:
         msg = (f"step_history 고아 wafer {len(orphan)}/{n_hist_wafers}건 "
                f"(예: {[r['wafer_id'] for r in orphan[:3]]}): 조인 키 불일치 의심")
@@ -415,22 +455,24 @@ def validate(conn: sqlite3.Connection, n_yield: int, n_steps: int) -> dict:
 
     # 4. 이력 없는 wafer — commonality 가 분모에서 제외하므로 표본이 조용히 줄어든다.
     #    대부분이 이력 없으면 1단이 아예 못 돌므로 교체를 막는다.
-    no_hist = q("""SELECT y.wafer_id FROM yield y
-                   LEFT JOIN step_history s ON s.wafer_id = y.wafer_id
-                   WHERE s.wafer_id IS NULL""")
+    no_hist = q(f"""SELECT y.wafer_id FROM yield y
+                    LEFT JOIN step_history s ON s.wafer_id = y.wafer_id
+                    WHERE s.wafer_id IS NULL AND {_in_scope('y')}""")
     if no_hist:
         msg = (f"step_history 없는 wafer {len(no_hist)}/{n_yield}건 "
                f"(예: {[r['wafer_id'] for r in no_hist[:3]]}): commonality 분모에서 빠짐")
         (fatal if len(no_hist) > n_yield * NO_HISTORY_FATAL_RATE else issues).append(msg)
 
     # 5. yield 범위
-    oor = one("SELECT COUNT(*) FROM yield WHERE yield < 0 OR yield > 100")
+    oor = one(f"SELECT COUNT(*) FROM yield "
+              f"WHERE (yield < 0 OR yield > 100) AND {_in_scope()}")
     if oor:
         issues.append(f"yield 범위(0~100) 이탈 {oor}건")
 
     # 6. 중복 이력 (같은 wafer×스텝이 여러 번) — 정상일 수도(재작업), 확인 필요
-    dup = one("""SELECT COUNT(*) FROM (SELECT wafer_id, step_seq
-                 FROM step_history GROUP BY 1,2 HAVING COUNT(*) > 1)""")
+    dup = one(f"""SELECT COUNT(*) FROM (SELECT wafer_id, step_seq
+                  FROM step_history WHERE {_in_scope()}
+                  GROUP BY 1,2 HAVING COUNT(*) > 1)""")
     if dup:
         issues.append(f"wafer×스텝 중복 이력 {dup}건: 재작업(rework)인지 확인 필요")
 
@@ -444,20 +486,28 @@ def validate(conn: sqlite3.Connection, n_yield: int, n_steps: int) -> dict:
     #    사람 확인 사항으로 들고 있다.
 
     lot_types = {r["lot_type"]: r["c"] for r in
-                 q("SELECT lot_type, COUNT(*) c FROM yield GROUP BY 1")}
+                 q(f"SELECT lot_type, COUNT(*) c FROM yield "
+                   f"WHERE {_in_scope()} GROUP BY 1")}
     if lot_types.get(PROD, 0) == 0:
         issues.append(f"양산({PROD}) lot 0건: classify_lot_type 규칙 확인 필요")
 
-    steps = q("""SELECT MIN(c) lo, MAX(c) hi, AVG(c) avg FROM
-                 (SELECT COUNT(*) c FROM step_history GROUP BY wafer_id)""")
+    steps = q(f"""SELECT MIN(c) lo, MAX(c) hi, AVG(c) avg FROM
+                  (SELECT COUNT(*) c FROM step_history WHERE {_in_scope()}
+                   GROUP BY wafer_id)""")
     s = steps[0] if steps and steps[0]["lo"] is not None else None
 
     return {
         "n_yield": n_yield, "n_steps": n_steps,
-        "n_wafers_with_history": one("SELECT COUNT(DISTINCT wafer_id) FROM step_history"),
-        "n_root_lots": one("SELECT COUNT(DISTINCT root_lot_id) FROM yield"),
+        "n_wafers_with_history": n_hist_wafers,
+        "n_root_lots": one(f"SELECT COUNT(DISTINCT root_lot_id) FROM yield "
+                           f"WHERE {_in_scope()}"),
+        # 전역 규모 - 검사 대상이 아니라 사람이 "지금 DB 가 얼마나 큰가" 를 보는 값
+        "n_total_yield": one("SELECT COUNT(*) FROM yield"),
+        "n_total_steps": one("SELECT COUNT(*) FROM step_history"),
+        "n_total_root_lots": one("SELECT COUNT(DISTINCT root_lot_id) FROM yield"),
         "lot_types": lot_types,
-        "defect_labeled": one("SELECT COUNT(*) FROM yield WHERE defect_type IS NOT NULL"),
+        "defect_labeled": one(f"SELECT COUNT(*) FROM yield "
+                              f"WHERE defect_type IS NOT NULL AND {_in_scope()}"),
         "steps_per_wafer": ({"min": s["lo"], "max": s["hi"], "avg": round(s["avg"], 1)}
                             if s else None),
         # area 결측률 — step_seq 는 순번 코드라 그 자체로는 무슨 공정인지 안 보인다.
@@ -465,17 +515,17 @@ def validate(conn: sqlite3.Connection, n_yield: int, n_steps: int) -> dict:
         # SELECT 에도 legend 에도 없다). 그래서 이 값이 0.0 이어도 리포트의 스텝은
         # `CC002000` 뿐이다. area 는 사람이 DB 를 직접 조회할 때 쓴다.
         "area_null_rate": round(
-            one("SELECT COUNT(*) FROM step_history WHERE area IS NULL")
-            / max(n_steps, 1), 3),
+            one(f"SELECT COUNT(*) FROM step_history "
+                f"WHERE area IS NULL AND {_in_scope()}") / max(n_steps, 1), 3),
         # ch_id 결측률 — 높으면 commonality 가 챔버 레벨을 거의 못 쓴다(설비 레벨만 남음)
         "ch_id_null_rate": round(
-            one("SELECT COUNT(*) FROM step_history WHERE ch_id IS NULL")
-            / max(n_steps, 1), 3),
+            one(f"SELECT COUNT(*) FROM step_history "
+                f"WHERE ch_id IS NULL AND {_in_scope()}") / max(n_steps, 1), 3),
         # ppid 결측률 — 전부 NULL 이면 hyp_ppid_commonality 가 **에러 없이 후보 0** 으로
         # 끝난다. 이 값이 없으면 "PPID 로도 안 갈린다" 와 "PPID 가 안 실렸다" 를 구분 못 한다.
         "ppid_null_rate": round(
-            one("SELECT COUNT(*) FROM step_history WHERE ppid IS NULL")
-            / max(n_steps, 1), 3),
+            one(f"SELECT COUNT(*) FROM step_history "
+                f"WHERE ppid IS NULL AND {_in_scope()}") / max(n_steps, 1), 3),
         "fatal": fatal,
         "issues": issues,
     }
@@ -483,6 +533,11 @@ def validate(conn: sqlite3.Connection, n_yield: int, n_steps: int) -> dict:
 
 def _print(r: dict) -> None:
     _say(f"[적재] yield {r['n_yield']}행 / step_history {r['n_steps']}행")
+    if "n_lots" in r:                       # 증분에서만
+        _say(f"[증분] 대상 lot {r['n_lots']}개 · 삭제 yield {r['n_deleted_yield']}행"
+             f" / step_history {r['n_deleted_steps']}행")
+        _say(f"[전체] yield {r['n_total_yield']}행 / step_history "
+             f"{r['n_total_steps']}행 · root_lot {r['n_total_root_lots']}개")
     _say(f"[구성] root_lot {r['n_root_lots']}개 · 이력 보유 wafer {r['n_wafers_with_history']}장 "
          f"· lot_type {r['lot_types']}")
     _say(f"[이력] wafer 당 스텝 {r['steps_per_wafer']} · ch_id 결측률 {r['ch_id_null_rate']}"
@@ -498,7 +553,10 @@ def _print(r: dict) -> None:
             _say(f"  - {i}")
     if not r["issues"] and not r["fatal"]:
         _say("[정합성] 이상 없음")
-    if r.get("swapped"):
+    if "n_lots" in r:
+        _say(f"[커밋] {r['db_path']} 갱신 완료" if r.get("committed")
+             else f"[되돌림] {r['db_path']} 는 기존 상태 유지 (--force 로 무시 가능)")
+    elif r.get("swapped"):
         _say(f"[교체] {r['db_path']} 갱신 완료")
     else:
         _say(f"[교체 안 함] {r['db_path']} 는 기존 상태 유지 "
