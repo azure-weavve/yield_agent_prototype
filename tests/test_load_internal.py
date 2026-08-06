@@ -228,3 +228,66 @@ def test_rebuild_takes_batches_so_the_caller_need_not_hold_everything(tmp_path):
 def test_chunked_splits_a_lot_list_into_fixed_size_pieces():
     assert [len(c) for c in li._chunked(list(range(45)), 20)] == [20, 20, 5]
     assert list(li._chunked([], 20)) == []
+
+
+def _counts(db):
+    conn = sqlite3.connect(db)
+    try:
+        return tuple(conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+                     for t in ("yield", "step_history"))
+    finally:
+        conn.close()
+
+
+def _seed(tmp_path):
+    """A45Z5 lot 이 이미 적재된 DB."""
+    db = tmp_path / "t.db"
+    li.load(YIELDS, STEPS, db, verbose=False)
+    return db
+
+
+def test_reloading_the_same_lot_does_not_duplicate_rows(tmp_path):
+    """멱등성. 그냥 INSERT 하면 이력이 두 벌이 되고 commonality 는 에러 없이
+    분모가 두 배가 된 채 계산한다 - 재작업 행과 구분이 안 돼 눈에도 안 띈다."""
+    db = _seed(tmp_path)
+    before = _counts(db)
+
+    report = li.load_incremental([(["A45Z5"], YIELDS, STEPS)], db, verbose=False)
+
+    assert _counts(db) == before
+    assert report["committed"] and not report["fatal"]
+
+
+def test_rework_history_replaces_the_old_rows(tmp_path):
+    """재작업으로 이력이 늘면 새 내용으로 통째로 대체된다."""
+    db = _seed(tmp_path)
+    reworked = STEPS + [{"root_lot_id": "A45Z5", "wafer_id": "01",
+                         "step_seq": "CC002000", "area": "Etch", "eqp_id": "ETCH9",
+                         "ch_id": "C", "ppid": "PPID_R", "timestamp": "t2"}]
+
+    li.load_incremental([(["A45Z5"], YIELDS, reworked)], db, verbose=False)
+
+    assert _counts(db) == (2, 4)          # 옛 3행이 남으면 7
+
+
+def test_a_failure_mid_load_leaves_the_db_untouched(tmp_path):
+    """추출이 중간에 죽어도 어제 상태로 돌아가야 한다.
+
+    전체 재적재는 tmp 파일 + os.replace 가 이걸 보장했다. 증분은 살아 있는 DB 를
+    고치므로 그 보장을 트랜잭션이 대신한다.
+    """
+    db = _seed(tmp_path)
+    before = _counts(db)
+
+    def dying_chunks():
+        yield (["A45Z5"], YIELDS, STEPS)      # 한 청크는 적용된 뒤
+        raise RuntimeError("추출 중단")
+
+    try:
+        li.load_incremental(dying_chunks(), db, verbose=False)
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("예외가 전파되지 않았다")
+
+    assert _counts(db) == before

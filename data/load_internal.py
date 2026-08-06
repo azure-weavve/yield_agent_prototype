@@ -308,6 +308,52 @@ def load(yield_records, step_records, db_path: Path,
                    verbose=verbose, force=force)
 
 
+def load_incremental(chunks, db_path: Path, verbose: bool = True,
+                     force: bool = False) -> dict:
+    """살아 있는 DB 에 lot 단위로 삭제 후 삽입. 실행 전체가 트랜잭션 하나다.
+
+    chunks: `(root_lots, yield_records, step_records)` 튜플의 반복자.
+            청크마다 그 lot 들을 지우고 다시 넣으므로 몇 번을 돌려도 결과가 같다.
+
+    ⚠️ 여기서는 journal_mode 를 끄지 않는다. 끄면 롤백 자체가 불가능해져서
+       "실패하면 되돌아간다" 는 전제가 조용히 깨진다. rebuild 의 PRAGMA 두 줄은
+       tmp 파일에 새로 만드는 경우 전용이다.
+    """
+    db_path = Path(db_path)
+    conn = sqlite3.connect(db_path)
+    conn.isolation_level = None          # 트랜잭션 경계를 이 함수가 직접 잡는다
+    lots, n_y, n_s, del_y, del_s = [], 0, 0, 0, 0
+    try:
+        conn.execute("BEGIN")
+        for root_lots, yield_records, step_records in chunks:
+            root_lots = list(root_lots)
+            ph = ",".join("?" * len(root_lots))
+            del_s += conn.execute(
+                f"DELETE FROM step_history WHERE root_lot_id IN ({ph})",
+                root_lots).rowcount
+            del_y += conn.execute(
+                f"DELETE FROM yield WHERE root_lot_id IN ({ph})",
+                root_lots).rowcount
+            n_y += _insert_batched(conn, YIELD_INSERT, transform_yield(yield_records))
+            n_s += _insert_batched(conn, STEP_INSERT, transform_steps(step_records))
+            lots.extend(root_lots)
+        report = validate(conn, n_y, n_s)
+    except BaseException:
+        conn.execute("ROLLBACK")         # 추출 실패·중단·스키마 위반 전부 여기로
+        conn.close()
+        raise
+
+    committed = force or not report["fatal"]
+    conn.execute("COMMIT" if committed else "ROLLBACK")
+    conn.close()
+
+    report.update(committed=committed, db_path=str(db_path), n_lots=len(lots),
+                  n_deleted_yield=del_y, n_deleted_steps=del_s)
+    if verbose:
+        _print(report)
+    return report
+
+
 # --------------------------------------------------------------------------- #
 # 적재 후 정합성 검사
 # --------------------------------------------------------------------------- #
