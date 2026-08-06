@@ -361,27 +361,29 @@ def test_incremental_report_correctly_labels_a_committed_load(tmp_path, monkeypa
     assert "[전체]" in out
 
 
-def test_step_history_root_lot_id_mismatch_blocks_the_load(tmp_path):
-    """step_history.root_lot_id 가 원천 표기 차이로 어긋난 배치는 막혀야 한다.
+def test_a_lot_id_typed_differently_in_the_two_sources_is_blocked(tmp_path):
+    """원천이 yield 와 step_history 에 lot 을 다른 표기로 실으면 막혀야 한다.
 
-    이 컬럼은 증분 삭제·검증 범위의 키다. 원천이 yield 와 step_history 에 lot 을
-    다른 표기(공백·대소문자)로 실으면, 그 step 행은 삭제 대상 범위에서 빠져 안
-    지워지고 재적재마다 누적된다 - 에러는 나지 않는다.
+    yield 는 root_lot_id="B77B7" 로, step_history 는 같은 wafer 를 "C88C8" 로
+    싣는(오타·다른 표기 체계) 상황을 흉내낸다. transform_steps 는 wafer_id 를
+    그 레코드의 root_lot_id 값으로 직접 합성하므로(`build_wafer_id`), 표기가
+    갈리면 합성된 wafer_id 자체가 갈려("B77B7_01" vs "C88C8_01") 조인이 깨진다.
 
-    transform_steps 는 wafer_id 를 그 레코드의 root_lot_id 값으로 직접 합성하므로
-    (`build_wafer_id(r["root_lot_id"], ...)`), 어떤 입력을 줘도 step_history 한 행
-    안에서 wafer_id 접두와 root_lot_id 컬럼은 항상 서로 일치한다 - 그래서 신설한
-    2-2 검사(자기 정합성) 자체를 raw SQL 없이 단독으로 재현할 방법은 없다. 대신
-    root_lot_id 를 이 배치의 lot 목록("B77B7")과 다르게 주면, 그 step 은 다른
-    wafer_id("C88C8_01")로 합성돼 B77B7_01 이 이력 없는 wafer 로 잡혀(기존 4번
-    검사) 똑같이 막힌다. 이 테스트는 그 행동 - "표기가 어긋난 배치는 통과하지
-    못한다" - 을 고정한다.
+    이걸 잡는 것은 **고아/이력없음 검사**다 (root_lot_id 컬럼 자기 정합성 검사가
+    아니다 - 그건 같은 소스 값에서 wafer_id 와 root_lot_id 를 둘 다 만들기 때문에
+    구조적으로 항상 참이라 이 종류의 사고를 못 잡는다). yield 의 "B77B7_01" 은
+    매칭되는 step 이 없어 "이력 없는 wafer" 로 잡혀 증분 적재가 커밋되지 않는다.
+    나중에 다른 이유로 우연히 통과하지 않도록 fatal 메시지에 그 검사의 서명이
+    있는지까지 확인한다.
     """
     db = _seed(tmp_path)
     mismatched_steps = [{"root_lot_id": "C88C8", "wafer_id": "01",
                          "step_seq": "CC002000", "eqp_id": "ETCH9", "timestamp": "t"}]
+    before = _counts(db)
 
     report = li.load_incremental([(["B77B7"], B_YIELDS, mismatched_steps)], db,
                                  verbose=False)
 
     assert report["fatal"] and not report["committed"]
+    assert any("step_history 없는" in f for f in report["fatal"])
+    assert _counts(db) == before

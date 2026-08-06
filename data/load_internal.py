@@ -419,16 +419,6 @@ def validate(conn: sqlite3.Connection, n_yield: int, n_steps: int,
         fatal.append(f"root_lot_id 불일치 {len(mism)}건 "
                      f"(예: {[r['wafer_id'] for r in mism[:3]]})")
 
-    # 2-2. step_history 도 같은 교차검증. root_lot_id 는 증분 삭제의 키라, 원천이
-    #      yield 와 다른 표기(공백·대소문자)로 실어 보내면 그 행은 범위 필터에서 빠져
-    #      **안 지워지고** 재적재마다 누적된다. 에러는 안 난다.
-    mism_s = q(f"""SELECT DISTINCT wafer_id FROM step_history
-                   WHERE wafer_id <> root_lot_id || '_' || substr(wafer_id, -2)
-                     AND {_in_scope()}""")
-    if mism_s:
-        fatal.append(f"step_history root_lot_id 불일치 {len(mism_s)}건 "
-                     f"(예: {[r['wafer_id'] for r in mism_s[:3]]})")
-
     # 2-1. step_seq 형식 — 원천에서 step_seq 와 area 가 뒤바뀌어 실려도 적재는 통과하고,
     #      공정명("Etch")으로 묶인 후보가 그럴듯하게 나온다. 그 사고를 잡는다.
     #      자릿수 관행이 제품군마다 다를 수 있으므로 경고에 그친다 (교체는 막지 않는다).
