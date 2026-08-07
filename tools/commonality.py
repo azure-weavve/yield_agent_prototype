@@ -49,6 +49,12 @@ EQP_CH_LEGEND = [
     {"level": "chamber", "columns": ["eqp_id", "ch_id"]},
 ]
 
+# 원천의 결측 표기. 값이 아니라 "없음" 이라 후보 키를 만들면 안 된다.
+#   ch_id='-'     : 챔버 개념이 없는 설비 → "AAAAA_-" 가 설비 후보와 중복 계상됐다
+#   ppid/area='-' : 스텝 skip (eqp_id='MSKPI1' 등)
+# 2026-08-07 실데이터 발견. ch_id 약 10% / ppid 2.5% / area 1.25%.
+MISSING_TOKENS = frozenset({"-", "--", "N/A", "NA", ""})
+
 
 @contextmanager
 def _conn():
@@ -109,7 +115,7 @@ def _keys(row, legend) -> list[tuple]:
     out = []
     for lvl in legend:
         vals = [row[col] for col in lvl["columns"]]
-        if any(v is None or str(v).strip() == "" for v in vals):
+        if any(v is None or str(v).strip() in MISSING_TOKENS for v in vals):
             continue
         keystr = "_".join(str(v) for v in vals)
         colvals = dict(zip(lvl["columns"], vals))
