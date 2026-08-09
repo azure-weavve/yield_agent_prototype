@@ -31,6 +31,12 @@ def load_hypotheses(path=None):
                 raise ValueError(f"가설 '{s['id']}': 각 legend 레벨은 level·columns 를 가져야 한다")
             if not isinstance(lvl["columns"], list) or not lvl["columns"]:
                 raise ValueError(f"가설 '{s['id']}': legend 레벨 columns 는 비어있지 않은 리스트")
+            # 분모 규칙. 기본은 "그 질문에 답할 수 있는 wafer 만"(answerable)이고,
+            # all 은 step_passage 처럼 모든 wafer 가 답할 수 있는 축에만 쓴다.
+            if lvl.get("denominator", "answerable") not in ("answerable", "all"):
+                raise ValueError(
+                    f"가설 '{s['id']}': legend 레벨 denominator 는 "
+                    f"'answerable'(기본) 또는 'all' 이어야 한다")
     return specs
 
 

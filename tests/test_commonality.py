@@ -75,7 +75,11 @@ def test_clean_separation_scores_one(tmp_path, monkeypatch):
 
 
 def test_shared_equipment_excluded(tmp_path, monkeypatch):
-    """양쪽 그룹이 똑같이 거친 설비는 후보가 아니다 (score <= 0)."""
+    """양쪽 그룹이 똑같이 거친 설비는 후보가 아니다 (score <= 0).
+
+    Etch 쪽도 후보가 아니다 — 대조군이 Etch 에 아무도 안 갔으므로 "Etch 에서 어느
+    챔버를 썼나" 는 대비할 짝이 없다. 그 신호는 step_passage 축이 잡는다.
+    """
     t, c = ["T1", "T2"], ["C1", "C2"]
     ys = [_y(w, "A45Z5") for w in t + c]
     hs = [_h(w, "Photo", "PHOTO1", "1") for w in t + c]
@@ -84,7 +88,8 @@ def test_shared_equipment_excluded(tmp_path, monkeypatch):
 
     res = cm.find_commonality(t, c)
     assert ("chamber", "PHOTO1_1") not in _keys(res)
-    assert ("chamber", "ETCH9_3") in _keys(res)
+    assert ("chamber", "ETCH9_3") not in _keys(res)
+    assert res["status"] == "no_signal"
 
 
 # ------------------------------------------------------------------ 조기 출구
@@ -156,6 +161,111 @@ def test_null_chamber_yields_equipment_level_only(tmp_path, monkeypatch):
     res = cm.find_commonality(t, c)
     assert _keys(res) == {("equipment", "DIFF1")}
     assert all(c_["ch_id"] is None for c_ in res["candidates"])
+
+
+# ------------------------------------------------------------------ 분모
+
+def test_unequal_step_coverage_no_longer_fakes_a_signal(tmp_path, monkeypatch):
+    """스텝 통과율이 그룹마다 다르면 챔버 신호가 없는데도 양의 score 가 나왔다.
+
+    Etch 를 지난 wafer 중 ETCH9_3 을 쓴 비율은 타깃 2/4, 대조군 1/2 로 **똑같다**.
+    챔버로는 아무것도 안 갈린다. 그런데 분모가 '이력이 있는 wafer' 면 대조군 분모가
+    2 가 아니라 4 로 부풀려져 0.500 - 0.250 = 0.250 짜리 가짜 후보가 만들어졌다.
+    """
+    t = ["T1", "T2", "T3", "T4"]
+    c = ["C1", "C2", "C3", "C4"]
+    ys = [_y(w, "A45Z5") for w in t + c]
+    hs = [_h(w, "Photo", "PHOTO1", "1") for w in t + c]   # 전원이 지나는 스텝
+    hs += [_h(w, "Etch", "ETCH9", "3") for w in ["T1", "T2"]]
+    hs += [_h(w, "Etch", "ETCH8", "1") for w in ["T3", "T4"]]
+    hs += [_h("C1", "Etch", "ETCH9", "3"), _h("C2", "Etch", "ETCH8", "1")]
+    # C3, C4 는 Etch 를 아예 안 지난다
+    _make_db(tmp_path, monkeypatch, ys, hs)
+
+    res = cm.find_commonality(t, c)
+    assert ("chamber", "ETCH9_3") not in _keys(res)
+    assert ("equipment", "ETCH9") not in _keys(res)
+    assert res["status"] == "no_signal"
+
+
+def test_step_denominator_counts_only_wafers_at_that_step(tmp_path, monkeypatch):
+    """분모는 그 스텝에 간 wafer 만. 안 간 wafer 는 '다른 챔버를 썼다' 가 아니다."""
+    t, c = ["T1", "T2", "T3"], ["C1", "C2", "C3"]
+    ys = [_y(w, "A45Z5") for w in t + c]
+    hs = [_h(w, "Photo", "PHOTO1", "1") for w in t + c]
+    hs += [_h(w, "Etch", "ETCH9", "3") for w in ["T1", "T2"]]   # T3 는 Etch 안 감
+    hs += [_h(w, "Etch", "ETCH8", "1") for w in ["C1", "C2"]]   # C3 는 Etch 안 감
+    _make_db(tmp_path, monkeypatch, ys, hs)
+
+    res = cm.find_commonality(t, c)
+    ch = _find(res, "chamber", "ETCH9_3")
+    assert (ch["target_pass"], ch["target_total"]) == (2, 2)     # 3 이 아니다
+    assert (ch["control_pass"], ch["control_total"]) == (0, 2)   # 3 이 아니다
+    assert ch["score"] == 1.0
+    # n_target 은 '이력이 있는 wafer' 그대로다 — 후보 분모와는 다른 개념이다
+    assert res["n_target"] == 3
+
+
+def test_missing_token_excluded_from_chamber_denominator_only(tmp_path, monkeypatch):
+    """ch_id 가 '-' 면 챔버 질문에는 답할 수 없고 설비 질문에는 답할 수 있다."""
+    t, c = ["T1", "T2", "T3"], ["C1", "C2", "C3"]
+    ys = [_y(w, "A45Z5") for w in t + c]
+    hs = [_h("T1", "Etch", "ETCH9", "3"), _h("T2", "Etch", "ETCH9", "3"),
+          _h("T3", "Etch", "ETCH9", "-")]
+    hs += [_h("C1", "Etch", "ETCH8", "1"), _h("C2", "Etch", "ETCH8", "1"),
+           _h("C3", "Etch", "ETCH8", "-")]
+    _make_db(tmp_path, monkeypatch, ys, hs)
+
+    res = cm.find_commonality(t, c)
+    eq = _find(res, "equipment", "ETCH9")
+    assert (eq["target_pass"], eq["target_total"]) == (3, 3)     # T3 도 설비는 안다
+    ch = _find(res, "chamber", "ETCH9_3")
+    assert (ch["target_pass"], ch["target_total"]) == (2, 2)     # T3 는 빠진다
+    assert (ch["control_pass"], ch["control_total"]) == (0, 2)   # C3 도 빠진다
+    assert ch["score"] == 1.0
+
+
+def test_skip_equipment_stays_a_candidate(tmp_path, monkeypatch):
+    """스킵이 'MSKPI1 + ch_id 없음' 으로 기록되면 설비 레벨이 그것을 잡는 유일한 자리다.
+
+    이력 행이 있으므로 step_passage 는 '지났다' 로 센다. 설비 레벨에서 빼면
+    이 스킵은 아무도 못 잡는다.
+    """
+    t, c = ["T1", "T2"], ["C1", "C2"]
+    ys = [_y(w, "A45Z5") for w in t + c]
+    hs = [_h(w, "Etch", "MSKPI1", "-") for w in t]      # 타깃은 스킵
+    hs += [_h(w, "Etch", "ETCH8", "1") for w in c]      # 대조군은 정상 처리
+    _make_db(tmp_path, monkeypatch, ys, hs)
+
+    res = cm.find_commonality(t, c)
+    eq = _find(res, "equipment", "MSKPI1")
+    assert (eq["target_pass"], eq["target_total"]) == (2, 2)
+    assert (eq["control_pass"], eq["control_total"]) == (0, 2)
+    assert eq["score"] == 1.0
+    assert ("chamber", "MSKPI1_-") not in _keys(res)   # 결측 토큰은 키를 안 만든다
+
+
+STEP_PASSAGE_LEGEND = [{"level": "step_passage", "columns": ["step_seq"],
+                        "denominator": "all"}]
+
+
+def test_step_passage_denominator_is_the_whole_group(tmp_path, monkeypatch):
+    """'그 스텝을 지났나' 는 모든 wafer 가 답할 수 있다.
+
+    안 지난 wafer 를 분모에서 빼면 커버리지가 항상 1.0 이 되고 대조군 분모가 0 이라
+    후보가 통째로 사라져, 이 축이 아무 일도 못 한다.
+    """
+    t, c = ["T1", "T2"], ["C1", "C2"]
+    ys = [_y(w, "A45Z5") for w in t + c]
+    hs = [_h(w, "Photo", "PHOTO1", "1") for w in t + c]
+    hs += [_h(w, "IrregEC", "ETCH9", "3") for w in t]   # 타깃만 비정규 스텝
+    _make_db(tmp_path, monkeypatch, ys, hs)
+
+    res = cm.find_commonality(t, c, legend=STEP_PASSAGE_LEGEND)
+    cand = _find(res, "step_passage", "IrregEC")
+    assert (cand["target_pass"], cand["target_total"]) == (2, 2)
+    assert (cand["control_pass"], cand["control_total"]) == (0, 2)
+    assert cand["score"] == 1.0
 
 
 # ------------------------------------------------------------------ 층화

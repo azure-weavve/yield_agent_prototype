@@ -17,8 +17,11 @@ score = 1.0 이면 타깃 전원이 거쳤고 대조군은 아무도 안 거친 
   원시 카운트(a/b/c/d)를 그대로 실어, "결론이 아니라 후보"임이 드러나게 한다.
 - **root_lot 별 층화.** 대조군은 항상 타깃과 같은 root_lot 에서 나온다(route/시간 교락 차단).
   타깃이 여러 root_lot 에 걸치면(EDS 확장 케이스) stratum 별로 세고 카운트를 합산한다.
-- **결측을 신호로 만들지 않는다.** 분모는 step_history 행이 실제로 있는 wafer 로 한정하고,
-  이력이 없는 wafer 는 missing_history 로 따로 보고한다.
+- **분모는 그 질문에 답할 수 있는 wafer 만.** 후보 (레벨, 스텝) 마다 "그 스텝에 이력이
+  있고 그 레벨 컬럼이 결측이 아닌 wafer" 를 분모로 쓴다. 스텝을 안 지난 wafer 를
+  '미통과' 로 세면 score 가 챔버 분리도가 아니라 스텝 통과 여부를 반영한다.
+  예외는 step_passage — 모든 wafer 가 "지났는가" 에 답할 수 있어 legend 에
+  denominator: all 을 단다. 이력이 아예 없는 wafer 는 missing_history 로 따로 보고한다.
 - **lot_type 은 필터가 아니라 컨텍스트.** 평가랏에는 설비 작업 후 검증랏이 섞여 있어
   배제하면 단서를 버린다. 분포만 meta 에 싣는다.
  
@@ -102,14 +105,15 @@ def _history(conn, wafer_ids: list[str], legend) -> list[sqlite3.Row]:
 def _keys(row, legend) -> list[tuple]:
     """한 이력 행이 기여하는 후보 키들. 각 항목 = (level, step, keystr, colvals).
 
-    레벨 컬럼이 하나라도 NULL/빈문자열이면 그 레벨은 건너뛴다(가짜 키 금지 —
+    레벨 컬럼이 하나라도 NULL/빈문자열/"-" 면 그 레벨은 건너뛴다(가짜 키 금지 —
     ch_id 없는 단일 챔버 설비/챔버 개념 없는 스텝의 챔버 레벨이 자연히 빠진다).
+    "-" 는 설비 이력에서 흔히 쓰는 결측 토큰이라 NULL/빈문자열과 동일하게 취급한다.
     """
     step = row["step_seq"]
     out = []
     for lvl in legend:
         vals = [row[col] for col in lvl["columns"]]
-        if any(v is None or str(v).strip() == "" for v in vals):
+        if any(v is None or str(v).strip() in ("", "-") for v in vals):
             continue
         keystr = "_".join(str(v) for v in vals)
         colvals = dict(zip(lvl["columns"], vals))
@@ -117,9 +121,20 @@ def _keys(row, legend) -> list[tuple]:
     return out
 
 
-def _count_stratum(rows, wafers: set[str], legend) -> tuple[dict, set, dict]:
-    """stratum 내 후보키 -> 그 키를 거친 wafer 집합, 이력 존재 wafer, 키->colvals."""
+def _count_stratum(rows, wafers: set[str], legend) -> tuple[dict, dict, set, dict]:
+    """stratum 내 집계.
+
+    passed  후보키 -> 그 키를 거친 wafer 집합
+    answer  (레벨, 스텝) -> **그 질문에 답할 수 있는** wafer 집합 = 분모
+    seen    이력이 하나라도 있는 wafer (missing_history 보고용)
+    colmap  후보키 -> legend 컬럼값
+
+    answer 를 따로 세는 이유: `_keys` 가 결측 레벨을 이미 건너뛰므로, 거기서 나온
+    (레벨, 스텝) 이 곧 "이 wafer 는 그 질문에 답할 수 있다" 는 뜻이다. seen 을
+    분모로 쓰면 그 스텝을 안 지난 wafer 와 컬럼이 결측인 wafer 가 '미통과' 로 섞인다.
+    """
     passed: dict[tuple, set] = {}
+    answer: dict[tuple, set] = {}
     seen: set[str] = set()
     colmap: dict[tuple, dict] = {}
     for r in rows:
@@ -128,10 +143,11 @@ def _count_stratum(rows, wafers: set[str], legend) -> tuple[dict, set, dict]:
             continue
         seen.add(wid)
         for level, step, keystr, colvals in _keys(r, legend):
+            answer.setdefault((level, step), set()).add(wid)
             key = (level, step, keystr)
             passed.setdefault(key, set()).add(wid)
             colmap.setdefault(key, colvals)
-    return passed, seen, colmap
+    return passed, answer, seen, colmap
  
  
 def find_commonality(target_wafers: list[str], control_wafers: list[str],
@@ -190,27 +206,39 @@ def find_commonality(target_wafers: list[str], control_wafers: list[str],
         }
  
     # ---- stratum 별 2x2 집계 후 카운트 합산 ----
+    # denominator: all 인 레벨은 모든 wafer 가 답할 수 있다 (step_passage).
+    universal = {lvl["level"] for lvl in legend if lvl.get("denominator") == "all"}
     agg: dict[tuple, dict] = {}
     colmap_all: dict[tuple, dict] = {}
     strata_report, missing = [], []
     t_seen_all, c_seen_all = set(), set()
 
     for rl, s in sorted(paired.items(), key=lambda kv: (kv[0] is None, kv[0])):
-        t_passed, t_seen, t_colmap = _count_stratum(t_rows, s["target"], legend)
-        c_passed, c_seen, c_colmap = _count_stratum(c_rows, s["control"], legend)
+        t_passed, t_answer, t_seen, t_colmap = _count_stratum(t_rows, s["target"], legend)
+        c_passed, c_answer, c_seen, c_colmap = _count_stratum(c_rows, s["control"], legend)
         colmap_all.update(t_colmap)
         colmap_all.update(c_colmap)
         t_seen_all |= t_seen
         c_seen_all |= c_seen
         missing += sorted((s["target"] | s["control"]) - t_seen - c_seen)
- 
-        # 분모: 이력이 실제로 있는 wafer 만 (결측을 '미통과'로 오해하지 않게)
-        nt, nc = len(t_seen), len(c_seen)
-        if nt == 0 or nc == 0:
+
+        # 이력이 아예 없는 쪽이 있으면 이 stratum 은 비교가 성립하지 않는다
+        if not t_seen or not c_seen:
             continue
-        strata_report.append({"root_lot_id": rl, "n_target": nt, "n_control": nc})
- 
+        strata_report.append({"root_lot_id": rl,
+                              "n_target": len(t_seen), "n_control": len(c_seen)})
+
         for key in set(t_passed) | set(c_passed):
+            level, step, _keystr = key
+            if level in universal:
+                nt, nc = len(t_seen), len(c_seen)
+            else:
+                nt = len(t_answer.get((level, step), ()))
+                nc = len(c_answer.get((level, step), ()))
+            # 한쪽이 그 질문에 아무도 답하지 못하면 대비할 짝이 없다.
+            # (예: 대조군이 그 스텝에 아예 안 갔다 → step_passage 축이 잡을 일이다)
+            if nt == 0 or nc == 0:
+                continue
             e = agg.setdefault(key, {"a": 0, "b": 0, "c": 0, "d": 0, "strata": 0})
             a = len(t_passed.get(key, ()))
             c_ = len(c_passed.get(key, ()))

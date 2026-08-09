@@ -33,6 +33,16 @@ def test_reject_malformed_legend(tmp_path):
         registry.load_hypotheses(p)
 
 
+def test_reject_unknown_denominator(tmp_path):
+    """denominator 오타가 조용히 무시되면 분모가 말없이 바뀐다."""
+    bad = [{"id": "x", "name": "n", "description": "d",
+            "legend": [{"level": "eq", "columns": ["eqp_id"],
+                        "denominator": "everything"}]}]
+    p = tmp_path / "h.yaml"; p.write_text(yaml.safe_dump(bad), encoding="utf-8")
+    with pytest.raises(ValueError, match="denominator"):
+        registry.load_hypotheses(p)
+
+
 def test_build_tools_produces_named_callables():
     tools = registry.build_tools(VALID)
     assert tools[0].name == "hyp_eqp_ch_commonality"
