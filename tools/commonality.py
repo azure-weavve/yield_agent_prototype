@@ -54,6 +54,10 @@ EQP_CH_LEGEND = [
 
 # legend 컬럼값이 이 토큰이면 결측(NULL/빈문자열과 동일 취급) — ch_id·ppid 등 챔버·PPID
 # 개념이 없는 스텝에서 흔히 쓰는 결측 토큰. 2·3단계(metro) 분모도 같은 집합을 쓴다.
+# 판정은 legend 의 모든 컬럼(eqp_id 포함)에 걸리지만, 설계가 이름 댄 것은 ch_id·ppid
+# 뿐이다. eqp_id='-' 가 사내 데이터에 실제로 나오는지는 확인 대기 중 — 지금 동작은
+# tests/test_commonality.py::test_missing_token_on_eqp_id_also_excludes_equipment_denominator
+# 가 잠근다.
 MISSING_TOKENS = frozenset({"-"})
 
 
@@ -323,7 +327,8 @@ def find_commonality(target_wafers: list[str], control_wafers: list[str],
         },
         "note": ("후보는 결론이 아니다. 표본이 작아 우연한 분리가 흔하므로 "
                  "원시 카운트(target_pass/target_total)를 반드시 함께 판단하고, "
-                 "지목된 스텝의 센서 비교로 검증해야 한다."),
+                 "지목된 스텝의 센서 비교로 검증해야 한다. target_total 은 그 질문에 "
+                 "답할 수 있는 wafer 수이지 타깃 그룹 크기(n_target)가 아니다."),
     }
     if not candidates:
         result["note"] = (

@@ -3,6 +3,9 @@
   description: |
     타깃 전원이 거쳤고 대조군은 안 거친 (공정 스텝, 설비/챔버)를 찾는다.
     1차 legend — 엔지니어가 가장 먼저 돌리는 주 분석. 설비 롤업과 챔버 세부를 함께 낸다.
+    분모는 그 스텝에 갔고 그 레벨 컬럼(eqp_id·ch_id)이 결측이 아닌 wafer다 —
+    target_total 은 타깃 그룹 크기가 아니다(그룹 크기는 n_target). 한쪽이 그
+    질문에 아무도 답하지 못하면 후보를 내지 않는다.
   legend:
     - {level: equipment, columns: [eqp_id]}
     - {level: chamber, columns: [eqp_id, ch_id]}
@@ -12,6 +15,9 @@
   description: |
     EQP_CH 로 타깃/대조군이 안 갈릴 때, 타깃만 거친 (공정 스텝, PPID)를 찾는다.
     2차 legend — 불량 형태에 따라 선택.
+    분모는 그 스텝에 갔고 ppid 가 결측이 아닌 wafer다 — target_total 은 타깃
+    그룹 크기가 아니다(그룹 크기는 n_target). 한쪽이 그 질문에 아무도 답하지
+    못하면 후보를 내지 않는다.
   legend:
     - {level: ppid, columns: [ppid]}
 
@@ -25,6 +31,8 @@
     자동으로 탈락한다. 설비/PPID 축과 별개 도구인 이유는 게이트가 "같은 도구 안
     최고 점수" 를 요구하기 때문 — 한 도구에 섞으면 서로를 눌러 한쪽만 승인된다.
     분모도 다르다 — "지났는가" 는 모든 wafer 가 답할 수 있으므로 denominator: all 이다.
-    다른 축은 그 스텝에 간 wafer 만 분모에 넣는다.
+    다른 축은 그 스텝에 이력이 있고 그 레벨 컬럼이 결측이 아닌 wafer 만 분모에 넣는다.
+    denominator: all 은 step_seq 처럼 결측이 없는 축에만 쓴다 — 결측 가능한 컬럼에
+    달면 교정 전의 가짜 후보가 그대로 돌아온다.
   legend:
     - {level: step_passage, columns: [step_seq], denominator: all}
