@@ -54,10 +54,11 @@ EQP_CH_LEGEND = [
 
 # legend 컬럼값이 이 토큰이면 결측(NULL/빈문자열과 동일 취급) — ch_id·ppid 등 챔버·PPID
 # 개념이 없는 스텝에서 흔히 쓰는 결측 토큰. 2·3단계(metro) 분모도 같은 집합을 쓴다.
-# 판정은 legend 의 모든 컬럼(eqp_id 포함)에 걸리지만, 설계가 이름 댄 것은 ch_id·ppid
-# 뿐이다. eqp_id='-' 가 사내 데이터에 실제로 나오는지는 확인 대기 중 — 지금 동작은
+# 판정은 legend 의 모든 컬럼에 걸리지만 eqp_id 는 해당 없다 — 사내에서 스킵은 MSKIP1
+# 이라는 실제 설비 코드로 기록하기로 약속돼 있어 eqp_id 에 "-" 가 들어오지 않는다
+# (2026-08-09 확인). 그 약속이 바뀌면 무엇이 무너지는지는
 # tests/test_commonality.py::test_missing_token_on_eqp_id_also_excludes_equipment_denominator
-# 가 잠근다.
+# 에 적어 뒀다.
 MISSING_TOKENS = frozenset({"-"})
 
 

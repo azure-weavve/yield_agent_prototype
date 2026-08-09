@@ -226,23 +226,23 @@ def test_missing_token_excluded_from_chamber_denominator_only(tmp_path, monkeypa
 
 
 def test_skip_equipment_stays_a_candidate(tmp_path, monkeypatch):
-    """스킵이 'MSKPI1 + ch_id 없음' 으로 기록되면 설비 레벨이 그것을 잡는 유일한 자리다.
+    """스킵이 'MSKIP1 + ch_id 없음' 으로 기록되면 설비 레벨이 그것을 잡는 유일한 자리다.
 
     이력 행이 있으므로 step_passage 는 '지났다' 로 센다. 설비 레벨에서 빼면
     이 스킵은 아무도 못 잡는다.
     """
     t, c = ["T1", "T2"], ["C1", "C2"]
     ys = [_y(w, "A45Z5") for w in t + c]
-    hs = [_h(w, "Etch", "MSKPI1", "-") for w in t]      # 타깃은 스킵
+    hs = [_h(w, "Etch", "MSKIP1", "-") for w in t]      # 타깃은 스킵
     hs += [_h(w, "Etch", "ETCH8", "1") for w in c]      # 대조군은 정상 처리
     _make_db(tmp_path, monkeypatch, ys, hs)
 
     res = cm.find_commonality(t, c)
-    eq = _find(res, "equipment", "MSKPI1")
+    eq = _find(res, "equipment", "MSKIP1")
     assert (eq["target_pass"], eq["target_total"]) == (2, 2)
     assert (eq["control_pass"], eq["control_total"]) == (0, 2)
     assert eq["score"] == 1.0
-    assert ("chamber", "MSKPI1_-") not in _keys(res)   # 결측 토큰은 키를 안 만든다
+    assert ("chamber", "MSKIP1_-") not in _keys(res)   # 결측 토큰은 키를 안 만든다
 
 
 STEP_PASSAGE_LEGEND = [{"level": "step_passage", "columns": ["step_seq"],
@@ -269,14 +269,17 @@ def test_step_passage_denominator_is_the_whole_group(tmp_path, monkeypatch):
 
 
 def test_missing_token_on_eqp_id_also_excludes_equipment_denominator(tmp_path, monkeypatch):
-    """현재 동작을 잠근다 — 확정된 설계가 아니라 사내 데이터 확인 대기 중인 자리다.
+    """eqp_id 가 결측 토큰이면 설비 분모에서도 빠진다 — 현재 동작을 잠근다.
 
-    설계가 결측 토큰으로 이름 댄 컬럼은 ch_id·ppid 뿐이다("스킵 정보는 사라지지
-    않는다" — 스킵은 설비 레벨에 남아야 그 축이 잡는다). 그런데 "-" 판정은 legend 의
-    모든 컬럼에 걸리므로, eqp_id 자체가 '-' 로 기록되는 스킵이 사내 데이터에 있다면
-    그 wafer 는 설비 분모에서도 빠지고 step_passage 는 이력이 있으니 '지났다'로
-    세어, 어느 축도 그 스킵을 못 잡는 사각지대가 생긴다. 사내 데이터로 확인하기
-    전까지는 동작을 바꾸지 않고 지금 동작만 여기 잠가 둔다.
+    "-" 판정은 legend 의 모든 컬럼에 걸리는데 설계가 결측 토큰으로 이름 댄 것은
+    ch_id·ppid 뿐이다. **사내에서는 스킵을 MSKIP1 이라는 실제 설비 코드로 기록하기로
+    약속돼 있어 eqp_id 에 "-" 가 들어오는 경우가 없다**(2026-08-09 확인). 그래서
+    "스킵 정보는 사라지지 않는다"(설계 §354-366)가 깨지는 사각지대는 실데이터에 없다.
+
+    그래도 이 테스트를 남기는 이유: 그 약속이 바뀌어 eqp_id 에 결측 토큰이 들어오면
+    그 wafer 는 설비 분모에서 빠지는데 step_passage 는 이력이 있으니 '지났다'로 세어
+    어느 축도 그 스킵을 못 잡는다. MISSING_TOKENS 를 손대는 사람이 그 대가를 여기서
+    읽게 한다.
     """
     t, c = ["T1", "T2", "T3"], ["C1", "C2"]
     ys = [_y(w, "A45Z5") for w in t + c]
