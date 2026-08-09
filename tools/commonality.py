@@ -52,6 +52,10 @@ EQP_CH_LEGEND = [
     {"level": "chamber", "columns": ["eqp_id", "ch_id"]},
 ]
 
+# legend 컬럼값이 이 토큰이면 결측(NULL/빈문자열과 동일 취급) — ch_id·ppid 등 챔버·PPID
+# 개념이 없는 스텝에서 흔히 쓰는 결측 토큰. 2·3단계(metro) 분모도 같은 집합을 쓴다.
+MISSING_TOKENS = frozenset({"-"})
+
 
 @contextmanager
 def _conn():
@@ -105,15 +109,15 @@ def _history(conn, wafer_ids: list[str], legend) -> list[sqlite3.Row]:
 def _keys(row, legend) -> list[tuple]:
     """한 이력 행이 기여하는 후보 키들. 각 항목 = (level, step, keystr, colvals).
 
-    레벨 컬럼이 하나라도 NULL/빈문자열/"-" 면 그 레벨은 건너뛴다(가짜 키 금지 —
-    ch_id 없는 단일 챔버 설비/챔버 개념 없는 스텝의 챔버 레벨이 자연히 빠진다).
-    "-" 는 설비 이력에서 흔히 쓰는 결측 토큰이라 NULL/빈문자열과 동일하게 취급한다.
+    레벨 컬럼이 하나라도 NULL/빈문자열/MISSING_TOKENS 면 그 레벨은 건너뛴다(가짜 키
+    금지 — ch_id 없는 단일 챔버 설비/챔버 개념 없는 스텝의 챔버 레벨이 자연히 빠진다).
     """
     step = row["step_seq"]
     out = []
     for lvl in legend:
         vals = [row[col] for col in lvl["columns"]]
-        if any(v is None or str(v).strip() in ("", "-") for v in vals):
+        if any(v is None or str(v).strip() == "" or str(v).strip() in MISSING_TOKENS
+               for v in vals):
             continue
         keystr = "_".join(str(v) for v in vals)
         colvals = dict(zip(lvl["columns"], vals))
