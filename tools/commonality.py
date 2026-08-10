@@ -35,6 +35,12 @@ score = 1.0 이면 타깃 전원이 거쳤고 대조군은 아무도 안 거친 
 의존 테이블 (ETL 선적재 대상):
     step_history(wafer_id, step_seq, eqp_id, ch_id·ppid NULL 허용, timestamp)
     yield(wafer_id, ..., root_lot_id, lot_type)
+
+성능 기준선 (2026-08-10, 더미 DB 157 wafer): 전수 열거 경로(타깃 10/대조군 50,
+`n_permutations_total`=28, 관측 제외 27회) 약 3.6ms. 무작위 표본 경로(타깃
+30/대조군 127, `n_permutations_total`≈1.3e14 로 `PERM_EXHAUSTIVE_MAX` 초과,
+`n_permutations=1000` 실사용) 약 148ms. 둘 다 60초 한계에 한참 못 미치지만
+실데이터 규모에서는 다시 재야 한다.
 """
  
 import itertools
