@@ -6,6 +6,10 @@
     분모는 그 스텝에 갔고 그 레벨 컬럼(eqp_id·ch_id)이 결측이 아닌 wafer다 —
     target_total 은 타깃 그룹 크기가 아니다(그룹 크기는 n_target). 한쪽이 그
     질문에 아무도 답하지 못하면 후보를 내지 않는다.
+    p_permutation 은 라벨을 root_lot 안에서 섞었을 때 이만한 분리가 나오는 비율이다.
+    p_min_possible 이 크면(예: 0.1 이상) 표본이 작아 p 를 그 아래로 내릴 수 없다는
+    뜻이지 신호가 약하다는 뜻이 아니다. 결과 최상위의 fdr_table 은 임계값별로 "이
+    목록에 가짜가 몇 개 섞여 있는가" 를 센 것이다.
   legend:
     - {level: equipment, columns: [eqp_id]}
     - {level: chamber, columns: [eqp_id, ch_id]}
@@ -18,6 +22,10 @@
     분모는 그 스텝에 갔고 ppid 가 결측이 아닌 wafer다 — target_total 은 타깃
     그룹 크기가 아니다(그룹 크기는 n_target). 한쪽이 그 질문에 아무도 답하지
     못하면 후보를 내지 않는다.
+    p_permutation 은 라벨을 root_lot 안에서 섞었을 때 이만한 분리가 나오는 비율이다.
+    p_min_possible 이 크면(예: 0.1 이상) 표본이 작아 p 를 그 아래로 내릴 수 없다는
+    뜻이지 신호가 약하다는 뜻이 아니다. 결과 최상위의 fdr_table 은 임계값별로 "이
+    목록에 가짜가 몇 개 섞여 있는가" 를 센 것이다.
   legend:
     - {level: ppid, columns: [ppid]}
 
@@ -34,5 +42,9 @@
     다른 축은 그 스텝에 이력이 있고 그 레벨 컬럼이 결측이 아닌 wafer 만 분모에 넣는다.
     denominator: all 은 step_seq 처럼 결측이 없는 축에만 쓴다 — 결측 가능한 컬럼에
     달면 교정 전의 가짜 후보가 그대로 돌아온다.
+    p_permutation 은 라벨을 root_lot 안에서 섞었을 때 이만한 분리가 나오는 비율이다.
+    p_min_possible 이 크면(예: 0.1 이상) 표본이 작아 p 를 그 아래로 내릴 수 없다는
+    뜻이지 신호가 약하다는 뜻이 아니다. 결과 최상위의 fdr_table 은 임계값별로 "이
+    목록에 가짜가 몇 개 섞여 있는가" 를 센 것이다.
   legend:
     - {level: step_passage, columns: [step_seq], denominator: all}
