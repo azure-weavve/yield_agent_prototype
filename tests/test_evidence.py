@@ -3,6 +3,8 @@
 판정하지 않는다. 사실만 모은다. 판정은 graph/nodes.py 의 게이트가 한다.
 """
 
+from dataclasses import asdict
+
 from graph import evidence
 
 
@@ -99,3 +101,44 @@ def test_top_score_is_per_tool():
     assert b.top_score("hyp_eqp_ch_commonality") == 1.0
     assert b.top_score("hyp_ppid_commonality") == 0.6
     assert b.top_score("hyp_nothing_ran") is None
+
+
+def test_permutation_p_survives_the_bundle():
+    """순열 p 가 후보 dict 에서 Claim 까지 살아 간다.
+
+    score 단언이 함께 있는 이유: build_bundle 이 .get() 기본값을 쓰므로 후보에
+    키가 늘 때 매핑이 어긋나면 score 가 조용히 0 이 된다. 실데이터에서 게이트가
+    통째로 침묵하는 경로라 같이 못 박는다 (설계 §5).
+    """
+    cand = {**CAND_PASS, "p_permutation": 0.0123}
+    b = evidence.build_bundle([_finding("hyp_eqp_ch_commonality", "eqp_ch_commonality",
+                                        "ok", [cand])])
+    c = b.claims[CAND_PASS["claim_id"]]
+    assert c.p_permutation == 0.0123
+    assert c.score == 1.0
+
+
+def test_missing_permutation_p_is_none_not_zero():
+    """순열을 껐거나 옛 결과면 p 가 없다. 0.0 으로 뭉개면 안 된다.
+
+    p = 0.0 은 "우연일 리 없다" 로 읽힌다. 없는 것과 아주 유의한 것을 같은 값으로
+    적으면 정확히 반대 방향의 오독이 된다.
+    """
+    b = evidence.build_bundle([_finding("hyp_eqp_ch_commonality", "eqp_ch_commonality",
+                                        "ok", [CAND_PASS])])
+    assert b.claims[CAND_PASS["claim_id"]].p_permutation is None
+
+
+def test_evidence_line_carries_p_only_when_present():
+    """근거 줄에 p 를 싣되, 없으면 예전 모양 그대로여야 한다."""
+    with_p = evidence.build_bundle([_finding(
+        "hyp_eqp_ch_commonality", "eqp_ch_commonality", "ok",
+        [{**CAND_PASS, "p_permutation": 0.0123}])])
+    line = evidence.format_evidence_line(asdict(with_p.claims[CAND_PASS["claim_id"]]))
+    assert line.endswith("· 순열 p 0.0123")
+
+    without = evidence.build_bundle([_finding(
+        "hyp_eqp_ch_commonality", "eqp_ch_commonality", "ok", [CAND_PASS])])
+    line2 = evidence.format_evidence_line(asdict(without.claims[CAND_PASS["claim_id"]]))
+    assert "순열 p" not in line2
+    assert line2.endswith("대조군 0/6 통과")

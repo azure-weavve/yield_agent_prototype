@@ -49,6 +49,9 @@ def evaluate(spec: dict, group_ids: list[str], control_ids: list[str]) -> dict:
             "control_pass": cand["control_pass"], "control_total": cand["control_total"],
             "coverage_target": cand["coverage_target"],
             "coverage_control": cand["coverage_control"],
+            # 게이트는 이 값을 **판정에 쓰지 않는다**(_passes 참조). 리포트와 감사
+            # 기록에 흐르게 하는 것이 목적이다 - 자동 차단은 실데이터를 본 뒤에 얹는다.
+            "p_permutation": cand.get("p_permutation"),
         })
     return {
         "hypothesis_id": spec["id"],

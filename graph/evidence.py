@@ -27,6 +27,7 @@ class Claim:
     target_total: int
     control_pass: int
     control_total: int
+    p_permutation: float | None = None
 
 
 @dataclass(frozen=True)
@@ -50,9 +51,13 @@ def format_evidence_line(claim: dict) -> str:
     게이트 승인 verdict(`graph/nodes.py`)와 리포트 `[근거]` 줄(`report_node`)이
     같은 본문을 문자 그대로 복제하던 것을 여기 하나로 모았다.
     """
-    return (f"{claim['claim_id']} · 분리 점수 {claim['score']} · "
+    line = (f"{claim['claim_id']} · 분리 점수 {claim['score']} · "
             f"타깃 {claim['target_pass']}/{claim['target_total']} 통과 · "
             f"대조군 {claim['control_pass']}/{claim['control_total']} 통과")
+    p = claim.get("p_permutation")
+    if p is not None:
+        line += f" · 순열 p {p}"
+    return line
 
 
 def _is_hypothesis_result(result) -> bool:
@@ -98,5 +103,6 @@ def build_bundle(findings: list[dict]) -> Bundle:
                 target_total=int(c.get("target_total") or 0),
                 control_pass=int(c.get("control_pass") or 0),
                 control_total=int(c.get("control_total") or 0),
+                p_permutation=c.get("p_permutation"),
             )
     return Bundle(claims=claims, statuses=statuses, ran=ran)

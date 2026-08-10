@@ -133,3 +133,17 @@ def test_claim_id_is_issued_for_failing_candidates_too(fx_db, monkeypatch):
     assert failing, "미통과 후보가 없으면 이 테스트는 아무것도 지키지 않는다"
     by_key = {c["key"]: c for c in failing}
     assert by_key["ETCH9_B"]["claim_id"] == "eqp_ch:chamber:Etch:ETCH9_B"
+
+
+def test_evaluate_carries_permutation_p_without_using_it_in_the_verdict(fx_db):
+    """p 는 실려 나가되 판정에는 안 쓴다.
+
+    3대3 은 6장 중 3장을 고르는 20가지뿐이라 완전 분리여도 p 가 0.05 아래로
+    못 내려간다. passes 는 그와 무관하게 score·target_pass 로만 정해진다 -
+    자동 차단은 실데이터를 본 뒤에 얹는다(설계 §2-3).
+    """
+    res = engine.evaluate({"id": "eqp_ch", "legend": EQP_CH},
+                          ["G1", "G2", "G3"], ["C1", "C2", "C3"])
+    ch = {c["key"]: c for c in res["candidates"]}["ETCH9_B"]
+    assert ch["p_permutation"] == 0.05
+    assert ch["passes"] is True          # p 가 최소값이어도 판정은 그대로
