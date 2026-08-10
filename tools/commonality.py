@@ -356,6 +356,44 @@ def _permutation_stats(strata_masks, passed, answer, seen, universal,
     }
 
 
+def _fdr_table(scores: dict, null_counts: dict, n_used: int) -> list[dict]:
+    """임계값별로 "이 목록에 가짜가 몇 개 섞여 있나" 를 센다.
+
+    공식도 가정도 없다. 실제에서 임계를 넘은 후보 수와, 라벨을 섞었을 때 같은
+    임계를 넘은 후보 수의 평균을 나란히 놓는다. 출력이 "5개 중 0.6개쯤이 가짜"
+    라서 엔지니어가 p 값 해석 없이 바로 쓴다 (설계 §3).
+
+    후보가 하나도 없는 임계는 싣지 않는다 - 읽을 것이 없다.
+    """
+    vals = list(scores.values())
+    table = []
+    for t in FDR_THRESHOLDS:
+        n_obs = sum(1 for v in vals if v >= t)
+        if n_obs == 0:
+            continue
+        n_null = null_counts.get(t, 0) / n_used
+        table.append({
+            "threshold": t,
+            "n_observed": n_obs,
+            "n_null_mean": round(n_null, 3),
+            "fdr": round(min(1.0, n_null / n_obs), 3),
+        })
+    return table
+
+
+def _family_wise_p(scores: dict, null_max: list[float], n_used: int) -> float | None:
+    """1등이 우연일 확률. 회차별 최댓값 분포에 관측 1등을 대본다.
+
+    재료(null_max)를 순열 루프에서 이미 모았으므로 계산을 다시 하지 않는다.
+    후보별 p 는 "이 후보 하나" 를, 이 값은 "전체를 통틀어 최고" 를 말한다.
+    """
+    if not scores or not null_max:
+        return None
+    best = max(scores.values())
+    exceed = sum(1 for v in null_max if v >= best)
+    return round((exceed + 1) / (n_used + 1), 4)
+
+
 def _names(mask: int, bits: dict[str, int]) -> list[str]:
     """비트마스크를 wafer id 목록으로 되돌린다 (보고용)."""
     return sorted(w for w, b in bits.items() if mask & b)
@@ -517,6 +555,8 @@ def find_commonality(target_wafers: list[str], control_wafers: list[str],
         "strata": strata_report,
         "candidates": candidates,
         "truncated": truncated,
+        "fdr_table": _fdr_table(scores, perm["null_counts"], perm["n_used"]) if perm else [],
+        "p_family_wise": _family_wise_p(scores, perm["null_max"], perm["n_used"]) if perm else None,
         "meta": {
             # 시간 교락 진단용 — 두 그룹의 처리 시기가 어긋나면 '공통 설비'가 허상일 수 있다
             "target_time_range": _ts(rows, t_seen_all),

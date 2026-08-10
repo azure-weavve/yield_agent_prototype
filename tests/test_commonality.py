@@ -618,3 +618,91 @@ def test_enumeration_and_sampling_agree(tmp_path, monkeypatch):
     sampled = _find(cm.find_commonality(t, c), "equipment", "ETCH9")
     assert sampled["n_permutations_total"] == 924           # 경우의 수는 그대로 보고
     assert abs(sampled["p_permutation"] - exhaustive["p_permutation"]) < 0.01
+
+
+# -------------------------------------------------------------------- FDR
+
+def _noise_db(tmp_path, monkeypatch, n_steps=10):
+    """신호가 없는데 후보는 많이 나오는 데이터.
+
+    6장을 3장씩 나누는 방법이 20가지인데, 스텝마다 서로 다른 3장 조합이 ETCH9 를
+    쓰게 한다. 어느 스텝 하나는 우연히 타깃과 정확히 일치해 score 1.0 이 된다.
+    실제 원인은 없고 '많이 시도했다' 는 것뿐이다 - FDR 이 잡아야 하는 상황이다.
+    """
+    wafers = ["T1", "T2", "T3", "C1", "C2", "C3"]
+    subsets = list(itertools.combinations(wafers, 3))[:n_steps]
+    ys = [_y(w, "A45Z5") for w in wafers]
+    hs = []
+    for i, sub in enumerate(subsets):
+        for w in wafers:
+            eqp = "ETCH9" if w in sub else "ETCH8"
+            hs.append(_h(w, f"S{i:02d}", eqp, "1"))
+    _make_db(tmp_path, monkeypatch, ys, hs)
+    return ["T1", "T2", "T3"], ["C1", "C2", "C3"]
+
+
+def test_fdr_table_has_the_expected_shape(tmp_path, monkeypatch):
+    """표의 각 행은 임계·실제 개수·귀무 평균·추정 가짜 비율 넷을 담는다."""
+    t, c = _noise_db(tmp_path, monkeypatch)
+    res = cm.find_commonality(t, c)
+    assert res["fdr_table"]
+    for row in res["fdr_table"]:
+        assert set(row) == {"threshold", "n_observed", "n_null_mean", "fdr"}
+        assert row["n_observed"] > 0
+        assert 0.0 <= row["fdr"] <= 1.0
+    thresholds = [r["threshold"] for r in res["fdr_table"]]
+    assert thresholds == sorted(thresholds, reverse=True)
+
+
+def test_pure_noise_gets_a_high_fdr(tmp_path, monkeypatch):
+    """많이 시도해서 얻은 score 1.0 은 귀무에서도 그만큼 나온다.
+
+    원인이 없는데 후보가 나온 상황이다. 표가 "이 목록은 거의 다 가짜" 라고
+    말해야 한다 - 이걸 못 하면 FDR 을 넣은 의미가 없다.
+    """
+    t, c = _noise_db(tmp_path, monkeypatch)
+    res = cm.find_commonality(t, c)
+    top = res["fdr_table"][0]
+    assert top["threshold"] == 0.9
+    assert top["n_observed"] >= 1
+    assert top["fdr"] >= 0.5
+
+
+def test_real_signal_in_a_large_group_gets_a_low_fdr(tmp_path, monkeypatch):
+    """진짜 신호는 귀무가 못 따라온다. 대조군이다."""
+    t = [f"T{i}" for i in range(1, 7)]
+    c = [f"C{i}" for i in range(1, 7)]
+    ys = [_y(w, "A45Z5") for w in t + c]
+    hs = [_h(w, "Etch", "ETCH9", "3") for w in t]
+    hs += [_h(w, "Etch", "ETCH8", "1") for w in c]
+    _make_db(tmp_path, monkeypatch, ys, hs)
+
+    res = cm.find_commonality(t, c)
+    top = res["fdr_table"][0]
+    assert top["threshold"] == 0.9
+    assert top["fdr"] < 0.05
+
+
+def test_family_wise_p_is_carried(tmp_path, monkeypatch):
+    """1등이 우연일 확률. 잡음에서는 크고 진짜 신호에서는 작아야 한다."""
+    t, c = _noise_db(tmp_path, monkeypatch)
+    noisy = cm.find_commonality(t, c)
+
+    t2 = [f"T{i}" for i in range(1, 7)]
+    c2 = [f"C{i}" for i in range(1, 7)]
+    ys = [_y(w, "A45Z5") for w in t2 + c2]
+    hs = [_h(w, "Etch", "ETCH9", "3") for w in t2]
+    hs += [_h(w, "Etch", "ETCH8", "1") for w in c2]
+    (tmp_path / "test.db").unlink()        # 같은 tmp_path 에 두 번째 DB 를 새로 쓴다
+    _make_db(tmp_path, monkeypatch, ys, hs)
+    strong = cm.find_commonality(t2, c2)
+
+    assert strong["p_family_wise"] < noisy["p_family_wise"]
+
+
+def test_no_fdr_table_when_permutation_is_off(tmp_path, monkeypatch):
+    """순열을 끄면 셀 재료가 없다. 빈 표를 내되 키는 유지한다."""
+    t, c = _noise_db(tmp_path, monkeypatch)
+    res = cm.find_commonality(t, c, n_permutations=0)
+    assert res["fdr_table"] == []
+    assert res["p_family_wise"] is None
