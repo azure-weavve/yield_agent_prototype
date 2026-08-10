@@ -50,6 +50,7 @@ CONFIDENCE_THRESHOLD = 0.8 # finalize 승인 임계 확신도
 # 후보≠결론 철학상 못 박지 않고 실데이터 보며 조정한다.
 COMMONALITY_PASS_MIN_SCORE = float(os.getenv("COMMONALITY_PASS_MIN_SCORE", "0.5"))
 COMMONALITY_PASS_MIN_TARGET = int(os.getenv("COMMONALITY_PASS_MIN_TARGET", "2"))
+COMMONALITY_PERMUTATIONS = int(os.getenv("COMMONALITY_PERMUTATIONS", "1000"))
 
 # 센서(2단): "local" = yield.db 의 sensor_log, "http" = 사내 FDC
 SENSOR_MODE = os.getenv("SENSOR_MODE", "local")

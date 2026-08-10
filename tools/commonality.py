@@ -30,6 +30,9 @@ score = 1.0 이면 타깃 전원이 거쳤고 대조군은 아무도 안 거친 
     yield(wafer_id, ..., root_lot_id, lot_type)
 """
  
+import itertools
+import math
+import random
 import sqlite3
 from contextlib import contextmanager
  
@@ -39,6 +42,15 @@ import ya_config
 MIN_TARGET = getattr(ya_config, "COMMONALITY_MIN_TARGET", 2)
 TOP_K = getattr(ya_config, "COMMONALITY_TOP_K", 20)
 MIN_SCORE = getattr(ya_config, "COMMONALITY_MIN_SCORE", 0.0)
+
+# 순열검정 반복 횟수. 0 이면 순열을 돌리지 않는다 (기존 동작).
+N_PERMUTATIONS = getattr(ya_config, "COMMONALITY_PERMUTATIONS", 1000)
+# 층화 경우의 수가 이 이하면 전수 열거한다 — 정확하고 더 빠르다.
+PERM_EXHAUSTIVE_MAX = 10000
+# 고정 시드. 같은 입력이 같은 p 를 내야 테스트도 감사도 성립한다.
+PERM_SEED = 20260809
+# FDR 표의 임계값 사다리. 실데이터를 보고 조정한다 — 지금 못 박지 않는다.
+FDR_THRESHOLDS = (0.9, 0.8, 0.7, 0.6, 0.5, 0.4)
 
 # 계산 자체가 성립하지 않은 상태들. **legend 와 무관한 그룹 수준 사실**이라 다른
 # legend 로 다시 돌려도 같은 답이 나온다 — 게이트(graph/nodes.py)가 "남은 가설을 더
@@ -225,6 +237,113 @@ def _score_map(agg) -> dict[tuple, float]:
     return out
 
 
+def _bits_of(mask: int) -> list[int]:
+    """마스크를 개별 비트 목록으로. 순열이 이 목록에서 뽑는다."""
+    out = []
+    while mask:
+        low = mask & -mask
+        out.append(low)
+        mask ^= low
+    return out
+
+
+def _n_permutations_total(strata_masks) -> int:
+    """층화 섞기의 경우의 수 = stratum 별 조합 수의 곱.
+
+    lot 을 가로질러 섞지 않으므로 전체 섞기(n! 급)보다 훨씬 작다. 이 값이 작다는
+    것 자체가 "이 데이터로는 p 를 그 아래로 못 내린다" 는 뜻이라 결과에 싣는다.
+    """
+    total = 1
+    for _rl, t_mask, c_mask in strata_masks:
+        pool = (t_mask | c_mask).bit_count()
+        total *= math.comb(pool, t_mask.bit_count())
+    return total
+
+
+def _iter_label_sets(strata_masks, n_total: int, n_iter: int, rng):
+    """회차마다 [(rl, t_mask, c_mask), ...] 를 내놓는다.
+
+    **stratum 안에서만 섞는다.** lot 을 가로지르면 lot 효과가 신호로 잡힌다.
+    lot A 에 언제나 타깃 8장이 남아야, "두께 상위에 타깃이 몰린다" 는 lot 효과가
+    귀무에도 그대로 남아 올바르게 기각된다 (설계 §2-2).
+
+    경우의 수가 적으면 전수 열거한다 — 정확하고 더 빠르다. 그때 **관측 라벨은
+    건너뛴다.** 관측을 귀무 표본에 넣으면 "넘은 횟수" 가 항상 1 이상이 되어
+    p_min_possible 이 절대 달성되지 않고, 공간 부족을 읽을 수 없게 된다.
+    """
+    pools = [(rl, _bits_of(t_mask | c_mask), t_mask.bit_count(), t_mask, c_mask)
+             for rl, t_mask, c_mask in strata_masks]
+
+    if n_total <= PERM_EXHAUSTIVE_MAX:
+        per_stratum = [list(itertools.combinations(pool, k))
+                       for _rl, pool, k, _t, _c in pools]
+        for combo in itertools.product(*per_stratum):
+            labels, is_observed = [], True
+            for (rl, _pool, _k, t_mask, c_mask), picked in zip(pools, combo):
+                t = 0
+                for b in picked:
+                    t |= b
+                if t != t_mask:
+                    is_observed = False
+                labels.append((rl, t, (t_mask | c_mask) ^ t))
+            if is_observed:
+                continue
+            yield labels
+    else:
+        for _ in range(n_iter):
+            labels = []
+            for rl, pool, k, t_mask, c_mask in pools:
+                t = 0
+                for b in rng.sample(pool, k):
+                    t |= b
+                labels.append((rl, t, (t_mask | c_mask) ^ t))
+            yield labels
+
+
+def _permutation_stats(strata_masks, passed, answer, seen, universal,
+                       observed: dict[tuple, float], n_iter: int, seed: int):
+    """라벨을 섞어 귀무 분포를 재고 후보별 p 를 낸다.
+
+    **한 회차 = 라벨 한 번 섞기 -> 전 후보 계산.** 후보마다 따로 섞으면 후보 간
+    상관이 깨진다. 같은 라벨을 쓰면 "같은 스텝의 키들이 함께 움직인다" 는 성질이
+    귀무에도 남아, 상관 때문에 가짜가 무더기로 나오는 현상이 기준선에 자동
+    반영된다 (설계 §2-5).
+
+    p = (귀무가 관측 이상인 횟수 + 1) / (섞은 횟수 + 1). 1을 더하는 이유는 0번
+    넘었다고 p = 0 이 될 수는 없기 때문이다.
+    """
+    n_total = _n_permutations_total(strata_masks)
+    exhaustive = n_total <= PERM_EXHAUSTIVE_MAX
+    n_used = (n_total - 1) if exhaustive else n_iter
+    if n_used <= 0:
+        return None                    # 섞을 수 있는 다른 배치가 없다
+
+    rng = random.Random(seed)
+    exceed = {k: 0 for k in observed}
+    null_counts = {t: 0 for t in FDR_THRESHOLDS}
+    null_max: list[float] = []
+
+    for labels in _iter_label_sets(strata_masks, n_total, n_iter, rng):
+        null_agg, _ = _aggregate(labels, passed, answer, seen, universal)
+        null_scores = _score_map(null_agg)
+        for key, obs in observed.items():
+            if null_scores.get(key, float("-inf")) >= obs:
+                exceed[key] += 1
+        vals = list(null_scores.values())
+        for t in FDR_THRESHOLDS:
+            null_counts[t] += sum(1 for v in vals if v >= t)
+        null_max.append(max(vals) if vals else 0.0)
+
+    return {
+        "p": {k: (n + 1) / (n_used + 1) for k, n in exceed.items()},
+        "p_min_possible": 1 / (n_used + 1),
+        "n_permutations_total": n_total,
+        "n_used": n_used,
+        "null_counts": null_counts,
+        "null_max": null_max,
+    }
+
+
 def _names(mask: int, bits: dict[str, int]) -> list[str]:
     """비트마스크를 wafer id 목록으로 되돌린다 (보고용)."""
     return sorted(w for w, b in bits.items() if mask & b)
@@ -232,7 +351,8 @@ def _names(mask: int, bits: dict[str, int]) -> list[str]:
 
 def find_commonality(target_wafers: list[str], control_wafers: list[str],
                      legend: list[dict] | None = None,
-                     top_k: int | None = None) -> dict:
+                     top_k: int | None = None,
+                     n_permutations: int | None = None) -> dict:
     """타깃 그룹이 공유하는데 대조군은 거치지 않은 (스텝, 설비/챔버) 후보를 찾는다.
  
     반환 status:
@@ -247,6 +367,7 @@ def find_commonality(target_wafers: list[str], control_wafers: list[str],
     """
     legend = EQP_CH_LEGEND if legend is None else legend
     top_k = TOP_K if top_k is None else top_k
+    n_permutations = N_PERMUTATIONS if n_permutations is None else n_permutations
     targets = sorted(set(target_wafers or []))
     controls = sorted(set(control_wafers or []) - set(targets))
  
@@ -326,6 +447,13 @@ def find_commonality(target_wafers: list[str], control_wafers: list[str],
     # ---- score 계산 + 절단 ----
     all_cols = _legend_columns(legend)
     scores = _score_map(agg)
+
+    # ---- 순열검정 (라벨을 섞어 "탐색만으로 얼마나 좋아 보이는가" 를 실측) ----
+    perm = None
+    if n_permutations and scores:
+        perm = _permutation_stats(strata_masks, passed, answer, seen_bits,
+                                  universal, scores, n_permutations, PERM_SEED)
+
     candidates = []
     for key, score in scores.items():
         level, step, keystr = key
@@ -346,6 +474,10 @@ def find_commonality(target_wafers: list[str], control_wafers: list[str],
             "score": round(score, 3),
             "n_strata": e["strata"],
         }
+        if perm:
+            cand["p_permutation"] = round(perm["p"][key], 4)
+            cand["p_min_possible"] = round(perm["p_min_possible"], 4)
+            cand["n_permutations_total"] = perm["n_permutations_total"]
         for col in all_cols:               # legend 컬럼값을 이름별로 (미해당은 None)
             cand[col] = colvals.get(col)
         candidates.append(cand)
@@ -385,7 +517,10 @@ def find_commonality(target_wafers: list[str], control_wafers: list[str],
         "note": ("후보는 결론이 아니다. 표본이 작아 우연한 분리가 흔하므로 "
                  "원시 카운트(target_pass/target_total)를 반드시 함께 판단하고, "
                  "지목된 스텝의 센서 비교로 검증해야 한다. target_total 은 그 질문에 "
-                 "답할 수 있는 wafer 수이지 타깃 그룹 크기(n_target)가 아니다."),
+                 "답할 수 있는 wafer 수이지 타깃 그룹 크기(n_target)가 아니다. "
+                 "p_permutation 은 라벨을 root_lot 안에서 섞었을 때 이만한 분리가 "
+                 "나오는 비율이다. p_min_possible 이 크면(예: 0.1 이상) 표본이 작아 "
+                 "p 를 그 아래로 내릴 수 없다는 뜻이지 신호가 약하다는 뜻이 아니다."),
     }
     if not candidates:
         result["note"] = (

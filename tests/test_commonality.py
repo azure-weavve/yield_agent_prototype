@@ -5,6 +5,8 @@ step_history 는 ETL 선적재 대상이라 아직 더미 DB 에 없다.
 (tests/test_yield_tools.py 의 _make_db 패턴과 동일).
 """
 
+import itertools
+import random
 import sqlite3
 
 import ya_config
@@ -463,3 +465,142 @@ def test_unknown_legend_column_raises(tmp_path, monkeypatch):
     _make_db(tmp_path, monkeypatch, ys, hs)
     with pytest.raises(ValueError, match="bogus"):
         cm.find_commonality(t, c, legend=[{"level": "x", "columns": ["bogus"]}])
+
+
+# --------------------------------------------------------------- 순열검정
+
+def test_permutation_p_is_deterministic(tmp_path, monkeypatch):
+    """같은 입력이 같은 p 를 내야 한다 — 시드가 고정돼 있다.
+
+    감사 기록에 실리는 값이라 실행마다 흔들리면 안 된다.
+    """
+    t, c = ["T1", "T2", "T3"], ["C1", "C2", "C3"]
+    ys = [_y(w, "A45Z5") for w in t + c]
+    hs = [_h(w, "Etch", "ETCH9", "3") for w in t]
+    hs += [_h(w, "Etch", "ETCH8", "1") for w in c]
+    _make_db(tmp_path, monkeypatch, ys, hs)
+
+    first = cm.find_commonality(t, c)
+    second = cm.find_commonality(t, c)
+    assert [x["p_permutation"] for x in first["candidates"]] == \
+           [x["p_permutation"] for x in second["candidates"]]
+
+
+def test_small_group_cannot_reach_a_small_p(tmp_path, monkeypatch):
+    """2대2 는 완전 분리여도 p 를 0.167 아래로 못 내린다 — 공간이 없다.
+
+    4장 중 2장을 타깃으로 고르는 경우의 수가 6이고 관측 라벨을 빼면 5회다.
+    p 는 아무리 좋아도 1/(5+1) = 0.167 이다. 이것이 "2대2 의 score 1.0" 이
+    확신이 아니라는 것을 숫자로 말하는 자리다.
+    """
+    t, c = ["T1", "T2"], ["C1", "C2"]
+    ys = [_y(w, "A45Z5") for w in t + c]
+    hs = [_h(w, "Etch", "ETCH9", "3") for w in t]
+    hs += [_h(w, "Etch", "ETCH8", "1") for w in c]
+    _make_db(tmp_path, monkeypatch, ys, hs)
+
+    res = cm.find_commonality(t, c)
+    eq = _find(res, "equipment", "ETCH9")
+    assert eq["score"] == 1.0                      # 완전 분리인데도
+    assert eq["n_permutations_total"] == 6
+    assert eq["p_min_possible"] == 0.1667
+    assert eq["p_permutation"] == 0.1667           # 최소값에 닿았다 = 귀무가 못 넘었다
+
+
+def test_larger_group_with_the_same_separation_gets_a_much_smaller_p(tmp_path, monkeypatch):
+    """같은 score 1.0 이라도 표본이 크면 p 가 훨씬 작다 — 이것이 순열검정의 일이다.
+
+    6대6 은 경우의 수가 924 라 p 가 0.001 수준까지 내려간다. score 만 보면
+    2대2 와 6대6 이 똑같이 1.0 인데, p 가 그 둘을 갈라놓는다.
+    """
+    t = [f"T{i}" for i in range(1, 7)]
+    c = [f"C{i}" for i in range(1, 7)]
+    ys = [_y(w, "A45Z5") for w in t + c]
+    hs = [_h(w, "Etch", "ETCH9", "3") for w in t]
+    hs += [_h(w, "Etch", "ETCH8", "1") for w in c]
+    _make_db(tmp_path, monkeypatch, ys, hs)
+
+    res = cm.find_commonality(t, c)
+    eq = _find(res, "equipment", "ETCH9")
+    assert eq["score"] == 1.0
+    assert eq["n_permutations_total"] == 924
+    assert eq["p_permutation"] < 0.01
+
+
+def test_shuffling_keeps_each_lot_target_count(tmp_path, monkeypatch):
+    """섞기는 root_lot 안에서만 한다 — lot 별 타깃 수가 회차마다 그대로여야 한다.
+
+    lot 을 가로질러 섞으면 lot 효과가 신호로 잡힌다(설계 §2-2). 그 방어가
+    실제로 작동하는지는 여기서만 볼 수 있다 - 결과 dict 에는 안 드러난다.
+    """
+    rng = random.Random(0)
+    # lot A: 타깃 2 대조군 1,  lot B: 타깃 1 대조군 2
+    strata = [("A", 0b000011, 0b000100), ("B", 0b001000, 0b110000)]
+    n_total = cm._n_permutations_total(strata)
+    seen_any = False
+    for labels in cm._iter_label_sets(strata, n_total, 50, rng):
+        seen_any = True
+        for (rl, t, c), (_rl0, t0, c0) in zip(labels, strata):
+            assert t.bit_count() == t0.bit_count()      # 타깃 수 보존
+            assert t | c == t0 | c0                     # 같은 wafer 풀
+            assert t & c == 0                           # 겹치지 않는다
+    assert seen_any
+
+
+def test_observed_labeling_is_not_part_of_the_null(tmp_path, monkeypatch):
+    """전수 열거에서 관측 라벨을 뺀다 — 안 빼면 최소 p 에 절대 못 닿는다.
+
+    관측은 자기 자신 이상이므로 귀무에 넣으면 '넘은 횟수' 가 늘 1 이상이 되고,
+    p_min_possible 이 달성 불가능한 값이 되어 공간 부족을 읽을 수 없게 된다.
+    """
+    rng = random.Random(0)
+    strata = [("A", 0b0011, 0b1100)]                    # 타깃 2 대조군 2 -> 6가지
+    n_total = cm._n_permutations_total(strata)
+    assert n_total == 6
+    label_sets = list(cm._iter_label_sets(strata, n_total, 0, rng))
+    assert len(label_sets) == 5                         # 관측 하나가 빠졌다
+    assert all(labels[0][1] != 0b0011 for labels in label_sets)
+
+
+def test_permutation_can_be_turned_off(tmp_path, monkeypatch):
+    """n_permutations=0 이면 순열을 아예 안 돌리고 키도 안 생긴다.
+
+    비용이 드는 계산이라 끌 수 있어야 하고, 껐을 때 결과는 순열 도입 전과 같아야
+    한다 - 껐다 켜는 것이 다른 답을 내면 둘 중 하나는 틀린 것이다.
+    """
+    t, c = ["T1", "T2", "T3"], ["C1", "C2", "C3"]
+    ys = [_y(w, "A45Z5") for w in t + c]
+    hs = [_h(w, "Etch", "ETCH9", "3") for w in t]
+    hs += [_h(w, "Etch", "ETCH8", "1") for w in c]
+    _make_db(tmp_path, monkeypatch, ys, hs)
+
+    off = cm.find_commonality(t, c, n_permutations=0)
+    on = cm.find_commonality(t, c)
+    assert "p_permutation" not in off["candidates"][0]
+    assert "p_permutation" in on["candidates"][0]
+    strip = lambda r: [{k: v for k, v in x.items() if not k.startswith(("p_", "n_perm"))}
+                       for x in r["candidates"]]
+    assert strip(off) == strip(on)          # 순열은 후보 자체를 바꾸지 않는다
+
+
+def test_enumeration_and_sampling_agree(tmp_path, monkeypatch):
+    """전수 열거와 무작위 표본이 같은 결론을 내야 한다 (설계 검증 목록).
+
+    같은 데이터를 두 경로로 돌린다. 6대6 은 경우의 수가 924 라 기본값이면 전수
+    열거를 타는데, 열거 상한을 낮춰 무작위 표본 경로로 강제한다. 두 p 가 크게
+    벌어지면 둘 중 하나가 틀린 것이다 - 표본이 편향됐거나 열거가 빠뜨렸거나다.
+    """
+    t = [f"T{i}" for i in range(1, 7)]
+    c = [f"C{i}" for i in range(1, 7)]
+    ys = [_y(w, "A45Z5") for w in t + c]
+    hs = [_h(w, "Etch", "ETCH9", "3") for w in t]
+    hs += [_h(w, "Etch", "ETCH8", "1") for w in c]
+    _make_db(tmp_path, monkeypatch, ys, hs)
+
+    exhaustive = _find(cm.find_commonality(t, c), "equipment", "ETCH9")
+    assert exhaustive["n_permutations_total"] == 924        # 전수 경로였다
+
+    monkeypatch.setattr(cm, "PERM_EXHAUSTIVE_MAX", 10)      # 무작위 표본으로 강제
+    sampled = _find(cm.find_commonality(t, c), "equipment", "ETCH9")
+    assert sampled["n_permutations_total"] == 924           # 경우의 수는 그대로 보고
+    assert abs(sampled["p_permutation"] - exhaustive["p_permutation"]) < 0.01
