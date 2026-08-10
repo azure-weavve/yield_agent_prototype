@@ -130,35 +130,106 @@ def _keys(row, legend) -> list[tuple]:
     return out
 
 
-def _count_stratum(rows, wafers: set[str], legend) -> tuple[dict, dict, set, dict]:
-    """stratum 내 집계.
+def _build_index(rows, bits: dict[str, int], legend) -> tuple[dict, dict, int, dict]:
+    """이력 행을 한 번만 훑어 wafer 를 비트로 색인한다.
 
-    passed  후보키 -> 그 키를 거친 wafer 집합
-    answer  (레벨, 스텝) -> **그 질문에 답할 수 있는** wafer 집합 = 분모
-    seen    이력이 하나라도 있는 wafer (missing_history 보고용)
+    passed  후보키 -> 그 키를 거친 wafer 비트마스크
+    answer  (레벨, 스텝) -> **그 질문에 답할 수 있는** wafer 비트마스크 = 분모 재료
+    seen    이력이 하나라도 있는 wafer 비트마스크 (missing_history 보고용)
     colmap  후보키 -> legend 컬럼값
+
+    순열검정은 **라벨만** 바꾸므로 이 색인은 회차마다 다시 만들 필요가 없다. 행을
+    다시 훑는 대신 마스크 교집합의 popcount 로 세면 회차당 비용이 행 수가 아니라
+    후보 키 수에 비례한다.
 
     answer 를 따로 세는 이유: `_keys` 가 결측 레벨을 이미 건너뛰므로, 거기서 나온
     (레벨, 스텝) 이 곧 "이 wafer 는 그 질문에 답할 수 있다" 는 뜻이다. seen 을
     분모로 쓰면 그 스텝을 안 지난 wafer 와 컬럼이 결측인 wafer 가 '미통과' 로 섞인다.
     """
-    passed: dict[tuple, set] = {}
-    answer: dict[tuple, set] = {}
-    seen: set[str] = set()
+    passed: dict[tuple, int] = {}
+    answer: dict[tuple, int] = {}
+    seen = 0
     colmap: dict[tuple, dict] = {}
     for r in rows:
-        wid = r["wafer_id"]
-        if wid not in wafers:
+        b = bits.get(r["wafer_id"])
+        if b is None:
             continue
-        seen.add(wid)
+        seen |= b
         for level, step, keystr, colvals in _keys(r, legend):
-            answer.setdefault((level, step), set()).add(wid)
+            answer[(level, step)] = answer.get((level, step), 0) | b
             key = (level, step, keystr)
-            passed.setdefault(key, set()).add(wid)
+            passed[key] = passed.get(key, 0) | b
             colmap.setdefault(key, colvals)
     return passed, answer, seen, colmap
- 
- 
+
+
+def _aggregate(strata_masks, passed, answer, seen, universal) -> tuple[dict, list]:
+    """라벨(stratum 별 타깃·대조군 마스크)에서 후보별 2x2 카운트를 낸다 — 순수 함수.
+
+    strata_masks = [(root_lot_id, t_mask, c_mask), ...]
+
+    **실제 데이터와 순열 귀무가 이 함수 하나를 같이 탄다.** 귀무를 다른 코드로 세면
+    분모 규칙·절단·stratum 스킵이 갈려, 실제와 다른 것을 재게 된다(설계 §1-4).
+    """
+    agg: dict[tuple, dict] = {}
+    strata_report = []
+    for rl, t_mask, c_mask in strata_masks:
+        t_seen = t_mask & seen
+        c_seen = c_mask & seen
+        # 이력이 아예 없는 쪽이 있으면 이 stratum 은 비교가 성립하지 않는다
+        if not t_seen or not c_seen:
+            continue
+        strata_report.append({"root_lot_id": rl,
+                              "n_target": t_seen.bit_count(),
+                              "n_control": c_seen.bit_count()})
+        for key, p_bits in passed.items():
+            a = (p_bits & t_mask).bit_count()
+            c_ = (p_bits & c_mask).bit_count()
+            if a == 0 and c_ == 0:
+                continue                  # 이 stratum 에 이 키가 없다
+            level, step, _keystr = key
+            if level in universal:
+                nt, nc = t_seen.bit_count(), c_seen.bit_count()
+            else:
+                ans = answer.get((level, step), 0)
+                nt = (ans & t_mask).bit_count()
+                nc = (ans & c_mask).bit_count()
+            # 한쪽이 그 질문에 아무도 답하지 못하면 대비할 짝이 없다.
+            # (예: 대조군이 그 스텝에 아예 안 갔다 -> step_passage 축이 잡을 일이다)
+            if nt == 0 or nc == 0:
+                continue
+            e = agg.setdefault(key, {"a": 0, "b": 0, "c": 0, "d": 0, "strata": 0})
+            e["a"] += a
+            e["b"] += nt - a
+            e["c"] += c_
+            e["d"] += nc - c_
+            e["strata"] += 1
+    return agg, strata_report
+
+
+def _score_map(agg) -> dict[tuple, float]:
+    """후보키 -> score. MIN_SCORE 이하는 뺀다. 반올림하지 않는다.
+
+    귀무에도 **같은 절단**을 건다. 게이트를 못 지날 후보를 귀무에 세면 기준선만
+    올라가 실제가 손해를 본다(설계 §1-4). 반올림을 안 하는 이유는 귀무와 관측을
+    같은 정밀도로 비교하기 위해서다 — 후보에 실리는 값만 마지막에 반올림한다.
+    """
+    out: dict[tuple, float] = {}
+    for key, e in agg.items():
+        nt, nc = e["a"] + e["b"], e["c"] + e["d"]
+        if nt == 0 or nc == 0:
+            continue
+        s = e["a"] / nt - e["c"] / nc
+        if s > MIN_SCORE:
+            out[key] = s
+    return out
+
+
+def _names(mask: int, bits: dict[str, int]) -> list[str]:
+    """비트마스크를 wafer id 목록으로 되돌린다 (보고용)."""
+    return sorted(w for w, b in bits.items() if mask & b)
+
+
 def find_commonality(target_wafers: list[str], control_wafers: list[str],
                      legend: list[dict] | None = None,
                      top_k: int | None = None) -> dict:
@@ -191,8 +262,7 @@ def find_commonality(target_wafers: list[str], control_wafers: list[str],
  
     with _conn() as conn:
         meta = _wafer_meta(conn, targets + controls)
-        t_rows = _history(conn, targets, legend)
-        c_rows = _history(conn, controls, legend)
+        rows = _history(conn, targets + controls, legend)
  
     # ---- root_lot 별 층화 (대조군이 타깃과 같은 route/시기에서 나오도록) ----
     strata: dict[str, dict] = {}
@@ -214,49 +284,37 @@ def find_commonality(target_wafers: list[str], control_wafers: list[str],
                      "route/시간 교락 없이 비교할 짝이 없어 계산을 중단했다."),
         }
  
-    # ---- stratum 별 2x2 집계 후 카운트 합산 ----
+    # ---- wafer 를 비트로 색인 (순열이 이 색인을 재사용한다) ----
+    wafers_all = targets + controls
+    bits = {w: 1 << i for i, w in enumerate(wafers_all)}
+    passed, answer, seen_bits, colmap_all = _build_index(rows, bits, legend)
+
     # denominator: all 인 레벨은 모든 wafer 가 답할 수 있다 (step_passage).
     universal = {lvl["level"] for lvl in legend if lvl.get("denominator") == "all"}
-    agg: dict[tuple, dict] = {}
-    colmap_all: dict[tuple, dict] = {}
-    strata_report, missing = [], []
-    t_seen_all, c_seen_all = set(), set()
 
+    strata_masks = []
     for rl, s in sorted(paired.items(), key=lambda kv: (kv[0] is None, kv[0])):
-        t_passed, t_answer, t_seen, t_colmap = _count_stratum(t_rows, s["target"], legend)
-        c_passed, c_answer, c_seen, c_colmap = _count_stratum(c_rows, s["control"], legend)
-        colmap_all.update(t_colmap)
-        colmap_all.update(c_colmap)
-        t_seen_all |= t_seen
-        c_seen_all |= c_seen
-        missing += sorted((s["target"] | s["control"]) - t_seen - c_seen)
+        t_mask = 0
+        for w in s["target"]:
+            t_mask |= bits[w]
+        c_mask = 0
+        for w in s["control"]:
+            c_mask |= bits[w]
+        strata_masks.append((rl, t_mask, c_mask))
 
-        # 이력이 아예 없는 쪽이 있으면 이 stratum 은 비교가 성립하지 않는다
-        if not t_seen or not c_seen:
-            continue
-        strata_report.append({"root_lot_id": rl,
-                              "n_target": len(t_seen), "n_control": len(c_seen)})
+    agg, strata_report = _aggregate(strata_masks, passed, answer, seen_bits, universal)
 
-        for key in set(t_passed) | set(c_passed):
-            level, step, _keystr = key
-            if level in universal:
-                nt, nc = len(t_seen), len(c_seen)
-            else:
-                nt = len(t_answer.get((level, step), ()))
-                nc = len(c_answer.get((level, step), ()))
-            # 한쪽이 그 질문에 아무도 답하지 못하면 대비할 짝이 없다.
-            # (예: 대조군이 그 스텝에 아예 안 갔다 → step_passage 축이 잡을 일이다)
-            if nt == 0 or nc == 0:
-                continue
-            e = agg.setdefault(key, {"a": 0, "b": 0, "c": 0, "d": 0, "strata": 0})
-            a = len(t_passed.get(key, ()))
-            c_ = len(c_passed.get(key, ()))
-            e["a"] += a
-            e["b"] += nt - a
-            e["c"] += c_
-            e["d"] += nc - c_
-            e["strata"] += 1
- 
+    # 이력이 아예 없는 wafer 는 신호가 아니라 보고 대상이다. stratum 이 스킵돼도
+    # 집계와 무관하게 세야 하므로 _aggregate 밖에 둔다.
+    t_seen_all_bits = c_seen_all_bits = missing_bits = 0
+    for _rl, t_mask, c_mask in strata_masks:
+        t_seen_all_bits |= t_mask & seen_bits
+        c_seen_all_bits |= c_mask & seen_bits
+        missing_bits |= (t_mask | c_mask) & ~seen_bits
+    t_seen_all = set(_names(t_seen_all_bits, bits))
+    c_seen_all = set(_names(c_seen_all_bits, bits))
+    missing = _names(missing_bits, bits)
+
     if not strata_report:
         return {
             "status": "no_paired_stratum",
@@ -267,17 +325,15 @@ def find_commonality(target_wafers: list[str], control_wafers: list[str],
  
     # ---- score 계산 + 절단 ----
     all_cols = _legend_columns(legend)
+    scores = _score_map(agg)
     candidates = []
-    for (level, step, keystr), e in agg.items():
+    for key, score in scores.items():
+        level, step, keystr = key
+        e = agg[key]
         nt_tot, nc_tot = e["a"] + e["b"], e["c"] + e["d"]
-        if nt_tot == 0 or nc_tot == 0:
-            continue
         cov_t = e["a"] / nt_tot
         cov_c = e["c"] / nc_tot
-        score = cov_t - cov_c
-        if score <= MIN_SCORE:
-            continue
-        colvals = colmap_all.get((level, step, keystr), {})
+        colvals = colmap_all.get(key, {})
         cand = {
             "level": level,
             "step_seq": step,
@@ -319,8 +375,8 @@ def find_commonality(target_wafers: list[str], control_wafers: list[str],
         "truncated": truncated,
         "meta": {
             # 시간 교락 진단용 — 두 그룹의 처리 시기가 어긋나면 '공통 설비'가 허상일 수 있다
-            "target_time_range": _ts(t_rows, t_seen_all),
-            "control_time_range": _ts(c_rows, c_seen_all),
+            "target_time_range": _ts(rows, t_seen_all),
+            "control_time_range": _ts(rows, c_seen_all),
             # 평가랏에는 설비 작업 후 검증랏이 섞인다 — 배제하지 않고 해석 재료로 넘긴다
             "target_lot_types": _lt(t_seen_all),
             "control_lot_types": _lt(c_seen_all),
