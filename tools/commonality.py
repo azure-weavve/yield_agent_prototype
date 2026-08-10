@@ -247,40 +247,52 @@ def _bits_of(mask: int) -> list[int]:
     return out
 
 
-def _n_permutations_total(strata_masks) -> int:
+def _n_permutations_total(strata_masks, seen: int) -> int:
     """층화 섞기의 경우의 수 = stratum 별 조합 수의 곱.
 
     lot 을 가로질러 섞지 않으므로 전체 섞기(n! 급)보다 훨씬 작다. 이 값이 작다는
     것 자체가 "이 데이터로는 p 를 그 아래로 못 내린다" 는 뜻이라 결과에 싣는다.
+
+    풀을 `seen` 으로 걸러낸다 — 이력이 아예 없는 wafer 는 `_aggregate` 에서 a/c_/
+    분모 어디에도 기여하지 않는 불활성 wafer 라 섞어도 agg 가 안 바뀐다. 안 걸러
+    내면 경우의 수만 부풀어 p_min_possible(=1/(n_used+1))이 실제로 달성 불가능한
+    값이 된다.
     """
     total = 1
     for _rl, t_mask, c_mask in strata_masks:
-        pool = (t_mask | c_mask).bit_count()
-        total *= math.comb(pool, t_mask.bit_count())
+        pool = ((t_mask | c_mask) & seen).bit_count()
+        k = (t_mask & seen).bit_count()
+        total *= math.comb(pool, k)
     return total
 
 
-def _iter_label_sets(strata_masks, n_total: int, n_iter: int, rng):
+def _iter_label_sets(strata_masks, n_total: int, n_iter: int, rng, seen: int):
     """회차마다 [(rl, t_mask, c_mask), ...] 를 내놓는다.
 
     **stratum 안에서만 섞는다.** lot 을 가로지르면 lot 효과가 신호로 잡힌다.
     lot A 에 언제나 타깃 8장이 남아야, "두께 상위에 타깃이 몰린다" 는 lot 효과가
     귀무에도 그대로 남아 올바르게 기각된다 (설계 §2-2).
 
+    이력 없는 wafer(`seen` 밖)는 섞지 않고 원래 쪽에 고정한다 — 불활성이라
+    `_n_permutations_total` 도 같은 기준으로 걸러낸다(그 함수 docstring 참고).
+    라벨의 t|c 합집합은 원래 t_mask|c_mask 와 항상 같아야 한다 — "그 wafer 가
+    사라졌다" 가 아니라 "섞을 후보에서만 뺐다" 는 뜻이어야 하기 때문이다.
+
     경우의 수가 적으면 전수 열거한다 — 정확하고 더 빠르다. 그때 **관측 라벨은
     건너뛴다.** 관측을 귀무 표본에 넣으면 "넘은 횟수" 가 항상 1 이상이 되어
     p_min_possible 이 절대 달성되지 않고, 공간 부족을 읽을 수 없게 된다.
     """
-    pools = [(rl, _bits_of(t_mask | c_mask), t_mask.bit_count(), t_mask, c_mask)
+    pools = [(rl, _bits_of((t_mask | c_mask) & seen), (t_mask & seen).bit_count(),
+              t_mask, c_mask, t_mask & ~seen)
              for rl, t_mask, c_mask in strata_masks]
 
     if n_total <= PERM_EXHAUSTIVE_MAX:
         per_stratum = [list(itertools.combinations(pool, k))
-                       for _rl, pool, k, _t, _c in pools]
+                       for _rl, pool, k, _t, _c, _fixed_t in pools]
         for combo in itertools.product(*per_stratum):
             labels, is_observed = [], True
-            for (rl, _pool, _k, t_mask, c_mask), picked in zip(pools, combo):
-                t = 0
+            for (rl, _pool, _k, t_mask, c_mask, fixed_t), picked in zip(pools, combo):
+                t = fixed_t
                 for b in picked:
                     t |= b
                 if t != t_mask:
@@ -292,8 +304,8 @@ def _iter_label_sets(strata_masks, n_total: int, n_iter: int, rng):
     else:
         for _ in range(n_iter):
             labels = []
-            for rl, pool, k, t_mask, c_mask in pools:
-                t = 0
+            for rl, pool, k, t_mask, c_mask, fixed_t in pools:
+                t = fixed_t
                 for b in rng.sample(pool, k):
                     t |= b
                 labels.append((rl, t, (t_mask | c_mask) ^ t))
@@ -312,7 +324,7 @@ def _permutation_stats(strata_masks, passed, answer, seen, universal,
     p = (귀무가 관측 이상인 횟수 + 1) / (섞은 횟수 + 1). 1을 더하는 이유는 0번
     넘었다고 p = 0 이 될 수는 없기 때문이다.
     """
-    n_total = _n_permutations_total(strata_masks)
+    n_total = _n_permutations_total(strata_masks, seen)
     exhaustive = n_total <= PERM_EXHAUSTIVE_MAX
     n_used = (n_total - 1) if exhaustive else n_iter
     if n_used <= 0:
@@ -323,7 +335,7 @@ def _permutation_stats(strata_masks, passed, answer, seen, universal,
     null_counts = {t: 0 for t in FDR_THRESHOLDS}
     null_max: list[float] = []
 
-    for labels in _iter_label_sets(strata_masks, n_total, n_iter, rng):
+    for labels in _iter_label_sets(strata_masks, n_total, n_iter, rng, seen):
         null_agg, _ = _aggregate(labels, passed, answer, seen, universal)
         null_scores = _score_map(null_agg)
         for key, obs in observed.items():

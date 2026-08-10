@@ -472,13 +472,17 @@ def test_unknown_legend_column_raises(tmp_path, monkeypatch):
 def test_permutation_p_is_deterministic(tmp_path, monkeypatch):
     """같은 입력이 같은 p 를 내야 한다 — 시드가 고정돼 있다.
 
-    감사 기록에 실리는 값이라 실행마다 흔들리면 안 된다.
+    감사 기록에 실리는 값이라 실행마다 흔들리면 안 된다. 3대3(n_total=20)은
+    기본 상한(10000) 아래라 그냥 두면 전수 열거 경로로 가서 rng 를 한 번도 안
+    쓴다 — 그건 "열거는 열거다"라는 동어반복만 검증한다. 무작위 표본 경로를
+    강제해야 고정 시드 제약을 실제로 잠글 수 있다.
     """
     t, c = ["T1", "T2", "T3"], ["C1", "C2", "C3"]
     ys = [_y(w, "A45Z5") for w in t + c]
     hs = [_h(w, "Etch", "ETCH9", "3") for w in t]
     hs += [_h(w, "Etch", "ETCH8", "1") for w in c]
     _make_db(tmp_path, monkeypatch, ys, hs)
+    monkeypatch.setattr(cm, "PERM_EXHAUSTIVE_MAX", 10)      # 무작위 표본 경로로 강제
 
     first = cm.find_commonality(t, c)
     second = cm.find_commonality(t, c)
@@ -532,19 +536,28 @@ def test_shuffling_keeps_each_lot_target_count(tmp_path, monkeypatch):
 
     lot 을 가로질러 섞으면 lot 효과가 신호로 잡힌다(설계 §2-2). 그 방어가
     실제로 작동하는지는 여기서만 볼 수 있다 - 결과 dict 에는 안 드러난다.
+    전수 열거·무작위 표본 두 경로 모두에서 확인한다 — 이 strata 는 경우의 수가
+    작아(9) 기본 상한이면 전수 경로만 타는데, 실데이터가 실제로 타는 경로는
+    표본 쪽이라 그쪽의 stratum 보존도 따로 잠가야 한다.
     """
-    rng = random.Random(0)
     # lot A: 타깃 2 대조군 1,  lot B: 타깃 1 대조군 2
     strata = [("A", 0b000011, 0b000100), ("B", 0b001000, 0b110000)]
-    n_total = cm._n_permutations_total(strata)
-    seen_any = False
-    for labels in cm._iter_label_sets(strata, n_total, 50, rng):
-        seen_any = True
-        for (rl, t, c), (_rl0, t0, c0) in zip(labels, strata):
-            assert t.bit_count() == t0.bit_count()      # 타깃 수 보존
-            assert t | c == t0 | c0                     # 같은 wafer 풀
-            assert t & c == 0                           # 겹치지 않는다
-    assert seen_any
+    seen = 0
+    for _rl, t, c in strata:
+        seen |= t | c                      # 이 테스트는 전원이 이력 있다고 가정
+    n_total = cm._n_permutations_total(strata, seen)
+
+    for perm_exhaustive_max in (10000, 2):     # 전수 열거 경로, 무작위 표본 경로
+        monkeypatch.setattr(cm, "PERM_EXHAUSTIVE_MAX", perm_exhaustive_max)
+        rng = random.Random(0)
+        seen_any = False
+        for labels in cm._iter_label_sets(strata, n_total, 50, rng, seen):
+            seen_any = True
+            for (rl, t, c), (_rl0, t0, c0) in zip(labels, strata):
+                assert t.bit_count() == t0.bit_count()      # 타깃 수 보존
+                assert t | c == t0 | c0                     # 같은 wafer 풀
+                assert t & c == 0                           # 겹치지 않는다
+        assert seen_any
 
 
 def test_observed_labeling_is_not_part_of_the_null(tmp_path, monkeypatch):
@@ -555,9 +568,10 @@ def test_observed_labeling_is_not_part_of_the_null(tmp_path, monkeypatch):
     """
     rng = random.Random(0)
     strata = [("A", 0b0011, 0b1100)]                    # 타깃 2 대조군 2 -> 6가지
-    n_total = cm._n_permutations_total(strata)
+    seen = 0b1111                                       # 이 테스트는 전원이 이력 있다고 가정
+    n_total = cm._n_permutations_total(strata, seen)
     assert n_total == 6
-    label_sets = list(cm._iter_label_sets(strata, n_total, 0, rng))
+    label_sets = list(cm._iter_label_sets(strata, n_total, 0, rng, seen))
     assert len(label_sets) == 5                         # 관측 하나가 빠졌다
     assert all(labels[0][1] != 0b0011 for labels in label_sets)
 
