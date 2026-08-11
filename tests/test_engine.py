@@ -135,15 +135,29 @@ def test_claim_id_is_issued_for_failing_candidates_too(fx_db, monkeypatch):
     assert by_key["ETCH9_B"]["claim_id"] == "eqp_ch:chamber:Etch:ETCH9_B"
 
 
-def test_evaluate_carries_permutation_p_without_using_it_in_the_verdict(fx_db):
-    """p 는 실려 나가되 판정에는 안 쓴다.
+def test_evaluate_carries_permutation_p(fx_db):
+    """p 가 후보에 실려 나간다.
 
     3대3 은 6장 중 3장을 고르는 20가지뿐이라 완전 분리여도 p 가 0.05 아래로
-    못 내려간다. passes 는 그와 무관하게 score·target_pass 로만 정해진다 -
-    자동 차단은 실데이터를 본 뒤에 얹는다(설계 §2-3).
+    못 내려간다. 판정이 p 와 무관하다는 요구는 `_passes` 를 직접 때리는
+    아래 테스트가 잠근다 - 여기서 `passes is True` 를 단언해도 p 문턱이 0.05
+    이하로 들어오면 그대로 통과해 버려 아무것도 지키지 못한다.
     """
     res = engine.evaluate({"id": "eqp_ch", "legend": EQP_CH},
                           ["G1", "G2", "G3"], ["C1", "C2", "C3"])
     ch = {c["key"]: c for c in res["candidates"]}["ETCH9_B"]
     assert ch["p_permutation"] == 0.05
-    assert ch["passes"] is True          # p 가 최소값이어도 판정은 그대로
+
+
+def test_gate_verdict_never_reads_the_permutation_p():
+    """p 는 실려 나가되 판정에는 안 쓴다 (설계 §2-3).
+
+    자동 차단은 실데이터를 본 뒤에 얹는다. 지금 p 로 거르면 소표본에서 바닥값이
+    0.05~0.17 인 후보가 통째로 사라져, 진짜 원인이 게이트 앞에서 증발한다.
+    같은 후보를 p 만 바꿔 넣어 판정이 안 변하는 것으로 잠근다.
+    """
+    cand = {"score": 1.0, "target_pass": 3}
+    verdicts = {engine._passes({**cand, "p_permutation": p, "p_min_possible": p},
+                               0.5, 2, "ok", True)
+                for p in (None, 0.0001, 0.05, 0.5, 0.99)}
+    assert verdicts == {(True, None)}

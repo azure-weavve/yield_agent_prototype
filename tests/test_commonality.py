@@ -603,6 +603,11 @@ def test_enumeration_and_sampling_agree(tmp_path, monkeypatch):
     같은 데이터를 두 경로로 돌린다. 6대6 은 경우의 수가 924 라 기본값이면 전수
     열거를 타는데, 열거 상한을 낮춰 무작위 표본 경로로 강제한다. 두 p 가 크게
     벌어지면 둘 중 하나가 틀린 것이다 - 표본이 편향됐거나 열거가 빠뜨렸거나다.
+
+    두 값의 차이만 재면 안 된다. 완전 분리라 두 p 가 각자의 바닥값에 붙어 있어
+    차이가 늘 1e-4 수준이고, 그러면 허용오차 0.01 은 어떤 회귀도 못 잡는다.
+    각 경로의 p 를 바닥값에 직접 못 박아, "귀무가 한 번도 못 넘었다" 는 같은
+    결론에 두 경로가 각각 도달했는지를 잠근다.
     """
     t = [f"T{i}" for i in range(1, 7)]
     c = [f"C{i}" for i in range(1, 7)]
@@ -613,10 +618,20 @@ def test_enumeration_and_sampling_agree(tmp_path, monkeypatch):
 
     exhaustive = _find(cm.find_commonality(t, c), "equipment", "ETCH9")
     assert exhaustive["n_permutations_total"] == 924        # 전수 경로였다
+    # 923회(관측 제외) 중 관측을 넘은 것이 0 → p = 1/924
+    assert exhaustive["p_permutation"] == 0.0011
+    assert exhaustive["p_permutation"] == exhaustive["p_min_possible"]
 
     monkeypatch.setattr(cm, "PERM_EXHAUSTIVE_MAX", 10)      # 무작위 표본으로 강제
     sampled = _find(cm.find_commonality(t, c), "equipment", "ETCH9")
     assert sampled["n_permutations_total"] == 924           # 경우의 수는 그대로 보고
+    # 표본 경로는 관측 라벨을 빼지 않는다 - 924가지에서 1000번 뽑으므로 관측과
+    # 같은 라벨이 몇 번 다시 나오고, 그것이 "관측 이상" 으로 세어진다. 여기서는
+    # 2번 → p = 3/1001 = 0.003 (PERM_SEED 고정이라 결정론적이다). 그래서 표본
+    # 경로의 p 는 바닥값 1/1001 에 닿지 않는다 - 두 경로의 바닥이 다르다.
+    assert sampled["p_permutation"] == 0.003
+    assert sampled["p_min_possible"] == 0.001
+    # 그럼에도 결론은 같아야 한다: 둘 다 "귀무는 이만한 분리를 거의 못 만든다"
     assert abs(sampled["p_permutation"] - exhaustive["p_permutation"]) < 0.01
 
 
