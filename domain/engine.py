@@ -52,12 +52,22 @@ def evaluate(spec: dict, group_ids: list[str], control_ids: list[str]) -> dict:
             # 게이트는 이 값을 **판정에 쓰지 않는다**(_passes 참조). 리포트와 감사
             # 기록에 흐르게 하는 것이 목적이다 - 자동 차단은 실데이터를 본 뒤에 얹는다.
             "p_permutation": cand.get("p_permutation"),
+            # p 만 실으면 바닥값과 약한 신호가 같은 숫자로 보인다. 소표본에서는
+            # p 가 1/(경우의 수) 밑으로 못 내려가므로 그 바닥값을 함께 보낸다 —
+            # hypotheses.yaml 이 LLM 에게 이 필드를 읽으라고 지시한다.
+            "p_min_possible": cand.get("p_min_possible"),
+            "n_permutations_total": cand.get("n_permutations_total"),
         })
     return {
         "hypothesis_id": spec["id"],
         "legend": spec["legend"],
         "status": res.get("status"),
         "candidates": candidates,
+        # 최상위 통계 — 후보별 p 는 "이 후보 하나" 를, 이 둘은 "목록 전체" 를 말한다.
+        # yaml 이 LLM 에게 결과 최상위에서 읽으라고 지시하는 자리다.
+        "fdr_table": res.get("fdr_table", []),
+        "p_family_wise": res.get("p_family_wise"),
+        "p_family_wise_min_possible": res.get("p_family_wise_min_possible"),
         "meta": res.get("meta"),
         "note": res.get("note"),
     }

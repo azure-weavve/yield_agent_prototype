@@ -142,3 +142,34 @@ def test_evidence_line_carries_p_only_when_present():
     line2 = evidence.format_evidence_line(asdict(without.claims[CAND_PASS["claim_id"]]))
     assert "순열 p" not in line2
     assert line2.endswith("대조군 0/6 통과")
+
+
+def test_p_floor_survives_the_bundle():
+    """바닥값도 Claim 까지 살아 가야 근거 줄이 p 를 옳게 렌더링한다."""
+    cand = {**CAND_PASS, "p_permutation": 0.05, "p_min_possible": 0.05}
+    b = evidence.build_bundle([_finding("hyp_eqp_ch_commonality", "eqp_ch_commonality",
+                                        "ok", [cand])])
+    c = b.claims[CAND_PASS["claim_id"]]
+    assert c.p_min_possible == 0.05
+    assert c.score == 1.0          # 키가 늘 때 매핑이 밀리지 않았는지 함께 잠근다
+
+
+def test_evidence_line_marks_a_p_that_sits_at_the_floor():
+    """바닥값에 닿은 p 는 약한 신호가 아니라 이 표본이 낼 수 있는 최강 결과다.
+
+    2대2 한 lot 이면 섞는 방법이 6가지뿐이라 완전 분리여도 p 가 0.1667 이다.
+    같은 0.1667 이 1000회 순열에서 나왔다면 뜻이 정반대다. 표시가 없으면 리포트를
+    읽는 엔지니어가 "유의하지 않다" 로 읽어 진짜 원인을 버린다.
+    """
+    at_floor = {**CAND_PASS, "p_permutation": 0.1667, "p_min_possible": 0.1667}
+    b = evidence.build_bundle([_finding("hyp_eqp_ch_commonality", "eqp_ch_commonality",
+                                        "ok", [at_floor])])
+    line = evidence.format_evidence_line(asdict(b.claims[CAND_PASS["claim_id"]]))
+    assert line.endswith("· 순열 p 0.1667 (이 표본의 최소값)")
+
+    above = {**CAND_PASS, "p_permutation": 0.1667, "p_min_possible": 0.001}
+    b2 = evidence.build_bundle([_finding("hyp_eqp_ch_commonality", "eqp_ch_commonality",
+                                         "ok", [above])])
+    line2 = evidence.format_evidence_line(asdict(b2.claims[CAND_PASS["claim_id"]]))
+    assert line2.endswith("· 순열 p 0.1667")     # 같은 p 인데 바닥이 아니면 표시 없음
+    assert "최소값" not in line2

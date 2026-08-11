@@ -28,6 +28,7 @@ class Claim:
     control_pass: int
     control_total: int
     p_permutation: float | None = None
+    p_min_possible: float | None = None    # 이 표본이 낼 수 있는 최소 p (바닥값)
 
 
 @dataclass(frozen=True)
@@ -57,6 +58,11 @@ def format_evidence_line(claim: dict) -> str:
     p = claim.get("p_permutation")
     if p is not None:
         line += f" · 순열 p {p}"
+        # 바닥값에 닿았으면 "약한 신호" 가 아니라 "이 표본이 낼 수 있는 최강" 이다.
+        # 소표본에서 p 는 1/(섞는 경우의 수+1) 밑으로 못 내려간다 - 표시가 없으면
+        # 같은 숫자가 정반대 뜻으로 읽힌다.
+        if claim.get("p_min_possible") == p:
+            line += " (이 표본의 최소값)"
     return line
 
 
@@ -104,5 +110,6 @@ def build_bundle(findings: list[dict]) -> Bundle:
                 control_pass=int(c.get("control_pass") or 0),
                 control_total=int(c.get("control_total") or 0),
                 p_permutation=c.get("p_permutation"),
+                p_min_possible=c.get("p_min_possible"),
             )
     return Bundle(claims=claims, statuses=statuses, ran=ran)

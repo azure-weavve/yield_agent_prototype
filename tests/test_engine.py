@@ -161,3 +161,40 @@ def test_gate_verdict_never_reads_the_permutation_p():
                                0.5, 2, "ok", True)
                 for p in (None, 0.0001, 0.05, 0.5, 0.99)}
     assert verdicts == {(True, None)}
+
+
+def test_evaluate_carries_the_p_floor_so_a_big_p_can_be_read_correctly(fx_db):
+    """p 만 실으면 "바닥값" 과 "약한 신호" 가 같은 숫자로 보인다.
+
+    3대3 은 6장에서 3장을 고르는 20가지뿐이라 완전 분리여도 p 가 0.05 밑으로
+    못 내려간다. 그 0.05 는 **이 표본이 낼 수 있는 최강 결과**인데, 바닥값을
+    같이 싣지 않으면 리포트에서 "유의하지 않다" 로 읽힌다 - 뜻이 정반대다.
+    `hypotheses.yaml` 이 LLM 에게 이 필드를 읽으라고 지시하므로, 없으면 LLM 은
+    무시하거나 지어낸다.
+    """
+    res = engine.evaluate({"id": "eqp_ch", "legend": EQP_CH},
+                          ["G1", "G2", "G3"], ["C1", "C2", "C3"])
+    ch = {c["key"]: c for c in res["candidates"]}["ETCH9_B"]
+    assert ch["p_min_possible"] == 0.05
+    assert ch["n_permutations_total"] == 20
+    assert ch["p_permutation"] == ch["p_min_possible"]   # 완전 분리 = 바닥값에 닿음
+
+
+def test_evaluate_carries_the_fdr_table_and_family_wise_p(fx_db):
+    """`hypotheses.yaml` 이 LLM 에게 "결과 최상위의 fdr_table" 을 읽으라고 지시한다.
+
+    어댑터가 후보 목록만 넘기고 최상위 통계를 버리면 그 지시가 거짓이 되고,
+    commonality 가 순열 회차마다 모은 재료(null_counts·null_max)가 계산만 되고
+    버려진다. 값을 지어내지 말고 commonality 가 낸 것을 그대로 옮겨야 한다.
+    """
+    args = (["G1", "G2", "G3"], ["C1", "C2", "C3"])
+    res = engine.evaluate({"id": "eqp_ch", "legend": EQP_CH}, *args)
+    raw = engine.cm.find_commonality(*args, legend=EQP_CH)
+
+    assert res["fdr_table"], "완전 분리 후보가 있는데 표가 비면 재료를 버린 것이다"
+    assert res["fdr_table"] == raw["fdr_table"]
+    assert res["p_family_wise"] is not None
+    assert res["p_family_wise"] == raw["p_family_wise"]
+    # 1등의 p 도 바닥값을 동반해야 한다 - 최상위 값이라 근거 줄이 교정 못 해 준다
+    assert res["p_family_wise_min_possible"] == raw["p_family_wise_min_possible"]
+    assert res["p_family_wise"] >= res["p_family_wise_min_possible"]

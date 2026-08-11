@@ -377,6 +377,11 @@ def _fdr_table(scores: dict, null_counts: dict, n_used: int) -> list[dict]:
     라서 엔지니어가 p 값 해석 없이 바로 쓴다 (설계 §3).
 
     후보가 하나도 없는 임계는 싣지 않는다 - 읽을 것이 없다.
+
+    회차 수(`n_used`)를 행마다 싣는 이유는 소표본에서 `n_null_mean` 이
+    양자화되기 때문이다. 19회를 돌렸으면 평균이 0/19, 1/19 ... 값만 가지므로,
+    회차 수 없이는 작은 평균이 "거의 안 나온다" 인지 "이 표본의 바닥" 인지
+    구분되지 않는다 (후보별 p 에 p_min_possible 을 붙이는 것과 같은 이유).
     """
     vals = list(scores.values())
     table = []
@@ -390,6 +395,7 @@ def _fdr_table(scores: dict, null_counts: dict, n_used: int) -> list[dict]:
             "n_observed": n_obs,
             "n_null_mean": round(n_null, 3),
             "fdr": round(min(1.0, n_null / n_obs), 3),
+            "n_used": n_used,
         })
     return table
 
@@ -438,7 +444,7 @@ def find_commonality(target_wafers: list[str], control_wafers: list[str],
         return {
             "status": "insufficient_group",
             "n_target": len(targets), "n_control": len(controls),
-            "candidates": [],
+            "candidates": [], "fdr_table": [], "p_family_wise": None, "p_family_wise_min_possible": None,
             "note": (f"타깃 {len(targets)}장 < 최소 {MIN_TARGET}장. "
                      f"단일 wafer 는 정의상 모든 경로가 '공통'이라 분석 불가 - "
                      f"EDS 유사 wafer 로 타깃을 확장해야 한다."),
@@ -463,7 +469,7 @@ def find_commonality(target_wafers: list[str], control_wafers: list[str],
         return {
             "status": "no_paired_stratum",
             "n_target": len(targets), "n_control": len(controls),
-            "candidates": [],
+            "candidates": [], "fdr_table": [], "p_family_wise": None, "p_family_wise_min_possible": None,
             "note": ("타깃과 같은 root_lot 에 속한 대조군 wafer 가 없다. "
                      "route/시간 교락 없이 비교할 짝이 없어 계산을 중단했다."),
         }
@@ -504,6 +510,7 @@ def find_commonality(target_wafers: list[str], control_wafers: list[str],
             "status": "no_paired_stratum",
             "n_target": len(targets), "n_control": len(controls),
             "candidates": [], "missing_history": sorted(set(missing)),
+            "fdr_table": [], "p_family_wise": None, "p_family_wise_min_possible": None,
             "note": "step_history 가 있는 타깃/대조군 짝이 없다 (이력 결측 확인 필요).",
         }
  
@@ -561,7 +568,17 @@ def find_commonality(target_wafers: list[str], control_wafers: list[str],
             lt = meta.get(w, {}).get("lot_type") or "unknown"
             dist[lt] = dist.get(lt, 0) + 1
         return dist
- 
+
+    # 순열을 껐으면 p 를 설명하지 않는다 - 없는 필드를 읽으라고 하면 LLM 이 지어낸다.
+    note = ("후보는 결론이 아니다. 표본이 작아 우연한 분리가 흔하므로 "
+            "원시 카운트(target_pass/target_total)를 반드시 함께 판단하고, "
+            "지목된 스텝의 센서 비교로 검증해야 한다. target_total 은 그 질문에 "
+            "답할 수 있는 wafer 수이지 타깃 그룹 크기(n_target)가 아니다.")
+    if perm:
+        note += (" p_permutation 은 라벨을 root_lot 안에서 섞었을 때 이만한 분리가 "
+                 "나오는 비율이다. p_min_possible 이 크면(예: 0.1 이상) 표본이 작아 "
+                 "p 를 그 아래로 내릴 수 없다는 뜻이지 신호가 약하다는 뜻이 아니다.")
+
     result = {
         "status": "ok" if candidates else "no_signal",
         "n_target": len(t_seen_all), "n_control": len(c_seen_all),
@@ -570,6 +587,10 @@ def find_commonality(target_wafers: list[str], control_wafers: list[str],
         "truncated": truncated,
         "fdr_table": _fdr_table(scores, perm["null_counts"], perm["n_used"]) if perm else [],
         "p_family_wise": _family_wise_p(scores, perm["null_max"], perm["n_used"]) if perm else None,
+        # 1등의 p 도 후보별 p 와 같은 식이라 같은 바닥값에 걸린다. 근거 줄이
+        # 교정해 주는 후보별 p 와 달리 이건 최상위 값이라, 숫자를 함께 보내지
+        # 않으면 소표본의 바닥값이 "우연일 확률" 로 오독된다.
+        "p_family_wise_min_possible": round(perm["p_min_possible"], 4) if perm else None,
         "meta": {
             # 시간 교락 진단용 — 두 그룹의 처리 시기가 어긋나면 '공통 설비'가 허상일 수 있다
             "target_time_range": _ts(rows, t_seen_all),
@@ -579,13 +600,7 @@ def find_commonality(target_wafers: list[str], control_wafers: list[str],
             "control_lot_types": _lt(c_seen_all),
             "missing_history": sorted(set(missing)),
         },
-        "note": ("후보는 결론이 아니다. 표본이 작아 우연한 분리가 흔하므로 "
-                 "원시 카운트(target_pass/target_total)를 반드시 함께 판단하고, "
-                 "지목된 스텝의 센서 비교로 검증해야 한다. target_total 은 그 질문에 "
-                 "답할 수 있는 wafer 수이지 타깃 그룹 크기(n_target)가 아니다. "
-                 "p_permutation 은 라벨을 root_lot 안에서 섞었을 때 이만한 분리가 "
-                 "나오는 비율이다. p_min_possible 이 크면(예: 0.1 이상) 표본이 작아 "
-                 "p 를 그 아래로 내릴 수 없다는 뜻이지 신호가 약하다는 뜻이 아니다."),
+        "note": note,
     }
     if not candidates:
         result["note"] = (

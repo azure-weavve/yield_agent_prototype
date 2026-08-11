@@ -9,6 +9,8 @@ import itertools
 import random
 import sqlite3
 
+import pytest
+
 import ya_config
 from tools import commonality as cm
 
@@ -592,6 +594,10 @@ def test_permutation_can_be_turned_off(tmp_path, monkeypatch):
     on = cm.find_commonality(t, c)
     assert "p_permutation" not in off["candidates"][0]
     assert "p_permutation" in on["candidates"][0]
+    # note 도 같이 꺼져야 한다 - 없는 필드를 읽으라고 하면 LLM 은 지어낸다
+    assert "p_permutation" not in off["note"]
+    assert "p_min_possible" not in off["note"]
+    assert "p_permutation" in on["note"]
     strip = lambda r: [{k: v for k, v in x.items() if not k.startswith(("p_", "n_perm"))}
                        for x in r["candidates"]]
     assert strip(off) == strip(on)          # 순열은 후보 자체를 바꾸지 않는다
@@ -657,14 +663,21 @@ def _noise_db(tmp_path, monkeypatch, n_steps=10):
 
 
 def test_fdr_table_has_the_expected_shape(tmp_path, monkeypatch):
-    """표의 각 행은 임계·실제 개수·귀무 평균·추정 가짜 비율 넷을 담는다."""
+    """표의 각 행은 임계·실제 개수·귀무 평균·추정 가짜 비율·회차 수를 담는다.
+
+    `n_used` 가 필요한 이유: 소표본에서 `n_null_mean` 이 양자화된다. 19회를
+    돌리면 귀무 평균이 0/19, 1/19, 2/19 ... 값만 가질 수 있으므로, 회차 수를
+    모르면 0.053 이 "거의 안 나온다" 인지 "19회 중 1회 = 이 표본의 바닥" 인지
+    구분할 수 없다. 후보별 p 에 `p_min_possible` 을 함께 싣는 것과 같은 이유다.
+    """
     t, c = _noise_db(tmp_path, monkeypatch)
     res = cm.find_commonality(t, c)
     assert res["fdr_table"]
     for row in res["fdr_table"]:
-        assert set(row) == {"threshold", "n_observed", "n_null_mean", "fdr"}
+        assert set(row) == {"threshold", "n_observed", "n_null_mean", "fdr", "n_used"}
         assert row["n_observed"] > 0
         assert 0.0 <= row["fdr"] <= 1.0
+        assert row["n_used"] == 19          # 3대3 = 20가지, 관측 제외 19회
     thresholds = [r["threshold"] for r in res["fdr_table"]]
     assert thresholds == sorted(thresholds, reverse=True)
 
@@ -715,9 +728,66 @@ def test_family_wise_p_is_carried(tmp_path, monkeypatch):
     assert strong["p_family_wise"] < noisy["p_family_wise"]
 
 
+def test_family_wise_p_carries_its_own_floor(tmp_path, monkeypatch):
+    """1등의 p 도 후보별 p 와 똑같은 바닥값을 갖는다.
+
+    `p_family_wise` 도 (넘은 횟수+1)/(회차+1) 이라 소표본에서 바닥에 붙는다.
+    바닥값 없이 0.05 만 보내면 "1등이 우연일 확률 5%" 로 읽히는데 실제로는 이
+    표본이 낼 수 있는 최소값일 수 있다 - 후보별 p 에서 고친 것과 같은 오독이,
+    최상위에서 그대로 반복된다. 근거 줄이 교정해 주지도 못한다(최상위 값이라
+    Claim 에 안 실린다). 그래서 숫자 자체를 함께 보낸다.
+    """
+    t, c = _noise_db(tmp_path, monkeypatch)
+    res = cm.find_commonality(t, c)
+    assert res["p_family_wise_min_possible"] == 0.05      # 3대3 = 1/20
+    assert res["p_family_wise"] >= res["p_family_wise_min_possible"]
+    # 후보별 바닥값과 같은 회차에서 나오므로 값이 일치해야 한다
+    assert res["p_family_wise_min_possible"] == res["candidates"][0]["p_min_possible"]
+
+
 def test_no_fdr_table_when_permutation_is_off(tmp_path, monkeypatch):
     """순열을 끄면 셀 재료가 없다. 빈 표를 내되 키는 유지한다."""
     t, c = _noise_db(tmp_path, monkeypatch)
     res = cm.find_commonality(t, c, n_permutations=0)
     assert res["fdr_table"] == []
     assert res["p_family_wise"] is None
+    assert res["p_family_wise_min_possible"] is None
+
+
+def _db_insufficient_group(tmp_path, monkeypatch):
+    _make_db(tmp_path, monkeypatch,
+             [_y("T1", "A45Z5"), _y("C1", "A45Z5")],
+             [_h("T1", "Etch", "ETCH9", "3"), _h("C1", "Etch", "ETCH8", "1")])
+    return ["T1"], ["C1"]
+
+
+def _db_unpaired_root_lot(tmp_path, monkeypatch):
+    t, c = ["T1", "T2"], ["C1", "C2"]
+    ys = [_y(w, "AAAAA") for w in t] + [_y(w, "BBBBB") for w in c]
+    hs = [_h(w, "Etch", "ETCH9", "3") for w in t]
+    hs += [_h(w, "Etch", "ETCH8", "1") for w in c]
+    _make_db(tmp_path, monkeypatch, ys, hs)
+    return t, c
+
+
+def _db_no_history_at_all(tmp_path, monkeypatch):
+    t, c = ["T1", "T2"], ["C1", "C2"]
+    _make_db(tmp_path, monkeypatch, [_y(w, "A45Z5") for w in t + c], [])
+    return t, c
+
+
+@pytest.mark.parametrize("build_db", [_db_insufficient_group, _db_unpaired_root_lot,
+                                      _db_no_history_at_all])
+def test_early_returns_still_carry_the_top_level_keys(build_db, tmp_path, monkeypatch):
+    """계산을 못 한 반환에도 최상위 키는 남아야 한다.
+
+    키가 상황에 따라 있다 없다 하면 소비자가 그때그때 다른 모양을 받는다. LLM 은
+    `hypotheses.yaml` 지시대로 fdr_table 을 찾다가 없으면 지어내고, 게이트/리포트는
+    KeyError 를 피하려고 호출부마다 기본값을 다시 적게 된다. 계약은 여기서 잠근다.
+    """
+    t, c = build_db(tmp_path, monkeypatch)
+    res = cm.find_commonality(t, c)
+    assert res["status"] != "ok", "조기 반환 경로를 안 타면 이 테스트는 아무것도 안 지킨다"
+    assert res["fdr_table"] == []
+    assert res["p_family_wise"] is None
+    assert res["p_family_wise_min_possible"] is None

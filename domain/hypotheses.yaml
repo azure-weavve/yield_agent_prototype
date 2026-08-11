@@ -9,7 +9,11 @@
     p_permutation 은 라벨을 root_lot 안에서 섞었을 때 이만한 분리가 나오는 비율이다.
     p_min_possible 이 크면(예: 0.1 이상) 표본이 작아 p 를 그 아래로 내릴 수 없다는
     뜻이지 신호가 약하다는 뜻이 아니다. 결과 최상위의 fdr_table 은 임계값별로 "이
-    목록에 가짜가 몇 개 섞여 있는가" 를 센 것이다.
+    목록에 가짜가 몇 개 섞여 있는가" 를 센 것이다(행의 n_used 는 그 표를 만든 순열
+    회차 수이며 n_null_mean 의 해상도를 뜻한다 - 19회면 평균이 0, 0.053, 0.105 ...
+    값만 가질 수 있다). p_family_wise 는 후보 하나가 아니라 목록 전체의 1등이
+    우연일 확률이고, p_family_wise_min_possible 이 그 바닥값이다 - 둘이 같으면
+    이 표본으로는 더 내려갈 수 없다는 뜻이지 신호가 약하다는 뜻이 아니다.
   legend:
     - {level: equipment, columns: [eqp_id]}
     - {level: chamber, columns: [eqp_id, ch_id]}
@@ -25,7 +29,11 @@
     p_permutation 은 라벨을 root_lot 안에서 섞었을 때 이만한 분리가 나오는 비율이다.
     p_min_possible 이 크면(예: 0.1 이상) 표본이 작아 p 를 그 아래로 내릴 수 없다는
     뜻이지 신호가 약하다는 뜻이 아니다. 결과 최상위의 fdr_table 은 임계값별로 "이
-    목록에 가짜가 몇 개 섞여 있는가" 를 센 것이다.
+    목록에 가짜가 몇 개 섞여 있는가" 를 센 것이다(행의 n_used 는 그 표를 만든 순열
+    회차 수이며 n_null_mean 의 해상도를 뜻한다 - 19회면 평균이 0, 0.053, 0.105 ...
+    값만 가질 수 있다). p_family_wise 는 후보 하나가 아니라 목록 전체의 1등이
+    우연일 확률이고, p_family_wise_min_possible 이 그 바닥값이다 - 둘이 같으면
+    이 표본으로는 더 내려갈 수 없다는 뜻이지 신호가 약하다는 뜻이 아니다.
   legend:
     - {level: ppid, columns: [ppid]}
 
@@ -45,6 +53,10 @@
     p_permutation 은 라벨을 root_lot 안에서 섞었을 때 이만한 분리가 나오는 비율이다.
     p_min_possible 이 크면(예: 0.1 이상) 표본이 작아 p 를 그 아래로 내릴 수 없다는
     뜻이지 신호가 약하다는 뜻이 아니다. 결과 최상위의 fdr_table 은 임계값별로 "이
-    목록에 가짜가 몇 개 섞여 있는가" 를 센 것이다.
+    목록에 가짜가 몇 개 섞여 있는가" 를 센 것이다(행의 n_used 는 그 표를 만든 순열
+    회차 수이며 n_null_mean 의 해상도를 뜻한다 - 19회면 평균이 0, 0.053, 0.105 ...
+    값만 가질 수 있다). p_family_wise 는 후보 하나가 아니라 목록 전체의 1등이
+    우연일 확률이고, p_family_wise_min_possible 이 그 바닥값이다 - 둘이 같으면
+    이 표본으로는 더 내려갈 수 없다는 뜻이지 신호가 약하다는 뜻이 아니다.
   legend:
     - {level: step_passage, columns: [step_seq], denominator: all}
