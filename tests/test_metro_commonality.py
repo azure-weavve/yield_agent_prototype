@@ -257,3 +257,151 @@ def test_aggregate_depends_only_on_the_labels():
     assert ("metro", step, item, "le") in agg_sw     # 역할이 바뀌면 방향도 바뀐다
     assert abs(agg[("metro", step, item, "ge")]["score"]
                - agg_sw[("metro", step, item, "le")]["score"]) < 1e-9
+
+
+# ---------------------------------------------------------------- 순열검정 (설계 §9)
+
+def _observed(masks, combos, answer, seen):
+    agg, _ = mc._aggregate_metro(masks, combos, answer, seen)
+    return {k: v["score"] for k, v in agg.items()}
+
+
+def test_stratified_shuffle_rejects_a_pure_lot_effect():
+    """lot 으로만 갈리는 값은 기각된다 — 가장 중요한 성질.
+
+    두 lot 의 값 범위가 안 겹치므로, root_lot 안에서 섞으면 어느 라벨을 뽑아도
+    "위쪽 lot 에 타깃이 몰린다" 가 그대로 남는다 -> 귀무가 항상 관측만큼 좋다 -> p = 1.
+    """
+    from data.generate_dummy import METRO_LOT_EFFECT
+
+    targets, controls = _metro_groups()
+    combos, answer, seen, _u, masks, _b = _prepare(targets, controls)
+    obs = _observed(masks, combos, answer, seen)
+    perm = mc._permutation_stats_metro(masks, combos, answer, seen, obs,
+                                       1000, mc.PERM_SEED)
+
+    key = ("metro", METRO_LOT_EFFECT[0], METRO_LOT_EFFECT[1], "ge")
+    assert obs[key] > 0.5                    # 점수만 보면 꽤 높은 후보다
+    assert perm["p"][key] == 1.0             # 그런데 우연으로 전부 설명된다
+
+
+def test_unstratified_shuffle_makes_that_lot_effect_look_like_a_finding():
+    """변별력 — 층화를 빼면 같은 조합의 p 가 급락한다.
+
+    이걸 안 보면 위 테스트가 "층화 덕분"인지 "그 조합이 원래 안 나오는 것"인지
+    구분되지 않는다. stratum 을 하나로 합치면 = 전체 섞기다 (설계 §2-2 의 반례).
+
+    절대값으로 "유의해진다" 까지 주장하지는 않는다 — 더미가 17장이라 전체 섞기에서도
+    0.09 언저리다. **층화 하나가 p 를 1.0 에서 그 값으로 10배 넘게 끌어내린다**는
+    대비가 이 테스트의 내용이고, 실데이터처럼 표본이 커지면 그 격차가 벌어진다.
+    """
+    from data.generate_dummy import METRO_LOT_EFFECT
+
+    targets, controls = _metro_groups()
+    combos, answer, seen, _u, masks, _b = _prepare(targets, controls)
+    obs = _observed(masks, combos, answer, seen)
+
+    merged_t = merged_c = 0
+    for _rl, t, c in masks:
+        merged_t |= t
+        merged_c |= c
+    merged = [("ALL", merged_t, merged_c)]
+    strat = mc._permutation_stats_metro(masks, combos, answer, seen, obs,
+                                        1000, mc.PERM_SEED)
+    flat = mc._permutation_stats_metro(merged, combos, answer, seen, obs,
+                                       1000, mc.PERM_SEED)
+
+    key = ("metro", METRO_LOT_EFFECT[0], METRO_LOT_EFFECT[1], "ge")
+    assert strat["p"][key] == 1.0                  # 층화: 우연으로 전부 설명된다
+    assert flat["p"][key] < strat["p"][key] / 10   # 전체 섞기: 발견처럼 보인다
+
+
+def test_planted_signals_survive_the_permutation_test():
+    """심어둔 진짜 신호 둘은 살아남는다 — 검정이 전부를 기각하지는 않는다."""
+    from data.generate_dummy import METRO_TRUE_GE, METRO_TRUE_LE
+
+    targets, controls = _metro_groups()
+    combos, answer, seen, _u, masks, _b = _prepare(targets, controls)
+    obs = _observed(masks, combos, answer, seen)
+    perm = mc._permutation_stats_metro(masks, combos, answer, seen, obs,
+                                       1000, mc.PERM_SEED)
+
+    for step_item, direction in ((METRO_TRUE_GE, "ge"), (METRO_TRUE_LE, "le")):
+        key = ("metro", step_item[0], step_item[1], direction)
+        assert perm["p"][key] < 0.05
+        assert perm["p"][key] > perm["p_min_possible"]   # 바닥에 닿진 않았다
+
+
+def test_permutation_reports_its_own_floor_and_space():
+    """소표본에서 p 가 어디까지 내려갈 수 있는지 함께 싣는다.
+
+    층화 경우의 수 C(7,4) x C(10,1) = 350 이라 전수 열거 경로를 탄다. 관측 라벨을
+    빼므로 349 회를 돌고 바닥은 1/350 이다. 이 수가 없으면 작은 p 가 "강한 신호"
+    인지 "이 표본의 바닥" 인지 구분되지 않는다.
+    """
+    targets, controls = _metro_groups()
+    combos, answer, seen, _u, masks, _b = _prepare(targets, controls)
+    obs = _observed(masks, combos, answer, seen)
+    perm = mc._permutation_stats_metro(masks, combos, answer, seen, obs,
+                                       1000, mc.PERM_SEED)
+
+    assert perm["n_permutations_total"] == 350        # C(7,4) x C(10,1)
+    assert perm["n_used"] == 349                      # 관측 라벨은 뺀다
+    assert perm["p_min_possible"] == 1 / 350
+
+
+def test_every_round_scores_all_combinations_with_one_label_set():
+    """한 회차 = 라벨 한 번 섞기 -> **전 조합 계산**.
+
+    조합마다 따로 섞으면 조합 간 상관이 깨져, 상관 때문에 가짜가 무더기로 나오는
+    현상이 기준선에 반영되지 않는다 (설계 §2-5). 회차 수만큼만 집계가 불리는지,
+    그리고 매 호출이 조합 전체를 보는지 센다.
+    """
+    targets, controls = _metro_groups()
+    combos, answer, seen, _u, masks, _b = _prepare(targets, controls)
+    obs = _observed(masks, combos, answer, seen)
+
+    calls = []
+    real = mc._aggregate_metro
+
+    def _spy(label_masks, cb, an, sn):
+        calls.append(len(cb))
+        return real(label_masks, cb, an, sn)
+
+    mc._aggregate_metro = _spy
+    try:
+        perm = mc._permutation_stats_metro(masks, combos, answer, seen, obs,
+                                           1000, mc.PERM_SEED)
+    finally:
+        mc._aggregate_metro = real
+
+    assert len(calls) == perm["n_used"]               # 회차당 정확히 한 번
+    assert set(calls) == {len(combos)}                # 매번 조합 전체를 본다
+
+
+def test_permutation_p_is_carried_all_the_way_into_the_public_result():
+    """2단계에서 잘려 나갔던 자리 — 계산한 통계가 결과 dict 까지 실제로 온다.
+
+    p_min_possible·fdr_table·p_family_wise 계열이 계산은 되는데 소비자에게 안
+    가던 사고가 있었다. metro 는 처음부터 그 자리를 잠근다.
+    """
+    targets, controls = _metro_groups()
+    res = mc.find_metro_commonality(targets, controls)
+
+    assert res["status"] == "ok"
+    assert res["fdr_table"] and res["p_family_wise"] is not None
+    assert res["p_family_wise_min_possible"] is not None
+    for c in res["candidates"]:
+        for field in ("p_permutation", "p_min_possible", "n_permutations_total",
+                      "split_value", "split_direction", "item"):
+            assert field in c, field
+
+
+def test_turning_permutations_off_removes_the_p_explanation_from_the_note():
+    """순열을 껐으면 p 를 설명하지 않는다 — 없는 필드를 읽으라고 하면 LLM 이 지어낸다."""
+    targets, controls = _metro_groups()
+    res = mc.find_metro_commonality(targets, controls, n_permutations=0)
+
+    assert res["candidates"]
+    assert "p_permutation" not in res["candidates"][0]
+    assert "p_min_possible" not in res["note"]

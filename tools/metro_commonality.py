@@ -41,7 +41,9 @@ wafer 는 '미통과' 가 아니라 분모 밖이다. metro 는 몇몇 스텝에
 
 import sqlite3
 
-from tools.commonality import MIN_SCORE, MIN_TARGET
+from tools.commonality import (MIN_SCORE, MIN_TARGET, N_PERMUTATIONS, PERM_SEED,
+                               TOP_K, _conn, _family_wise_p, _fdr_table, _names,
+                               _null_distribution, _wafer_meta)
 
 # subitem_id 에 섞여 있는 **통계값** 토큰. 나머지는 개별 측정 포인트다
 # (2026-08-12 사내 확인). 1차는 AVG 하나만 후보로 쓰지만 상수는 **집합으로** 둔다 —
@@ -84,9 +86,9 @@ def _build_metro_index(rows, bits: dict[str, int], legend):
     **정렬은 여기서 한 번만 한다.** 라벨과 무관하므로 순열 회차마다 다시 정렬하면
     회차 수만큼 낭비다. 아래 `_aggregate_metro` 는 이 정렬을 훑기만 한다.
 
-    `where` 절이 **행을 거른다.** 거르지 않으면 한 item 의 AVG 와 그 구성 포인트가
-    한 목록에서 겨루어 top_k 를 잠식한다 — 순열검정이 상관을 자동 반영하므로
-    통계적으로 틀리지는 않지만, 다른 스텝의 진짜 신호가 목록 밖으로 밀린다.
+    `where` 절이 **행을 거른다.** 후보 키에 `subitem_id` 가 없으므로 이건 선택이
+    아니라 전제다 — 안 거르면 한 wafer 가 같은 조합에 subitem 수만큼 들어간다
+    (아래 ValueError 참조).
     """
     combos: dict[tuple, list] = {}
     answer: dict[tuple, int] = {}
@@ -222,3 +224,184 @@ def _aggregate_metro(strata_masks, combos, answer, seen) -> tuple[dict, list]:
                 "nt": nt, "nc": nc, "strata": n_strata,
             }
     return agg, strata_report
+
+
+def _permutation_stats_metro(strata_masks, combos, answer, seen,
+                             observed: dict[tuple, float], n_iter: int, seed: int):
+    """metro 축의 귀무 분포. 회차마다 **분할점 탐색을 다시 돌린다.**
+
+    이것이 다른 축과 다른 유일한 지점이다. 다른 축은 키가 라벨과 무관해 미리 만든
+    비트마스크를 다시 세기만 하면 되지만, metro 는 라벨이 바뀌면 최적 분할점도
+    바뀐다 — "탐색이 점수를 얼마나 부풀리는가" 가 바로 재려는 대상이므로 귀무도
+    같은 탐색을 거쳐야 한다. 안 그러면 실제만 탐색의 이득을 보고 귀무는 못 봐서
+    p 가 실제보다 작게 나온다.
+    """
+    def _scores(labels):
+        null_agg, _ = _aggregate_metro(labels, combos, answer, seen)
+        return {k: v["score"] for k, v in null_agg.items()}
+
+    return _null_distribution(strata_masks, seen, observed, n_iter, seed, _scores)
+
+
+def find_metro_commonality(target_wafers: list[str], control_wafers: list[str],
+                           legend: list[dict] | None = None,
+                           top_k: int | None = None,
+                           n_permutations: int | None = None) -> dict:
+    """타깃 그룹이 공유하는 계측 구간을 찾는다 — (스텝, item, 분할점, 방향).
+
+    반환 status 는 `find_commonality` 와 같은 어휘를 쓴다 (게이트가 그 어휘로
+    "계산 불가" 를 판정하므로 갈리면 안 된다):
+      - "insufficient_group": 타깃이 너무 적어 commonality 가 정의상 무의미
+      - "no_paired_stratum" : 타깃과 대조군이 같은 root_lot 에서 짝지어지지 않음
+      - "no_signal"         : 계산은 됐으나 갈리는 구간이 없음
+      - "ok"
+    """
+    legend = METRO_LEGEND if legend is None else legend
+    top_k = TOP_K if top_k is None else top_k
+    n_permutations = N_PERMUTATIONS if n_permutations is None else n_permutations
+    targets = sorted(set(target_wafers or []))
+    controls = sorted(set(control_wafers or []) - set(targets))
+
+    def _empty(status, note):
+        return {"status": status, "n_target": len(targets), "n_control": len(controls),
+                "candidates": [], "fdr_table": [], "p_family_wise": None,
+                "p_family_wise_min_possible": None, "note": note}
+
+    if len(targets) < MIN_TARGET:
+        return _empty("insufficient_group",
+                      f"타깃 {len(targets)}장 < 최소 {MIN_TARGET}장. 단일 wafer 는 "
+                      f"정의상 모든 구간이 '공통'이라 분석 불가 - EDS 유사 wafer 로 "
+                      f"타깃을 확장해야 한다.")
+
+    with _conn() as conn:
+        meta = _wafer_meta(conn, targets + controls)
+        rows = _metro_rows(conn, targets + controls, legend)
+
+    strata: dict[str, dict] = {}
+    for wid in targets:
+        rl = meta.get(wid, {}).get("root_lot_id")
+        strata.setdefault(rl, {"target": set(), "control": set()})["target"].add(wid)
+    for wid in controls:
+        rl = meta.get(wid, {}).get("root_lot_id")
+        if rl in strata:                      # 짝 없는 대조군 root_lot 은 버린다
+            strata[rl]["control"].add(wid)
+
+    paired = {rl: s for rl, s in strata.items() if s["target"] and s["control"]}
+    if not paired:
+        return _empty("no_paired_stratum",
+                      "타깃과 같은 root_lot 에 속한 대조군 wafer 가 없다. route/시간 "
+                      "교락 없이 비교할 짝이 없어 계산을 중단했다.")
+
+    wafers_all = targets + controls
+    bits = {w: 1 << i for i, w in enumerate(wafers_all)}
+    combos, answer, seen_bits, unknown = _build_metro_index(rows, bits, legend)
+
+    strata_masks = []
+    for rl, s in sorted(paired.items(), key=lambda kv: (kv[0] is None, kv[0])):
+        t_mask = c_mask = 0
+        for w in s["target"]:
+            t_mask |= bits[w]
+        for w in s["control"]:
+            c_mask |= bits[w]
+        strata_masks.append((rl, t_mask, c_mask))
+
+    agg, strata_report = _aggregate_metro(strata_masks, combos, answer, seen_bits)
+
+    # 계측 행이 아예 없는 wafer 는 신호가 아니라 보고 대상이다. stratum 이 스킵돼도
+    # 집계와 무관하게 세야 하므로 _aggregate_metro 밖에 둔다.
+    t_seen_bits = c_seen_bits = missing_bits = 0
+    for _rl, t_mask, c_mask in strata_masks:
+        t_seen_bits |= t_mask & seen_bits
+        c_seen_bits |= c_mask & seen_bits
+        missing_bits |= (t_mask | c_mask) & ~seen_bits
+    t_seen, c_seen = set(_names(t_seen_bits, bits)), set(_names(c_seen_bits, bits))
+    missing = _names(missing_bits, bits)
+
+    if not strata_report:
+        return _empty("no_paired_stratum",
+                      "계측값이 있는 타깃/대조군 짝이 없다. metro 는 lot 당 몇 장만 "
+                      "재므로 이 상태가 흔하다 - 계측 결측 확인이 필요하다.") | {
+            "meta": {"missing_metro": sorted(set(missing))}}
+
+    scores = {k: v["score"] for k, v in agg.items()}
+
+    perm = None
+    if n_permutations and scores:
+        perm = _permutation_stats_metro(strata_masks, combos, answer, seen_bits,
+                                        scores, n_permutations, PERM_SEED)
+
+    candidates = []
+    for key, e in agg.items():
+        level, step, item, direction = key
+        sign = ">=" if direction == "ge" else "<="
+        cand = {
+            "level": level,
+            "step_seq": step,
+            "item": item,
+            # 사람이 읽는 후보 이름. 게이트는 이 문자열을 **파싱하지 않는다**.
+            "key": f"{item} {sign} {e['split']}",
+            "split_value": e["split"],
+            "split_direction": direction,
+            # 원시 카운트 - score 만 보면 5/5 와 2/2 를 구분할 수 없다
+            "target_pass": e["a"], "target_total": e["nt"],
+            "control_pass": e["c"], "control_total": e["nc"],
+            "coverage_target": round(e["a"] / e["nt"], 3),
+            "coverage_control": round(e["c"] / e["nc"], 3),
+            "score": round(e["score"], 3),
+            "n_strata": e["strata"],
+        }
+        if perm:
+            cand["p_permutation"] = round(perm["p"][key], 4)
+            cand["p_min_possible"] = round(perm["p_min_possible"], 4)
+            cand["n_permutations_total"] = perm["n_permutations_total"]
+        candidates.append(cand)
+
+    candidates.sort(key=lambda r: (-r["score"], -r["coverage_target"],
+                                   -r["target_pass"], r["step_seq"], r["key"]))
+    truncated = max(0, len(candidates) - top_k)
+    candidates = candidates[:top_k]
+
+    def _lt(wafers):
+        dist: dict[str, int] = {}
+        for w in wafers:
+            lt = meta.get(w, {}).get("lot_type") or "unknown"
+            dist[lt] = dist.get(lt, 0) + 1
+        return dist
+
+    note = ("후보는 결론이 아니다. 분할점은 **탐색으로 고른 것**이라 신호가 없어도 "
+            "어느 정도 점수가 나온다 - p_permutation 이 그 탐색까지 포함해 잰 값이므로 "
+            "score 만 보고 판단하면 안 된다. target_total 은 그 (스텝, item) 에 "
+            "계측값이 있는 wafer 수이지 타깃 그룹 크기(n_target)가 아니다 - metro 는 "
+            "lot 당 몇 장만 재므로 이 둘이 크게 다르다.")
+    if perm:
+        note += (" p_min_possible 이 크면(예: 0.1 이상) 표본이 작아 p 를 그 아래로 "
+                 "내릴 수 없다는 뜻이지 신호가 약하다는 뜻이 아니다.")
+
+    result = {
+        "status": "ok" if candidates else "no_signal",
+        "n_target": len(t_seen), "n_control": len(c_seen),
+        "strata": strata_report,
+        "candidates": candidates,
+        "truncated": truncated,
+        "fdr_table": _fdr_table(scores, perm["null_counts"], perm["n_used"]) if perm else [],
+        "p_family_wise": _family_wise_p(scores, perm["null_max"], perm["n_used"]) if perm else None,
+        "p_family_wise_min_possible": round(perm["p_min_possible"], 4) if perm else None,
+        "meta": {
+            "target_lot_types": _lt(t_seen),
+            "control_lot_types": _lt(c_seen),
+            # 계측 행이 아예 없는 wafer. 다른 축의 missing_history 와 다른 뜻이다 —
+            # 이력은 있는데 그 스텝을 안 쟀을 뿐일 수 있다.
+            "missing_metro": sorted(set(missing)),
+            # 통계 토큰도 legend 선택도 아닌 subitem_id. 사내에 새 통계 토큰이
+            # 생기면 여기서 보인다 (조용히 개별 포인트로 섞이지 않는다).
+            "unknown_subitems": sorted(unknown),
+        },
+        "note": note,
+    }
+    if not candidates:
+        result["note"] = (
+            "타깃만 갈라내는 계측 구간이 없다. **원인 없음이 아니라 lot 내부 대조로는 "
+            "보이지 않는다는 뜻**이다. metro 는 lot 당 몇 장만 재므로 계측 표본 자체가 "
+            "작아 그런 것일 수도 있다 - meta.missing_metro 와 각 후보의 target_total 을 "
+            "함께 볼 것.")
+    return result

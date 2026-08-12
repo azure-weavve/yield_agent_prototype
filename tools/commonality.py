@@ -361,9 +361,14 @@ def _iter_label_sets(strata_masks, n_total: int, n_iter: int, rng, seen: int):
             yield labels
 
 
-def _permutation_stats(strata_masks, passed, answer, seen, universal,
-                       observed: dict[tuple, float], n_iter: int, seed: int):
-    """라벨을 섞어 귀무 분포를 재고 후보별 p 를 낸다.
+def _null_distribution(strata_masks, seen, observed: dict[tuple, float],
+                       n_iter: int, seed: int, score_fn):
+    """라벨을 섞어 귀무 분포를 재고 후보별 p 를 낸다. **후보의 생김새는 모른다.**
+
+    `score_fn(labels) -> {후보키: score}` 만 받으므로, 후보가 (스텝, 설비) 든
+    (스텝, item, 분할점, 방향) 이든 이 루프는 그대로다. metro 도구가 이 함수를
+    같이 쓴다 (`tools/metro_commonality.py`) — 통계 루프를 두 벌로 두면 한쪽만
+    고쳐졌을 때 두 도구의 p 가 조용히 다른 뜻이 된다.
 
     **한 회차 = 라벨 한 번 섞기 -> 전 후보 계산.** 후보마다 따로 섞으면 후보 간
     상관이 깨진다. 같은 라벨을 쓰면 "같은 스텝의 키들이 함께 움직인다" 는 성질이
@@ -385,8 +390,7 @@ def _permutation_stats(strata_masks, passed, answer, seen, universal,
     null_max: list[float] = []
 
     for labels in _iter_label_sets(strata_masks, n_total, n_iter, rng, seen):
-        null_agg, _ = _aggregate(labels, passed, answer, seen, universal)
-        null_scores = _score_map(null_agg)
+        null_scores = score_fn(labels)
         for key, obs in observed.items():
             if null_scores.get(key, float("-inf")) >= obs:
                 exceed[key] += 1
@@ -403,6 +407,20 @@ def _permutation_stats(strata_masks, passed, answer, seen, universal,
         "null_counts": null_counts,
         "null_max": null_max,
     }
+
+
+def _permutation_stats(strata_masks, passed, answer, seen, universal,
+                       observed: dict[tuple, float], n_iter: int, seed: int):
+    """EQP_CH·PPID·step_passage 축의 귀무 분포. 집계를 `_null_distribution` 에 넘긴다.
+
+    **귀무가 실제와 같은 함수(`_aggregate` + `_score_map`)를 탄다.** 귀무를 다른
+    코드로 세면 분모 규칙·절단·stratum 스킵이 갈려 실제와 다른 것을 재게 된다.
+    """
+    def _scores(labels):
+        null_agg, _ = _aggregate(labels, passed, answer, seen, universal)
+        return _score_map(null_agg)
+
+    return _null_distribution(strata_masks, seen, observed, n_iter, seed, _scores)
 
 
 def _fdr_table(scores: dict, null_counts: dict, n_used: int) -> list[dict]:
