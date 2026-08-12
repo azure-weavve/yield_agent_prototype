@@ -23,6 +23,11 @@ def load_hypotheses(path=None):
         for f in REQUIRED_FIELDS:
             if f not in s:
                 raise ValueError(f"가설 #{i}: 필수 필드 '{f}' 누락")
+        # 어느 도구가 이 가설을 실행하는가. 기본은 step_history 축(설비·PPID·통과).
+        # 오타가 나면 KeyError 가 실행 시점에 터지므로 로드 때 잡는다.
+        if s.get("tool", "step_history") not in engine.TOOLS:
+            raise ValueError(f"가설 '{s['id']}': 모르는 tool '{s['tool']}' "
+                             f"(가능: {', '.join(sorted(engine.TOOLS))})")
         legend = s["legend"]
         if not isinstance(legend, list) or not legend:
             raise ValueError(f"가설 '{s['id']}': legend 는 비어있지 않은 리스트여야 한다")
@@ -37,6 +42,12 @@ def load_hypotheses(path=None):
                 raise ValueError(
                     f"가설 '{s['id']}': legend 레벨 denominator 는 "
                     f"'answerable'(기본) 또는 'all' 이어야 한다")
+            # 행 거르기(metro). 한 wafer 가 한 조합에 값을 하나만 주도록 좁히는
+            # 선언이라, 형태가 틀리면 조용히 안 걸러지는 것이 아니라 로드에서 막는다.
+            if "where" in lvl and not (isinstance(lvl["where"], dict) and lvl["where"]):
+                raise ValueError(
+                    f"가설 '{s['id']}': legend 레벨 where 는 비어있지 않은 "
+                    f"{{컬럼: 값}} 매핑이어야 한다")
     return specs
 
 

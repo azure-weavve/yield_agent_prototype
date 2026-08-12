@@ -159,7 +159,14 @@ def test_scripted_survives_tool_error_string():
                                 "(KeyError: 'legend'). 인자를 확인하고 다시 호출하라.",
                                 ensure_ascii=False))]
 
-    ai = llm.analyze_step(msgs)                      # 5) 그래도 죽지 않고 물러선다
+    ai = llm.analyze_step(msgs)                      # 5) 계측 축도 마찬가지
+    assert ai.tool_calls[0]["name"] == "hyp_metro_commonality"
+    msgs += [ai, _tm("hyp_metro_commonality",
+                     json.dumps("오류: hyp_metro_commonality 실행 실패 "
+                                "(KeyError: 'legend'). 인자를 확인하고 다시 호출하라.",
+                                ensure_ascii=False))]
+
+    ai = llm.analyze_step(msgs)                      # 6) 그래도 죽지 않고 물러선다
     assert ai.tool_calls[0]["name"] == "finalize"
     assert ai.tool_calls[0]["args"]["confidence"] == 0.2   # '후보 없음' 후퇴 분기
     assert ai.content
@@ -193,7 +200,13 @@ def test_scripted_walks_every_registered_hypothesis_before_backing_off():
                      {"hypothesis_id": "step_passage_commonality",
                       "status": "no_signal", "candidates": []})]
 
-    ai = llm.analyze_step(msgs)                                        # 5) 물러선다
+    ai = llm.analyze_step(msgs)                                        # 5) 폴백 계측
+    assert ai.tool_calls[0]["name"] == "hyp_metro_commonality"
+    msgs += [ai, _tm("hyp_metro_commonality",
+                     {"hypothesis_id": "metro_commonality",
+                      "status": "no_signal", "candidates": []})]
+
+    ai = llm.analyze_step(msgs)                                        # 6) 물러선다
     assert ai.tool_calls[0]["name"] == "finalize"
     assert ai.tool_calls[0]["args"]["confidence"] == 0.2
     assert ai.tool_calls[0]["args"]["claim_id"] == ""    # 지목할 근거가 없다

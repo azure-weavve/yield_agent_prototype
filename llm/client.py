@@ -54,6 +54,8 @@ _FALLBACK_HYPOTHESES = [
      "EQP_CH 로는 두 그룹이 안 갈렸다. 2차 legend(PPID)로 대조한다."),
     ("hyp_step_passage_commonality",
      "PPID 로도 안 갈렸다. 스텝 통과 여부(비정규 스텝 포함)로 대조한다."),
+    ("hyp_metro_commonality",
+     "경로 축으로는 안 갈렸다. 계측값 구간(두께·CD)으로 대조한다."),
 ]
 
 

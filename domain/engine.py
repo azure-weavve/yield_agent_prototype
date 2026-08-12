@@ -7,6 +7,19 @@ commonality 는 판정하지 않는다(후보≠결론). 판별(passes)은 게�
 
 import ya_config
 from tools import commonality as cm
+from tools import metro_commonality as mcm
+
+# 가설의 `tool` 필드 -> (실행 함수, 그 도구가 읽는 테이블). 기본은 step_history 축이다.
+# metro 를 별도 도구로 둔 이유는 `tools/metro_commonality.py` 상단에 있다 — 요약하면
+# 게이트가 "같은 도구 안 최고 점수" 를 비교하기 때문에 후보를 섞으면 서로를 누른다.
+#
+# 함수를 직접 담지 않고 람다로 감싸는 이유: 여기서 바인딩하면 모듈 속성을 갈아끼우는
+# 테스트(monkeypatch)가 안 먹는다. 호출 시점에 이름을 다시 찾게 둔다.
+TOOLS = {
+    "step_history": lambda *a, **kw: cm.find_commonality(*a, **kw),
+    "metro": lambda *a, **kw: mcm.find_metro_commonality(*a, **kw),
+}
+TOOL_TABLES = {"step_history": "step_history", "metro": "metro"}
 
 
 def _passes(cand, min_score, min_target, status, ok):
@@ -24,7 +37,8 @@ def evaluate(spec: dict, group_ids: list[str], control_ids: list[str]) -> dict:
     """spec['legend'] 로 commonality 실행 후 각 후보를 게이트 계약으로 매핑."""
     min_score = spec.get("min_score", ya_config.COMMONALITY_PASS_MIN_SCORE)
     min_target = spec.get("min_target", ya_config.COMMONALITY_PASS_MIN_TARGET)
-    res = cm.find_commonality(group_ids, control_ids, legend=spec["legend"])
+    find = TOOLS[spec.get("tool", "step_history")]
+    res = find(group_ids, control_ids, legend=spec["legend"])
     status = res.get("status")
     ok = status == "ok"
 
@@ -58,6 +72,11 @@ def evaluate(spec: dict, group_ids: list[str], control_ids: list[str]) -> dict:
             "p_min_possible": cand.get("p_min_possible"),
             "n_permutations_total": cand.get("n_permutations_total"),
         })
+        # metro 후보만 갖는 것들. 이게 없으면 LLM 은 "THK >= 129.0" 이라는 key
+        # 문자열을 다시 파싱해야 하고, 그러다 129.0 을 놓치거나 방향을 뒤집는다.
+        for extra in ("item", "split_value", "split_direction"):
+            if extra in cand:
+                candidates[-1][extra] = cand[extra]
     return {
         "hypothesis_id": spec["id"],
         "legend": spec["legend"],

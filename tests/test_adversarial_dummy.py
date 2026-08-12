@@ -8,6 +8,7 @@
 ::test_control_insufficient_reported_honestly 가 지킨다 — 여기서 중복하지 않는다.
 """
 
+import ya_config
 from langchain_core.messages import AIMessage
 
 from data.generate_dummy import (ADV_COUNTEREX_LOT, ADV_DECOY_LOT, ADV_MISSING_LOT,
@@ -127,8 +128,8 @@ def test_case4_end_to_end_reports_no_signal_not_loop_exhaustion():
     assert state["finalize_status"] == "no_signal"
     assert "신호 없음" in state["report"]
     assert "lot 밖 대조군" in state["report"]
-    # 도구가 1회차에 아는 사실이므로 루프를 다 태우지 않는다
-    assert state["loop_count"] < 6
+    # 도구가 1회차에 아는 사실이므로 루프를 다 태우지 않는다 (숫자가 아니라 의도)
+    assert state["loop_count"] < ya_config.MAX_LOOPS
     # 게이트가 이 가설을 승인한 적이 없어야 한다
     gate = [f["result"] for f in state["findings"] if f["tool"] == "finalize"]
     assert not any("승인" in r for r in gate)

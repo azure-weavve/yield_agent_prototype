@@ -6,6 +6,7 @@ import sys
 
 from langchain_core.messages import AIMessage, ToolMessage
 
+import ya_config
 from graph import nodes
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -105,7 +106,13 @@ STEP_PASSAGE_SILENT = {
                "candidates": []},
     "thought": "스텝 통과 여부",
 }
-ALL_SILENT = [EQP_CH_SILENT, PPID_SILENT, STEP_PASSAGE_SILENT]
+METRO_SILENT = {
+    "loop": 5, "tool": "hyp_metro_commonality", "args": {},
+    "result": {"hypothesis_id": "metro_commonality", "status": "no_signal",
+               "candidates": []},
+    "thought": "계측 구간",
+}
+ALL_SILENT = [EQP_CH_SILENT, PPID_SILENT, STEP_PASSAGE_SILENT, METRO_SILENT]
 
 
 def _assert_covers_every_hypothesis(findings):
@@ -325,7 +332,7 @@ def test_gate_does_not_declare_no_signal_while_a_passing_claim_exists():
     등록 가설을 **전부** 채워야 `unrun` 이 비어 no_signal 판정선까지 내려간다.
     빠뜨리면 "안 돌린 가설이 있다" 로 먼저 반려돼 이 테스트가 공허해진다.
     """
-    findings = [EVIDENCE_FINDING, PPID_SILENT, STEP_PASSAGE_SILENT]
+    findings = [EVIDENCE_FINDING, PPID_SILENT, STEP_PASSAGE_SILENT, METRO_SILENT]
     _assert_covers_every_hypothesis(findings)
     ai = _ai_finalize(0.2, hypothesis="아직 claim_id 를 못 골랐다", claim_id="")
     out = nodes.tools_node({"messages": [ai], "loop_count": 3, "findings": findings})
@@ -339,7 +346,7 @@ def test_gate_does_not_declare_no_signal_when_candidates_only_missed_the_line():
     후보는 있는데 판별선만 못 넘은 경우는 조치가 다르므로(더 좁힐 여지가 있다)
     같은 취급을 하면 안 된다.
 
-    세 가설을 **전부 status ok 로** 채워야 이 명제를 겨눈다. 하나라도 빠지면
+    등록 가설을 **전부 status ok 로** 채워야 이 명제를 겨눈다. 하나라도 빠지면
     `unrun` 이 안 비어 판정선 앞에서 반려되고, 하나라도 no_signal 로 채우면
     이번엔 statuses 에 no_signal 이 섞여 다른 케이스(혼합 상태)가 돼 버린다.
     """
@@ -376,7 +383,19 @@ def test_gate_does_not_declare_no_signal_when_candidates_only_missed_the_line():
         ]},
         "thought": "약한 후보",
     }
-    findings = [weak_eqp_ch, weak_ppid, weak_step]
+    weak_metro = {
+        "loop": 5, "tool": "hyp_metro_commonality", "args": {},
+        "result": {"hypothesis_id": "metro_commonality", "status": "ok", "candidates": [
+            {"claim_id": "metro_commonality:metro:CC001500:THK >= 129.0",
+             "step_seq": "CC001500", "key": "THK >= 129.0", "level": "metro",
+             "item": "THK", "split_value": 129.0, "split_direction": "ge",
+             "passes": False, "reject_reason": "분리 점수 0.2 < 0.5",
+             "score": 0.2, "target_pass": 4, "target_total": 4,   # 4/4 - 4/5 = 0.2
+             "control_pass": 4, "control_total": 5},
+        ]},
+        "thought": "약한 후보",
+    }
+    findings = [weak_eqp_ch, weak_ppid, weak_step, weak_metro]
     _assert_covers_every_hypothesis(findings)
     ai = _ai_finalize(0.2, hypothesis="약한 후보뿐", claim_id="")
     out = nodes.tools_node({"messages": [ai], "loop_count": 3, "findings": findings})
@@ -570,8 +589,8 @@ def test_finalize_gate_sees_evidence_from_same_message():
 
 def test_finalize_gate_marks_inconclusive_at_max_loops():
     # (c) 한계 도달 강제 종료는 "승인"이 아니라 "미확정"으로 구분 기록
-    out = nodes.tools_node({"messages": [_ai_finalize(0.5)], "loop_count": 6,
-                            "findings": []})
+    out = nodes.tools_node({"messages": [_ai_finalize(0.5)],
+                            "loop_count": ya_config.MAX_LOOPS, "findings": []})
     assert out["finalize_accepted"] is True                  # 루프는 종료하되
     assert out["finalize_status"] == "inconclusive"          # 확정 결론이 아님을 기록
     assert "미확정" in out["messages"][0].content

@@ -43,7 +43,13 @@ LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "60"))
 LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "2"))
 
 # 분석 루프 통제 (analysis_loop_design.md 부품 4b)
-MAX_LOOPS = 6              # 가드레일: 최대 순환 횟수 (무한루프 차단)
+# 가드레일: 최대 순환 횟수 (무한루프 차단).
+# **등록 가설 수에 매여 있다.** 게이트는 등록 가설을 전부 돌린 뒤에만 no_signal 을
+# 선언하므로, 최소한 (가설 수 + 첫 finalize 시도 + 마지막 finalize) 만큼은 있어야
+# 한다. 모자라면 no_signal 케이스가 루프 소진(inconclusive)으로 끝나 사유가 틀린
+# 보고가 된다. 가설 4개인 지금은 6 이 딱 맞아떨어져 여유가 없어서 7 로 둔다.
+# tests/test_state.py 가 이 관계를 단언으로 지킨다.
+MAX_LOOPS = 7
 CONFIDENCE_THRESHOLD = 0.8 # finalize 승인 임계 확신도
 
 # commonality 후보의 '판별 통과(passes)' 기준 — 게이트 증거로 쓸 최소 신뢰선.

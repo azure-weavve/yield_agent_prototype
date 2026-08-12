@@ -60,3 +60,31 @@
     이 표본으로는 더 내려갈 수 없다는 뜻이지 신호가 약하다는 뜻이 아니다.
   legend:
     - {level: step_passage, columns: [step_seq], denominator: all}
+
+- id: metro_commonality
+  tool: metro
+  name: 계측값 공통성
+  description: |
+    타깃이 공유하는 **계측 구간**을 찾는다 — 두께·CD 같은 연속값을 분할점으로 잘라
+    "이 스텝의 이 항목이 X 이상(또는 이하)" 을 후보로 낸다. 설비·PPID·통과 여부로
+    안 갈릴 때, 또는 불량이 치수 이상으로 의심될 때 쓴다.
+    후보 하나 = (스텝, item, split_value, split_direction). key 는 사람이 읽는
+    형태("THK >= 129.0")이고, 숫자와 방향은 split_value·split_direction 에 따로
+    실려 있으니 **key 문자열을 파싱하지 말고 그 두 필드를 읽어라.**
+    split_direction 은 ge("이상") 또는 le("이하")다.
+    **분할점은 탐색으로 고른 것이다.** 신호가 없어도 여러 자리를 시도하면 어느 정도
+    점수는 나오므로, score 만 보고 판단하면 안 된다 - p_permutation 이 그 탐색까지
+    포함해 잰 값이다.
+    분모는 그 (스텝, item) 에 **계측값이 있는 wafer** 다. 계측은 lot 당 몇 장만
+    하므로 target_total 이 타깃 그룹 크기(n_target)보다 훨씬 작은 것이 정상이다 —
+    둘을 같은 것으로 읽으면 커버리지를 과대평가한다. meta.missing_metro 는 계측 행이
+    아예 없는 wafer 다.
+    p_permutation 은 라벨을 root_lot 안에서 섞었을 때 이만한 분리가 나오는 비율이다.
+    p_min_possible 이 크면(예: 0.1 이상) 표본이 작아 p 를 그 아래로 내릴 수 없다는
+    뜻이지 신호가 약하다는 뜻이 아니다. 결과 최상위의 fdr_table 은 임계값별로 "이
+    목록에 가짜가 몇 개 섞여 있는가" 를 센 것이다(행의 n_used 는 그 표를 만든 순열
+    회차 수이며 n_null_mean 의 해상도를 뜻한다). p_family_wise 는 후보 하나가 아니라
+    목록 전체의 1등이 우연일 확률이고, p_family_wise_min_possible 이 그 바닥값이다 -
+    둘이 같으면 이 표본으로는 더 내려갈 수 없다는 뜻이지 신호가 약하다는 뜻이 아니다.
+  legend:
+    - {level: metro, columns: [step_seq, item], where: {subitem_id: AVG}}

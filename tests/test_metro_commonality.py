@@ -405,3 +405,98 @@ def test_turning_permutations_off_removes_the_p_explanation_from_the_note():
     assert res["candidates"]
     assert "p_permutation" not in res["candidates"][0]
     assert "p_min_possible" not in res["note"]
+
+
+# ---------------------------------------------------------------- 배선 (엔진·레지스트리)
+
+def _metro_spec():
+    from domain import registry
+    return next(s for s in registry.load_hypotheses() if s["id"] == "metro_commonality")
+
+
+def test_engine_routes_the_metro_hypothesis_to_the_metro_tool():
+    """가설의 `tool` 필드가 실행 함수를 고른다 — legend 컬럼이 step_history 에 없으므로
+    잘못 라우팅되면 ValueError 로 죽는다 (조용히 틀리지는 않는다)."""
+    from domain import engine
+
+    targets, controls = _metro_groups()
+    res = engine.evaluate(_metro_spec(), targets, controls)
+    assert res["status"] == "ok" and res["candidates"]
+
+
+def test_metro_only_fields_reach_the_gate_contract():
+    """split_value·split_direction·item 이 LLM 이 읽는 자리까지 온다.
+
+    없으면 LLM 이 key 문자열("THK >= 129.0")을 다시 파싱해야 하고, 그러다 방향을
+    뒤집거나 숫자를 놓친다. 2단계에서 계산만 하고 안 실어 보내 터졌던 자리와 같다.
+    """
+    from domain import engine
+
+    targets, controls = _metro_groups()
+    res = engine.evaluate(_metro_spec(), targets, controls)
+    for c in res["candidates"]:
+        assert c["item"] and c["split_direction"] in ("ge", "le")
+        assert isinstance(c["split_value"], (int, float))
+
+
+def test_gate_still_passes_a_candidate_that_permutation_fully_explains():
+    """**게이트는 p 를 판정에 쓰지 않는다** — 지금 계약을 그대로 못 박는다.
+
+    lot 효과 조합은 score 0.55 로 판별선을 넘지만 p_permutation 은 1.0 이다(층화
+    섞기가 우연으로 전부 설명한다). 그래도 passes 는 True 다 — 자동 차단은 실데이터를
+    본 뒤에 위에 얹기로 했고, 지금은 LLM 이 p 를 읽어 판단한다(hypotheses.yaml 이
+    그렇게 지시한다).
+
+    이 테스트는 "옳다" 가 아니라 "지금 이렇다" 를 적는다. 게이트에 p 를 물리는 날
+    여기가 빨간불이 되어 **의도한 변경인지** 되묻게 된다.
+    """
+    from data.generate_dummy import METRO_LOT_EFFECT
+    from domain import engine
+
+    targets, controls = _metro_groups()
+    res = engine.evaluate(_metro_spec(), targets, controls)
+    lot_effect = [c for c in res["candidates"]
+                  if c["step_seq"] == METRO_LOT_EFFECT[0]
+                  and c["item"] == METRO_LOT_EFFECT[1]
+                  and c["split_direction"] == "ge"]
+    assert len(lot_effect) == 1
+    assert lot_effect[0]["p_permutation"] == 1.0     # 우연으로 전부 설명된다
+    assert lot_effect[0]["passes"] is True           # 그래도 판별선은 넘는다
+    assert lot_effect[0]["score"] > 0.5
+
+
+def test_registry_rejects_an_unknown_tool_at_load_time():
+    """모르는 `tool` 은 로드에서 잡는다 — 안 잡으면 실행 시점 KeyError 로 터진다."""
+    import pytest
+    import yaml
+    from domain import registry
+
+    spec = dict(_metro_spec(), tool="metrology")     # 오타
+    path = ya_config.DB_PATH.parent / "_bad_hyp.yaml"
+    path.write_text(yaml.safe_dump([spec], allow_unicode=True), encoding="utf-8")
+    try:
+        with pytest.raises(ValueError, match="모르는 tool"):
+            registry.load_hypotheses(path)
+    finally:
+        path.unlink()
+
+
+def test_registry_rejects_a_malformed_where_clause():
+    """`where` 형태가 틀리면 로드에서 막는다.
+
+    조용히 안 걸러지면 한 wafer 가 조합에 여러 값을 주는 상태가 되고, 그건 색인이
+    ValueError 로 잡지만 **legend 를 고친 사람이 아니라 실행자가** 만난다.
+    """
+    import pytest
+    import yaml
+    from domain import registry
+
+    spec = _metro_spec()
+    broken = dict(spec, legend=[dict(spec["legend"][0], where=[])])
+    path = ya_config.DB_PATH.parent / "_bad_where.yaml"
+    path.write_text(yaml.safe_dump([broken], allow_unicode=True), encoding="utf-8")
+    try:
+        with pytest.raises(ValueError, match="where"):
+            registry.load_hypotheses(path)
+    finally:
+        path.unlink()

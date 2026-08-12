@@ -56,11 +56,24 @@ def _dummy_cols(table: str, with_null: bool = False):
         conn.close()
 
 
-def _legend_cols() -> set[str]:
-    cols = set()
+def _legend_cols_by_table() -> dict[str, set[str]]:
+    """가설이 요구하는 컬럼을 **그 가설이 읽는 테이블별로** 모은다.
+
+    metro 가 생기기 전에는 전 가설이 step_history 를 읽어서 집합 하나면 됐다.
+    이제는 도구마다 소스가 다르므로 테이블을 갈라야 한다 — 안 가르면 metro 의
+    `item` 을 step_history 에서 찾다가 엉뚱한 곳이 빨간불이 된다.
+    """
+    from domain import engine
+
+    out: dict[str, set[str]] = {}
     for spec in registry.load_hypotheses():
-        cols |= set(cm._legend_columns(spec["legend"]))
-    return cols
+        table = engine.TOOL_TABLES[spec.get("tool", "step_history")]
+        out.setdefault(table, set()).update(cm._legend_columns(spec["legend"]))
+        # where 절이 거르는 컬럼도 그 테이블에 있어야 한다. 없으면 sqlite3.Row 조회가
+        # KeyError 로 죽는데, 그건 legend 를 고친 사람이 아니라 실행자가 만난다.
+        for lvl in spec["legend"]:
+            out[table].update(lvl.get("where") or {})
+    return out
 
 
 def test_legend_columns_exist_in_internal_schema():
@@ -70,17 +83,42 @@ def test_legend_columns_exist_in_internal_schema():
     load_internal 에 컬럼을 추가하거나(사내 _extract() 계약 협의 필요),
     해당 가설을 hypotheses.yaml 에서 빼야 한다.
     """
-    missing = _legend_cols() - _internal_cols("step_history")
-    assert not missing, (
-        f"legend 컬럼 {sorted(missing)} 이 load_internal.py 의 step_history 에 없다. "
-        f"실데이터에서 해당 가설 도구는 호출 즉시 ValueError. "
-        f"docs/2026-07-25-dummy-first-stage-reorder.md Task 2 참조."
-    )
+    for table, cols in _legend_cols_by_table().items():
+        if table in NOT_YET_IN_INTERNAL_LOADER:
+            continue
+        missing = cols - _internal_cols(table)
+        assert not missing, (
+            f"legend 컬럼 {sorted(missing)} 이 load_internal.py 의 {table} 에 없다. "
+            f"실데이터에서 해당 가설 도구는 호출 즉시 ValueError. "
+            f"docs/2026-07-25-dummy-first-stage-reorder.md Task 2 참조."
+        )
+
+
+# 사내 적재기에 아직 없는 소스. **비어 있는 것이 목표다.**
+# metro 는 실제 테이블·컬럼 이름을 아직 못 받았다 (설계 §6 "아직 정해야 하는 것" 5번).
+# 더미로 3단계를 선행 구현했으므로 도구·가설은 있는데 로더가 없는 상태다.
+NOT_YET_IN_INTERNAL_LOADER = {"metro"}
+
+
+def test_the_internal_loader_gap_is_declared_not_forgotten():
+    """위에서 건너뛴 소스가 **실제로 아직 없는지** 확인한다.
+
+    예외 목록은 잊히기 쉽다. 누군가 load_internal 에 metro 를 넣으면 여기가 빨간불이
+    되어 NOT_YET_IN_INTERNAL_LOADER 에서 빼도록 강제한다 — 그래야 위 계약이 다시
+    metro 에도 걸린다.
+    """
+    from data import load_internal
+
+    for table in NOT_YET_IN_INTERNAL_LOADER:
+        assert f"CREATE TABLE {table}" not in load_internal.DDL, (
+            f"load_internal 에 {table} 이 생겼다. NOT_YET_IN_INTERNAL_LOADER 에서 "
+            f"빼서 스키마 계약이 다시 걸리게 하라.")
 
 
 def test_legend_columns_exist_in_dummy_schema():
-    missing = _legend_cols() - _dummy_cols("step_history")
-    assert not missing, f"legend 컬럼 {sorted(missing)} 이 더미 step_history 에 없다."
+    for table, cols in _legend_cols_by_table().items():
+        missing = cols - _dummy_cols(table)
+        assert not missing, f"legend 컬럼 {sorted(missing)} 이 더미 {table} 에 없다."
 
 
 def test_internal_and_dummy_step_history_do_not_diverge_silently():
