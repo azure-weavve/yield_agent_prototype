@@ -111,10 +111,12 @@ def test_internal_and_dummy_yield_do_not_diverge_silently():
     )
 
 
-def test_dummy_db_has_exactly_the_three_tables():
-    """단일 스키마 완성 (Stage 5): 더미 테이블은 yield·step_history·sensor_log 뿐이다.
+def test_dummy_db_has_exactly_the_expected_tables():
+    """단일 스키마 완성 (Stage 5): 더미 테이블 목록을 통째로 잠근다.
 
-    process_log 가 되살아나면 여기서 먼저 걸린다.
+    process_log 가 되살아나면 여기서 먼저 걸린다. **테이블이 조용히 느는 것을 막는
+    것이 이 테스트의 전부**라, 새 테이블을 더할 때는 여기를 고치는 것이 정상 절차다
+    (metro 는 3단계에서 그렇게 더했다 — 2026-08-12).
     """
     conn = sqlite3.connect(ya_config.DB_PATH)
     try:
@@ -123,4 +125,4 @@ def test_dummy_db_has_exactly_the_three_tables():
             "AND name NOT LIKE 'sqlite_%'")}
     finally:
         conn.close()
-    assert names == {"yield", "step_history", "sensor_log"}
+    assert names == {"yield", "step_history", "sensor_log", "metro"}

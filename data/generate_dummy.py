@@ -150,6 +150,52 @@ IRREG_TARGETS = [f"{IRREG_ROOT_LOT}_{i:02d}" for i in (1, 2, 3, 4)]
 IRREG_CONTROLS = [f"{IRREG_ROOT_LOT}_{i:02d}" for i in (5, 6, 7, 8)]
 IRREG_WAFERS = set(IRREG_TARGETS + IRREG_CONTROLS)
 
+# ---------------------------------------------------------------- metro 계측 케이스
+# 3단계 무대. 계측값은 연속값이라 "거쳤나 예/아니오" 가 성립하지 않고 **분할점을
+# 탐색**해야 한다. 후보 하나 = (스텝, item, 분할점, 방향).
+#
+# **root_lot 이 둘인 것이 핵심이다.** 층화 섞기가 lot 효과를 올바르게 기각하는지
+# 보려면 두 lot 의 타깃 비율이 달라야 한다 (설계 §2-2). T2421 은 타깃 4/7, T2422 는
+# 1/10 이라 "lot 으로만 갈리는 값" 이 전체 섞기에서는 신호처럼 보인다.
+#
+# 층화 경우의 수 = C(7,4) x C(10,1) = 350 이라 전수 열거 경로를 타고 p 가 결정론적이다.
+METRO_ROOT_LOTS = ("T2421", "T2422")
+METRO_TARGETS = ["T2421_01", "T2421_02", "T2421_03", "T2421_04", "T2422_01"]
+METRO_CONTROLS = (["T2421_05", "T2421_06", "T2421_07"]
+                  + [f"T2422_{i:02d}" for i in range(2, 11)])
+METRO_WAFERS = set(METRO_TARGETS + METRO_CONTROLS)
+
+# 계측 스텝. 처리 스텝(SH_STEPS) 사이에 낀다 — 실데이터도 계측 스텝이 이력에 남는다.
+METRO_STEPS = ("CC001500", "CC002500", "CC003500")
+METRO_ITEMS = ("THK", "CD")
+
+# subitem_id 에는 개별 측정 포인트와 **그 포인트들의 통계값이 섞여** 있고 이름 규칙으로
+# 구분한다 (2026-08-12 사내 확인). 1차 분석은 AVG 만 쓰지만, 거르기가 실제로 일하는지
+# 보려면 포인트가 **avg 와 상관된 채로** 있어야 한다 — 상관이 없으면 필터를 꺼도
+# top_k 가 안 잠식돼서 변별력 테스트가 공허해진다.
+METRO_STAT_SUBITEMS = ("AVG", "MAX", "MIN", "STD", "RANGE")
+METRO_POINT_SUBITEMS = ("P01", "P02", "P03", "P04", "P05")
+# 합이 정확히 0 — AVG 가 진짜로 포인트들의 평균이 된다. 어느 것도 0 이 아니라
+# "포인트 하나가 우연히 AVG 와 같은 값" 이 되는 모호한 케이스를 만들지 않는다.
+METRO_POINT_OFFSETS = (-0.35, -0.18, 0.07, 0.19, 0.27)
+
+# 조합(스텝 x item)마다 역할을 하나씩 맡긴다. 난수를 쓰지 않는다 — 케이스가 난수에
+# 흔들리면 심어둔 분할점을 테스트가 못 잠근다 (_make_adversarial_steps 와 같은 원칙).
+METRO_TRUE_GE = (METRO_STEPS[0], "THK")   # 진짜 신호: 타깃이 두껍다 (ge 방향)
+METRO_NOISE = (METRO_STEPS[0], "CD")      # 무신호
+METRO_TRUE_LE = (METRO_STEPS[1], "THK")   # 얇은 쪽 신호 (le 방향) — 양방향 무대
+METRO_TIED = (METRO_STEPS[1], "CD")       # 동점 뭉침: 값이 3종류뿐
+METRO_LOT_EFFECT = (METRO_STEPS[2], "THK")  # lot 으로만 갈린다 (불량과 무관)
+METRO_PARTIAL = (METRO_STEPS[2], "CD")    # 일부 wafer 만 계측 — 분모 무대
+
+# 심어둔 정답. DB 에 안 나간다 (`_truth_*` 관행과 같은 취급).
+METRO_TRUTH_GE_SPLIT = 129.0              # "129.0 이상" 이 최적 분할
+METRO_TRUTH_LE_SPLIT = 127.0              # "127.0 이하" 가 최적 분할
+# METRO_PARTIAL 에서 계측이 빠지는 대조군. 분모를 "계측된 wafer" 로 안 세면
+# 이 wafer 들이 '미통과' 로 섞여 가짜 후보가 뜬다 (1단계가 고친 분모 conflation).
+METRO_UNMEASURED = ("T2421_06", "T2421_07",
+                    "T2422_07", "T2422_08", "T2422_09", "T2422_10")
+
 # ---------------------------------------------------------------- 센서 (2단 깔때기)
 # 트레이스가 아니라 **wafer 1장의 구간 통계값**이다. 구간·통계 종류는 센서 이름에
 # 들어 있다(rf_power_steady_avg) — 사내 FDC 추출물 형태.
@@ -326,11 +372,26 @@ def generate():
         vectors.append(_unit(rng.standard_normal(DIM)))
         wafer_ids.append(wid)
 
+    # ---------------- metro 계측 lot (root_lot 둘) — 기존 난수열 뒤에 붙인다
+    for wid in METRO_TARGETS + METRO_CONTROLS:
+        rows.append({
+            "wafer_id": wid,
+            "lot_id": f"{wid[:5]}.1",
+            "yield": ADV_TARGET_YIELD if wid in METRO_TARGETS else ADV_CONTROL_YIELD,
+            "_truth_defect": "none",        # 라벨 없음 — 실데이터와 같은 조건
+            "_truth_step": METRO_TRUE_GE[0],   # 심어둔 정답: 계측 스텝의 두께
+            "date": RECENT_DATE,
+            "root_lot_id": wid[:5],
+        })
+        vectors.append(_unit(rng.standard_normal(DIM)))
+        wafer_ids.append(wid)
+
     _augment_yield(rows)
     steps = (_make_step_history(rows) + _make_adversarial_steps()
-             + _make_split_lot_steps() + _make_irregular_step_steps())
+             + _make_split_lot_steps() + _make_irregular_step_steps()
+             + _make_metro_steps())
     sensors = _make_sensor_log(rows)
-    _write_sqlite(rows, steps, sensors)
+    _write_sqlite(rows, steps, sensors, _make_metro())
     _write_index(vectors, wafer_ids)
     _report(rows, vectors, wafer_ids)
 
@@ -360,7 +421,8 @@ def _make_step_history(rows):
     steps = []
     for r in rows:
         wid = r["wafer_id"]
-        if wid in ADV_WAFERS or wid in SPLIT_WAFERS or wid in IRREG_WAFERS:  # 전용 생성기
+        if (wid in ADV_WAFERS or wid in SPLIT_WAFERS or wid in IRREG_WAFERS
+                or wid in METRO_WAFERS):                          # 전용 생성기
             continue
         for seq, area in SH_STEPS:
             eqp, ch, ppid = f"{area.upper()[:4]}1", "A", "PPID_Z"   # 기본: 공통 경로
@@ -468,6 +530,134 @@ def _make_irregular_step_steps():
     return steps
 
 
+def _make_metro_steps():
+    """metro lot 의 wafer×스텝 이력 (rng 미사용).
+
+    처리 스텝도 계측 스텝도 **타깃·대조군이 완전히 같게** 돈다 — 설비/챔버/PPID 축에서
+    분리가 0 이어야 metro 축이 잡는 신호가 다른 축의 부산물이 아님이 분명해진다.
+    계측 스텝을 이력에도 싣는 것은 실데이터가 그렇기 때문이다(계측도 스텝이다).
+    """
+    steps = []
+    for wid in METRO_TARGETS + METRO_CONTROLS:
+        for seq, area in SH_STEPS:
+            steps.append({
+                "wafer_id": wid, "step_seq": seq, "area": area,
+                "eqp_id": f"{area.upper()[:4]}1", "ch_id": "A", "ppid": "PPID_Z",
+                "timestamp": RECENT_DATE + " 10:00:00",
+            })
+        for i, seq in enumerate(METRO_STEPS, start=1):
+            steps.append({
+                "wafer_id": wid, "step_seq": seq, "area": "Metrology",
+                "eqp_id": f"MEAS{i}", "ch_id": "A", "ppid": "PPID_M",
+                "timestamp": RECENT_DATE + " 10:30:00",
+            })
+    return steps
+
+
+def _by_rank(order, top, step):
+    """값 내림차순 자리 목록 -> {wafer_id: 값}. 1등이 `top`, 한 칸마다 `step` 씩 낮다.
+
+    분할점 탐색은 **순서**만 보므로 값 자체가 아니라 자리로 케이스를 적는 편이
+    읽기도 쉽고 심어둔 분할점을 정확히 지목할 수 있다.
+    """
+    return {wid: round(top - step * i, 3) for i, wid in enumerate(order)}
+
+
+def _metro_avg_maps():
+    """조합 -> {wafer_id: AVG 값}. 조합마다 역할이 하나씩이다 (상수 블록 참조).
+
+    난수를 쓰지 않는다. 심어둔 분할점을 테스트가 잠그려면 값이 고정이어야 한다.
+    """
+    t1, t2, t3, t4, t5 = METRO_TARGETS                 # T2421_01~04, T2422_01
+    c = METRO_CONTROLS                                 # T2421_05~07, T2422_02~10
+
+    # (1) 진짜 ge 신호. 대조군 1장(c[0])을 타깃 사이에 끼워 **완전 분리를 막는다** —
+    #     완전 분리면 어느 분할점을 골라도 1.0 이라 "정확히 129.0" 을 못 잠근다.
+    #     최적은 "129.0 이상" 에서 타깃 5/5 · 대조군 1/12 = 0.917.
+    #     간격(0.4)은 임의가 아니다 — 최하위 타깃이 정확히 METRO_TRUTH_GE_SPLIT 에
+    #     떨어지고 대조군 사다리(128.5 시작)와 값이 겹치지 않아야 한다. 겹치면 동점이
+    #     되어 그 자리에 분할점을 못 놓고 심어둔 정답이 한 칸 밀린다.
+    true_ge = _by_rank([t1, t2, c[0], t3, t4, t5], 131.0, 0.4)
+    true_ge.update(_by_rank(c[1:], 128.5, 0.3))
+    assert true_ge[t5] == METRO_TRUTH_GE_SPLIT, "심어둔 ge 분할점이 사다리와 어긋났다"
+
+    # (2) 무신호. 타깃을 **맨 아래까지** 흩어 놓는다 — 타깃 전원을 잡으려면 대조군도
+    #     전원 잡아야 해서 어느 분할점도 점수가 안 나온다. 타깃을 위쪽에만 흩으면
+    #     "전원 포함" 컷이 1.0 - 5/12 = 0.583 을 내서 무신호가 되지 않는다.
+    noise_order = [c[0], c[1], t1, c[2], c[3], c[4], t2, c[5], c[6], t3,
+                   c[7], c[8], t4, c[9], c[10], c[11], t5]
+    noise = _by_rank(noise_order, 60.0, 0.5)
+
+    # (3) 얇은 쪽 신호. "127.0 이하" 에서 타깃 5/5 · 대조군 1/12 = 0.917.
+    #     양방향을 안 돌리면 이 조합을 통째로 놓친다.
+    true_le = _by_rank(c[1:], 130.5, 0.3)
+    true_le.update({t5: METRO_TRUTH_LE_SPLIT, c[0]: 126.2, t4: 126.5,
+                    t3: 126.0, t2: 125.5, t1: 125.0})
+    assert min(true_le[w] for w in c[1:]) > METRO_TRUTH_LE_SPLIT, \
+        "le 사다리의 대조군이 분할점 아래로 내려왔다"
+
+    # (4) 동점 뭉침. 값이 3종류뿐이라 분할점은 45/46, 46/47 사이에만 놓일 수 있다.
+    tied = {}
+    for wid in (t1, t2, t3, c[0], c[1], c[2]):
+        tied[wid] = 45.0
+    for wid in (t4, t5, c[3], c[4], c[5], c[6]):
+        tied[wid] = 46.0
+    for wid in c[7:]:
+        tied[wid] = 47.0
+
+    # (5) lot 효과만. T2421 전원이 두껍고 T2422 전원이 얇다 — 불량과는 무관하다.
+    #     층화 섞기는 lot 안에서만 섞으므로 a·c 가 안 변해 p = 1.0 (올바른 기각).
+    #     전체 섞기로 바꾸면 거짓 양성이 나는 것이 이 조합의 존재 이유다 (설계 §2-2).
+    lot_effect = {}
+    for i, wid in enumerate(w for w in METRO_TARGETS + METRO_CONTROLS
+                            if w.startswith(METRO_ROOT_LOTS[0])):
+        lot_effect[wid] = round(135.0 + 0.1 * i, 3)
+    for i, wid in enumerate(w for w in METRO_TARGETS + METRO_CONTROLS
+                            if w.startswith(METRO_ROOT_LOTS[1])):
+        lot_effect[wid] = round(120.0 + 0.1 * i, 3)
+
+    # (6) 일부만 계측. 미계측 대조군 6장을 '미통과' 로 세면 분모가 6 이 아니라 12 가
+    #     되어 점수가 0.33 -> 0.67 로 뛴다 (1단계가 고친 분모 conflation 의 재현).
+    measured = [w for w in METRO_TARGETS + METRO_CONTROLS
+                if w not in METRO_UNMEASURED]
+    partial_order = []
+    m_t = [w for w in measured if w in METRO_TARGETS]
+    m_c = [w for w in measured if w not in METRO_TARGETS]
+    for i in range(max(len(m_t), len(m_c))):          # 타깃과 대조군을 번갈아 = 무신호
+        if i < len(m_t):
+            partial_order.append(m_t[i])
+        if i < len(m_c):
+            partial_order.append(m_c[i])
+    partial = _by_rank(partial_order, 55.0, 0.5)
+
+    return {METRO_TRUE_GE: true_ge, METRO_NOISE: noise, METRO_TRUE_LE: true_le,
+            METRO_TIED: tied, METRO_LOT_EFFECT: lot_effect, METRO_PARTIAL: partial}
+
+
+def _make_metro():
+    """wafer×metro스텝×item×subitem 계측 행 (rng 미사용).
+
+    한 (wafer, 스텝, item) 에 subitem 이 여럿 달린다 — 통계값 5종과 측정 포인트 5개다.
+    **포인트는 AVG 주변에 놓아 서로 상관시킨다.** 상관이 없으면 subitem 거르기를 꺼도
+    top_k 가 안 잠식돼 §9 의 변별력 테스트가 통과해 버린다.
+    """
+    out = []
+    for (step, item), avg_map in _metro_avg_maps().items():
+        for wid, avg in avg_map.items():
+            vals = {"AVG": avg, "MAX": avg + 1.0, "MIN": avg - 1.0,
+                    "STD": 0.5, "RANGE": 2.0}
+            for j, off in enumerate(METRO_POINT_OFFSETS, start=1):
+                vals[f"P{j:02d}"] = round(avg + off, 3)
+            for sub, v in vals.items():
+                out.append({
+                    "wafer_id": wid, "step_seq": step, "item": item,
+                    "subitem_id": sub, "value": round(float(v), 3),
+                    "tkin_time": RECENT_DATE + " 10:25:00",
+                    "tkout_time": RECENT_DATE + " 10:30:00",
+                })
+    return out
+
+
 def _make_sensor_log(rows):
     """wafer×스텝×센서 통계값 (전용 rng — 기존 난수열을 건드리지 않는다).
 
@@ -512,7 +702,7 @@ def _make_sensor_log(rows):
     return out
 
 
-def _write_sqlite(rows, steps, sensors):
+def _write_sqlite(rows, steps, sensors, metro):
     # 정답지는 DB 에 안 들어간다. rows 의 `_truth_*` 는 **생성기 내부 정답지**로,
     # 어디에 이상을 심을지 정하는 데만 쓰고 yield 에는 아래 INSERT 의 리터럴 NULL 이
     # 들어간다 (A-2·A-3: 실데이터에 이 두 값은 없다). 키 이름을 DB 컬럼과 다르게 둔 것도
@@ -562,6 +752,28 @@ def _write_sqlite(rows, steps, sensors):
     conn.executemany(
         """INSERT INTO sensor_log VALUES
            (:wafer_id, :step_seq, :sensor_name, :value, :tkout_time)""", sensors)
+    # metro = 계측값. sensor_log(FDC 센서)와 다른 테이블이다 — 센서는 처리 중 장비
+    # 신호이고 metro 는 처리 결과를 잰 값이라, 축도 분석 도구도 다르다.
+    # `subitem_id` 에는 개별 측정 포인트와 그 통계값(AVG 등)이 섞여 있다.
+    # tkout_time 은 회차 정렬 기준이다 — metro 에 재작업은 없으므로(2026-08-12 확인)
+    # (wafer_id, step_seq, item, subitem_id) 가 유일하고, 그것을 아래 UNIQUE 로 잠근다.
+    conn.execute("""
+        CREATE TABLE metro (
+            wafer_id     TEXT NOT NULL,
+            step_seq     TEXT NOT NULL,
+            item         TEXT NOT NULL,
+            subitem_id   TEXT NOT NULL,
+            value        REAL,
+            tkin_time    TEXT,
+            tkout_time   TEXT,
+            UNIQUE (wafer_id, step_seq, item, subitem_id)
+        )
+    """)
+    conn.execute("CREATE INDEX idx_metro_step ON metro(step_seq, item, wafer_id)")
+    conn.executemany(
+        """INSERT INTO metro VALUES
+           (:wafer_id, :step_seq, :item, :subitem_id, :value,
+            :tkin_time, :tkout_time)""", metro)
     conn.commit()
     conn.close()
 

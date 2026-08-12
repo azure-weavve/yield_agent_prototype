@@ -102,7 +102,8 @@ def test_every_wafer_has_the_full_step_path_except_the_planted_gap():
     이력이 조용히 빠지면 commonality 의 분모가 줄어 점수가 부풀지만 다른 테스트는
     초록이다 — 실데이터 쪽은 load_internal.validate() 검사 #4 가 같은 것을 막는다.
     """
-    from data.generate_dummy import ADV_MISSING_WAFER, SH_STEPS, IRREG_TARGETS
+    from data.generate_dummy import (ADV_MISSING_WAFER, SH_STEPS, IRREG_TARGETS,
+                                     METRO_STEPS, METRO_WAFERS)
 
     with _conn() as conn:
         counts = {r["wafer_id"]: r["n"] for r in conn.execute(
@@ -110,9 +111,16 @@ def test_every_wafer_has_the_full_step_path_except_the_planted_gap():
         all_wafers = {r["wafer_id"] for r in conn.execute("SELECT wafer_id FROM yield")}
 
     assert all_wafers - set(counts) == {ADV_MISSING_WAFER}   # 결측은 심어둔 1장뿐
-    # 비정규 스텝 케이스의 타깃만 정상 경로 + 1 (심어둔 초과분). 나머지는 정확히 정상 경로.
+
+    def _expected(w):
+        # 비정규 스텝 케이스의 타깃은 정상 경로 + 1 (심어둔 초과분).
+        # metro lot 은 정상 경로 + 계측 스텝 — 실데이터도 계측이 이력에 남는다.
+        return (len(SH_STEPS)
+                + (1 if w in IRREG_TARGETS else 0)
+                + (len(METRO_STEPS) if w in METRO_WAFERS else 0))
+
     # wafer 별로 고정한다 — 값의 집합만 보면 초과분이 어느 wafer 에 붙든 통과한다.
-    assert counts == {w: len(SH_STEPS) + (1 if w in IRREG_TARGETS else 0) for w in counts}
+    assert counts == {w: _expected(w) for w in counts}
 
 
 def test_step_seq_is_a_sequence_code_and_area_holds_the_process_name():
@@ -199,3 +207,152 @@ def test_ground_truth_columns_are_null():
             "WHERE defect_type IS NOT NULL OR step_seq IS NOT NULL"
         ).fetchone()[0]
     assert n == 0
+
+
+# ---------------------------------------------------------------- metro 계측 (3단계)
+# 아래 테스트들은 **뒤 Task 의 테스트가 공허해지지 않게** 무대를 고정한다. 심어둔
+# 분할점이나 상관 구조가 조용히 사라지면 스윕·거르기 테스트는 초록인 채로 아무것도
+# 검증하지 않게 된다.
+
+def _metro_avg(conn, step, item):
+    """(스텝, item) 의 AVG 행 -> {wafer_id: 값}."""
+    return {r["wafer_id"]: r["value"] for r in conn.execute(
+        "SELECT wafer_id, value FROM metro "
+        "WHERE step_seq = ? AND item = ? AND subitem_id = 'AVG'", (step, item))}
+
+
+def test_metro_has_both_stat_tokens_and_points_with_avg_as_their_mean():
+    """통계 토큰 5종과 측정 포인트가 다 있고, AVG 가 진짜 포인트들의 평균이다.
+
+    1차는 AVG 만 쓰지만 **나머지가 실제로 존재해야** 거르기 테스트가 성립한다.
+    AVG = 포인트 평균인 것은 실데이터의 성질이기도 하고, 오프셋 합이 0 이라는
+    생성기 불변식을 여기서 잠근다.
+    """
+    from data.generate_dummy import (METRO_POINT_SUBITEMS, METRO_STAT_SUBITEMS,
+                                     METRO_TRUE_GE)
+
+    with _conn() as conn:
+        subs = {r["subitem_id"] for r in conn.execute(
+            "SELECT DISTINCT subitem_id FROM metro")}
+        step, item = METRO_TRUE_GE
+        rows = conn.execute(
+            "SELECT wafer_id, subitem_id, value FROM metro "
+            "WHERE step_seq = ? AND item = ?", (step, item)).fetchall()
+
+    assert subs == set(METRO_STAT_SUBITEMS) | set(METRO_POINT_SUBITEMS)
+
+    by_wafer: dict[str, dict[str, float]] = {}
+    for r in rows:
+        by_wafer.setdefault(r["wafer_id"], {})[r["subitem_id"]] = r["value"]
+    assert by_wafer
+    for wid, vals in by_wafer.items():
+        pts = [vals[s] for s in METRO_POINT_SUBITEMS]
+        assert abs(sum(pts) / len(pts) - vals["AVG"]) < 1e-6, wid
+
+
+def test_metro_points_are_correlated_with_avg():
+    """포인트가 AVG 주변에 있다 — 거르기를 꺼면 한 item 이 top_k 를 잠식하는 무대.
+
+    상관이 없으면 필터를 꺼도 후보 순위가 안 흔들려 §9 의 변별력 테스트가 통과해
+    버린다. 그래서 '흩어진 정도가 신호 폭보다 훨씬 작다'를 여기서 고정한다.
+    """
+    from data.generate_dummy import METRO_POINT_SUBITEMS, METRO_TRUE_GE
+
+    step, item = METRO_TRUE_GE
+    with _conn() as conn:
+        avg = _metro_avg(conn, step, item)
+        rows = conn.execute(
+            "SELECT wafer_id, subitem_id, value FROM metro WHERE step_seq = ? "
+            "AND item = ? AND subitem_id IN (%s)"
+            % ",".join("?" * len(METRO_POINT_SUBITEMS)),
+            (step, item, *METRO_POINT_SUBITEMS)).fetchall()
+
+    spread = max(abs(r["value"] - avg[r["wafer_id"]]) for r in rows)
+    signal = max(avg.values()) - min(avg.values())
+    assert spread < signal / 4, f"포인트 흩어짐 {spread} 이 신호 폭 {signal} 에 비해 크다"
+
+
+def test_metro_planted_ge_signal_is_actually_in_the_data():
+    """심어둔 ge 분할점에서 타깃 전원 · 대조군 1장이다 (스윕과 무관하게 직접 센다).
+
+    스윕 구현이 이 값을 재현해야 하므로, 데이터 쪽 사실을 먼저 못 박는다.
+    """
+    from data.generate_dummy import (METRO_TARGETS, METRO_TRUE_GE,
+                                     METRO_TRUTH_GE_SPLIT)
+
+    with _conn() as conn:
+        avg = _metro_avg(conn, *METRO_TRUE_GE)
+
+    over = {w for w, v in avg.items() if v >= METRO_TRUTH_GE_SPLIT}
+    assert over & set(METRO_TARGETS) == set(METRO_TARGETS)   # 타깃 5/5
+    assert len(over - set(METRO_TARGETS)) == 1               # 대조군 1장 (반례)
+
+
+def test_metro_planted_le_signal_is_actually_in_the_data():
+    """얇은 쪽도 같다 — 양방향을 안 돌리면 이 조합을 통째로 놓친다."""
+    from data.generate_dummy import (METRO_TARGETS, METRO_TRUE_LE,
+                                     METRO_TRUTH_LE_SPLIT)
+
+    with _conn() as conn:
+        avg = _metro_avg(conn, *METRO_TRUE_LE)
+
+    under = {w for w, v in avg.items() if v <= METRO_TRUTH_LE_SPLIT}
+    assert under & set(METRO_TARGETS) == set(METRO_TARGETS)
+    assert len(under - set(METRO_TARGETS)) == 1
+
+
+def test_metro_lot_effect_combination_splits_by_lot_not_by_defect():
+    """lot 효과 조합은 root_lot 으로만 갈린다 — 불량 여부와 무관하다.
+
+    층화 섞기가 이걸 기각하고 전체 섞기는 거짓 양성을 내는 것이 §2-2 의 변별력
+    무대다. 그러려면 **두 lot 의 값 범위가 겹치지 않아야** 한다.
+    """
+    from data.generate_dummy import METRO_LOT_EFFECT, METRO_ROOT_LOTS
+
+    with _conn() as conn:
+        avg = _metro_avg(conn, *METRO_LOT_EFFECT)
+
+    hi = [v for w, v in avg.items() if w.startswith(METRO_ROOT_LOTS[0])]
+    lo = [v for w, v in avg.items() if w.startswith(METRO_ROOT_LOTS[1])]
+    assert hi and lo
+    assert min(hi) > max(lo)          # 두 lot 이 값으로 완전히 갈린다
+
+
+def test_metro_tied_combination_has_only_a_few_distinct_values():
+    """동점 뭉침 조합 — 분할점을 같은 값 안에 놓을 수 없다는 것을 볼 무대."""
+    from data.generate_dummy import METRO_TIED
+
+    with _conn() as conn:
+        avg = _metro_avg(conn, *METRO_TIED)
+
+    assert len(set(avg.values())) == 3
+    assert len(avg) > 3               # wafer 는 여럿인데 값은 3종류뿐
+
+
+def test_metro_partial_combination_measures_only_some_wafers():
+    """일부만 계측된 조합 — 분모를 '계측된 wafer' 로 세는지 볼 무대.
+
+    미계측 wafer 를 '미통과' 로 세면 대조군 분모가 6 이 아니라 12 가 되어 점수가
+    부풀고 가짜 후보가 뜬다 (1단계가 고친 분모 conflation).
+    """
+    from data.generate_dummy import (METRO_PARTIAL, METRO_TARGETS,
+                                     METRO_UNMEASURED, METRO_WAFERS)
+
+    with _conn() as conn:
+        avg = _metro_avg(conn, *METRO_PARTIAL)
+
+    assert set(avg) == METRO_WAFERS - set(METRO_UNMEASURED)
+    assert set(METRO_UNMEASURED) & set(METRO_TARGETS) == set()   # 타깃은 전원 계측됨
+    assert len(avg) < len(METRO_WAFERS)
+
+
+def test_metro_rows_are_unique_per_wafer_step_item_subitem():
+    """metro 에는 재작업이 없다 (2026-08-12 확인) — 그래서 회차를 접는 규칙이 없다.
+
+    그 전제가 깨지면 값 하나를 조용히 골라 쓰게 되므로 데이터 쪽에서 막는다.
+    """
+    with _conn() as conn:
+        dup = conn.execute(
+            "SELECT COUNT(*) FROM (SELECT wafer_id, step_seq, item, subitem_id "
+            "FROM metro GROUP BY 1,2,3,4 HAVING COUNT(*) > 1)").fetchone()[0]
+    assert dup == 0
