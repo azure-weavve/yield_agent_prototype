@@ -500,3 +500,121 @@ def test_registry_rejects_a_malformed_where_clause():
             registry.load_hypotheses(path)
     finally:
         path.unlink()
+
+
+# ------------------------------------------------- 보정 (설계 §9 "가장 중요" 항목)
+
+def _synthetic(n_lots, per_lot, targets_per_lot, n_combos, measured_per_lot, seed):
+    """신호가 **하나도 없는** 합성 색인. 값이 라벨과 완전히 무관하다.
+
+    더미 DB 를 안 쓰는 이유: 계측 샘플링(lot 당 몇 장)을 wafer 수를 키워 가며 걸어야
+    하는데, 17장짜리 더미로는 그 조건을 만들 수 없다.
+    """
+    import random
+
+    rng = random.Random(seed)
+    bits, strata, i = {}, [], 0
+    for lot in range(n_lots):
+        t = c = 0
+        ws = []
+        for k in range(per_lot):
+            w = f"L{lot}_{k}"
+            bits[w] = 1 << i
+            i += 1
+            ws.append(w)
+            if k < targets_per_lot:
+                t |= bits[w]
+            else:
+                c |= bits[w]
+        strata.append((f"L{lot}", t, c, ws))
+
+    combos, answer, seen = {}, {}, 0
+    for ci in range(n_combos):
+        key = ("metro", f"S{ci:04d}", "THK")
+        rows, mask = [], 0
+        for _rl, _t, _c, ws in strata:
+            # **스텝마다 다른 wafer 를 잰다** (사내 확인 2026-08-12: 계측 슬롯이
+            # 스텝마다 같을 수도 다를 수도 있고, 다른 쪽이 이 도구에 유리하다)
+            for w in rng.sample(ws, measured_per_lot):
+                rows.append((rng.random(), bits[w]))   # 라벨과 무관한 값
+                mask |= bits[w]
+        rows.sort(key=lambda vb: -vb[0])
+        combos[key], answer[key] = rows, mask
+        seen |= mask
+    return combos, answer, seen, [(rl, t, c) for rl, t, c, _ws in strata]
+
+
+def test_no_signal_data_does_not_produce_a_flood_of_small_p():
+    """신호가 없으면 p 가 작게 나오면 안 된다 — 설계 §9 가 "가장 중요" 로 꼽은 항목.
+
+    분할점 탐색은 조합마다 여러 자리를 시도해 최고를 고른다. 그 이득이 귀무에
+    반영되지 않으면 무신호 데이터에서 작은 p 가 쏟아진다. 귀무도 같은 탐색을 거치는
+    구조(`_permutation_stats_metro`)가 실제로 그걸 막는지 여기서 잰다.
+
+    **계측 샘플링이 걸린 조건에서 재는 것이 요점이다.** 스텝마다 계측 wafer 가
+    달라지면 조합마다 분모 집합이 달라지는데, 그 상태에서도 보정이 유지되는지는
+    심어둔 신호를 잡는 것과 별개 문제다.
+
+    상한을 15% 로 둔 이유: `MIN_SCORE` 절단이 **관측 쪽만** 거른다. 점수가 0 이하인
+    후보가 목록에서 빠지면서 큰 p 쪽 꼬리가 잘리고, 남은 후보들의 p 분포는 균등보다
+    아래로 쏠린다(후보의 약 절반만 남으므로 대략 2배). 후보별 p 자체는 여전히 옳고
+    이건 선택 효과다 — 기존 도구도 같은 성질을 갖는다. 진짜로 무너지면(탐색 이득이
+    귀무에 안 잡히면) 이 값이 50%를 훌쩍 넘으므로 이 상한으로도 충분히 갈린다.
+    """
+    combos, answer, seen, masks = _synthetic(
+        n_lots=4, per_lot=25, targets_per_lot=5, n_combos=60,
+        measured_per_lot=3, seed=11)
+    agg, _rep = mc._aggregate_metro(masks, combos, answer, seen)
+    obs = {k: v["score"] for k, v in agg.items()}
+    perm = mc._permutation_stats_metro(masks, combos, answer, seen, obs,
+                                       1000, mc.PERM_SEED)
+
+    ps = list(perm["p"].values())
+    assert len(ps) > 20, "후보가 너무 적어 분포를 못 본다"
+    small = sum(1 for p in ps if p <= 0.05) / len(ps)
+    assert small < 0.15, f"무신호 데이터인데 p<=0.05 가 {small:.1%} — 탐색 이득이 귀무에 안 잡힌다"
+
+
+def test_sampling_raises_the_p_floor_even_when_the_split_is_perfect():
+    """계측이 적으면 완전 분리여도 p 가 어느 아래로는 안 내려간다.
+
+    파워를 정하는 것은 계측된 타깃 **장수**가 아니라 **타깃이 계측된 stratum 수 k** 다
+    — 층화 순열의 경우의 수가 stratum 별 조합 수의 **곱**이라 lot 당 3장이면 대략
+    `3^k` 이고 바닥이 `1/3^k` 다. 이 성질을 모르면 "score 1.0 인데 왜 p 가 0.1 이냐" 를
+    데이터 문제로 오해한다.
+
+    여기서는 **고정 슬롯**(스텝마다 같은 wafer)을 강제해 k 를 작게 만든다. 사내는
+    스텝마다 다를 수도 있어 실제로는 이보다 낫지만, 나쁜 쪽 끝을 잠가 둔다.
+    """
+    import random
+
+    rng = random.Random(7)
+    # lot 2개, 각 lot 에서 3장만 계측하고 그 3장 중 1장이 타깃 — k = 2 -> 공간 3^2 = 9
+    bits, masks, combos, answer, seen = {}, [], {}, {}, 0
+    rows = []
+    for lot in range(2):
+        t = c = 0
+        for k in range(3):
+            w = f"L{lot}_{k}"
+            bits[w] = 1 << len(bits)
+            if k == 0:
+                t |= bits[w]
+                rows.append((100.0 + rng.random(), bits[w]))   # 타깃이 확실히 높다
+            else:
+                c |= bits[w]
+                rows.append((10.0 + rng.random(), bits[w]))
+            seen |= bits[w]
+        masks.append((f"L{lot}", t, c))
+    rows.sort(key=lambda vb: -vb[0])
+    key = ("metro", "S0", "THK")
+    combos[key], answer[key] = rows, seen
+
+    agg, _rep = mc._aggregate_metro(masks, combos, answer, seen)
+    obs = {k: v["score"] for k, v in agg.items()}
+    perm = mc._permutation_stats_metro(masks, combos, answer, seen, obs,
+                                       1000, mc.PERM_SEED)
+
+    assert agg[(*key, "ge")]["score"] == 1.0          # 완전 분리다
+    assert perm["n_permutations_total"] == 9          # 3 x 3
+    assert perm["p_min_possible"] == 1 / 9            # 그래도 바닥이 0.111
+    assert perm["p"][(*key, "ge")] == 1 / 9           # 완전 분리가 바닥에 닿을 뿐이다
