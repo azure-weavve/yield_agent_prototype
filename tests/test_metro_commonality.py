@@ -46,14 +46,31 @@ def test_sweep_finds_the_planted_split_exactly_at_the_boundary_value():
 
 
 def test_sweep_never_puts_a_split_inside_a_tie():
-    """동점은 가를 수 없다 — 분할점은 서로 다른 값 사이에만 놓인다.
+    """동점은 가를 수 없다 — 같은 값 덩어리를 통째로 소비한 뒤에만 평가한다.
 
-    같은 값 덩어리를 통째로 소비한 뒤에만 평가하는지 본다. 값이 3종류뿐인 입력에서
-    분할점이 그 3개 밖(예: 45.5)으로 나오면 덩어리 중간에서 잘랐다는 뜻이다.
+    **split 값만 보면 이 명제를 못 잡는다.** split 은 언제나 데이터에 있는 값에서
+    나오므로(`v` 또는 `rows[i][0]`) "split in {45,46,47}" 같은 단언은 원리적으로
+    실패할 수 없다 — 덩어리 한가운데서 잘라 카운트가 틀려도 초록이다 (2026-08-12
+    리뷰가 버그 버전으로 실증). 그래서 **선택된 조각의 a·c 가 덩어리 경계와 맞는지**를
+    본다.
+
+      값     47 47 | 46 46 46 46 | 45 45 45 c45      nt = 5, nc = 5
+      라벨    c  c  | T  T  c  c  | T  T  T  c
+
+      경계는 두 곳뿐이다 (맨 아래 컷은 여집합이 비어 평가에서 빠진다).
+        47 뒤 -> 위 조각 (a,c) = (0,2),  아래 조각 (5,3)
+        46 뒤 -> 위 조각 (a,c) = (2,4),  아래 조각 (3,1)
     """
     best = _sweep_case("c47 c47 T46 T46 c46 c46 T45 T45 T45 c45")
-    for score, split, _a, _c in best.values():
+    # 덩어리 경계에서만 잘랐다면 (a, c) 는 이 값들 중 하나일 수밖에 없다.
+    # 덩어리 중간에서 자르면 (1,2)·(2,5) 처럼 목록에 없는 값이 나온다.
+    legal_ge = {(0, 2), (2, 4)}
+    legal_le = {(5, 3), (3, 1)}          # 여집합 = (nt-a, nc-c)
+    assert best, "후보가 하나도 안 나왔다"
+    for direction, (_s, split, a, c) in best.items():
         assert split in {45.0, 46.0, 47.0}
+        legal = legal_ge if direction == "ge" else legal_le
+        assert (a, c) in legal, f"{direction} 조각 (a={a}, c={c}) 이 덩어리 경계가 아니다"
 
 
 def test_sweep_reports_the_thin_side_as_le_with_the_lower_pieces_top_value():
@@ -83,16 +100,38 @@ def test_sweep_excludes_pieces_with_too_few_targets():
     assert score < 1.0
 
 
-def test_sweep_emits_at_most_one_candidate_per_direction():
-    """한 조합은 방향당 후보를 **하나만** 낸다.
+def test_sweep_picks_the_best_cut_not_just_any_cut():
+    """방향당 후보 하나이고, 그 하나는 **최댓값**이어야 한다.
 
-    같은 데이터를 조금 다르게 자른 것은 새 정보가 아니고, 검정이 "최고 하나" 기준에
-    맞춰져 있어 둘 다 내면 계산이 어긋난다 (설계 §1).
+    "방향이 ge/le 둘뿐이고 4-튜플이다" 같은 단언은 자료구조상 보장돼 실패할 방법이
+    없다 (2026-08-12 리뷰 지적). 실제 명제는 **여러 컷 중 최고를 골랐는가** 이므로,
+    가능한 모든 컷을 손으로 세어 최댓값과 대조한다. 아무 컷이나 집는 구현(예: 첫 컷,
+    마지막 컷)은 여기서 걸린다.
+
+    **입력을 고를 때 "첫 컷 == 최댓값" 이 되면 안 된다.** 처음 쓴 입력이 그랬고,
+    "최댓값 대신 첫 컷을 집는" 변이가 통과해 버렸다. 여기서는 위쪽에 대조군을 한 장
+    끼워 첫 자격 컷(ge 0.25)과 최댓값(ge 0.75)을 갈라 놓는다. le 도 마찬가지로
+    첫 컷 -0.25 vs 최댓값 0.0 이다.
     """
-    best = _sweep_case("T99 T98 c97 T96 c95 c94 T93 c92")
-    assert set(best) <= {"ge", "le"}
-    for v in best.values():
-        assert len(v) == 4          # (score, split, a, c) 하나씩
+    spec = "T99 c98 T97 T96 T95 c94 c93 c92"
+    best = _sweep_case(spec)
+
+    toks = spec.split()
+    nt = sum(1 for t in toks if t[0] == "T")
+    nc = len(toks) - nt
+    scores = []
+    a = c = 0
+    for i, tok in enumerate(toks[:-1]):        # 맨 아래 컷은 분리가 아니다
+        if tok[0] == "T":
+            a += 1
+        else:
+            c += 1
+        scores.append((a / nt - c / nc, a, c))
+
+    ge_best = max(s for s, a, _c in scores if a >= mc.MIN_TARGET)
+    le_best = max(-s for s, a, _c in scores if nt - a >= mc.MIN_TARGET)
+    assert abs(best["ge"][0] - ge_best) < 1e-9
+    assert abs(best["le"][0] - le_best) < 1e-9
 
 
 def test_sweep_never_cuts_at_the_very_bottom():
@@ -221,20 +260,31 @@ def test_dropping_the_where_clause_fails_loudly_instead_of_miscounting():
         _prepare(targets, controls, no_filter)
 
 
-def test_unknown_subitem_tokens_are_surfaced_not_silently_mixed_in():
-    """모르는 토큰은 드러낸다 — 조용히 포인트로 취급하면 사내에서만 터진다.
+def test_unknown_subitem_tokens_are_surfaced_and_normal_ones_are_not():
+    """모르는 토큰만 드러낸다 — 정상 포인트는 목록에 안 들어간다.
 
-    개별 측정 포인트(P01 ...)는 통계 토큰이 아니므로 여기 잡히는 것이 정상이다.
-    요점은 **목록이 비어 있지 않고 실제 토큰을 담는다**는 것 — 새 통계 토큰이
-    생겼을 때 그것이 포인트인 척 섞여도 이 자리에서 보인다.
+    "통계 토큰이 아니면 전부 미상" 으로 두면 이 목록이 **정상 포인트 전체**가 되고
+    (실데이터면 수천 개), 그 안에 새 통계 토큰이 한 줄 섞여도 아무도 못 본다.
+    목적이 정확히 무력화되므로 포인트 이름 규칙(`_POINT_ID`)으로도 함께 판정한다.
     """
-    from data.generate_dummy import METRO_POINT_SUBITEMS
-
     targets, controls = _metro_groups()
     _c, _a, _s, unknown, _m, _b = _prepare(targets, controls)
+    assert unknown == set(), f"더미에는 미상 토큰이 없어야 하는데 {sorted(unknown)}"
 
-    assert unknown == set(METRO_POINT_SUBITEMS)
-    assert not (unknown & mc.STAT_TOKENS)
+
+def test_a_new_statistic_token_shows_up_as_unknown():
+    """변별력 — 사내에 없던 토큰이 들어오면 실제로 드러나는가.
+
+    위 테스트만 있으면 `unknown` 을 항상 빈 집합으로 만드는 구현도 통과한다.
+    통계값인 척하는 새 토큰(AVG2)과 형식이 다른 포인트(POINT_1) 둘 다 잡혀야 한다.
+    """
+    targets, controls = _metro_groups()
+    bits = {w: 1 << i for i, w in enumerate(targets + controls)}
+    rows = [{"wafer_id": targets[0], "step_seq": "CC001500", "item": "THK",
+             "subitem_id": tok, "value": 1.0}
+            for tok in ("AVG", "P01", "AVG2", "POINT_1")]
+    _c, _a, _s, unknown = mc._build_metro_index(rows, bits, mc.METRO_LEGEND)
+    assert unknown == {"AVG2", "POINT_1"}
 
 
 def test_aggregate_depends_only_on_the_labels():
@@ -449,6 +499,13 @@ def test_gate_still_passes_a_candidate_that_permutation_fully_explains():
 
     이 테스트는 "옳다" 가 아니라 "지금 이렇다" 를 적는다. 게이트에 p 를 물리는 날
     여기가 빨간불이 되어 **의도한 변경인지** 되묻게 된다.
+
+    ⚠️ metro 에서는 이 계약의 위험이 다른 축보다 크다. 신호가 전혀 없는 데이터에
+    판별선(score 0.5)을 걸어 본 실측에서 **계측 표본이 작으면 후보의 48.7%가 그 선을
+    넘었다**(전수 계측이면 0%). 분할점을 최대화해서 고르는 데다 커버리지가 거칠게
+    양자화되기 때문이다. metro 는 별도 도구라 게이트가 metro 안에서만 최고 점수를
+    비교하므로, **순수 잡음이 1등이 되어 승인될 수 있다.** 지금 이것을 막는 것은
+    `hypotheses.yaml` 이 LLM 에게 fdr_table 을 함께 읽으라고 지시하는 것뿐이다.
     """
     from data.generate_dummy import METRO_LOT_EFFECT
     from domain import engine
@@ -555,24 +612,39 @@ def test_no_signal_data_does_not_produce_a_flood_of_small_p():
     달라지면 조합마다 분모 집합이 달라지는데, 그 상태에서도 보정이 유지되는지는
     심어둔 신호를 잡는 것과 별개 문제다.
 
-    상한을 15% 로 둔 이유: `MIN_SCORE` 절단이 **관측 쪽만** 거른다. 점수가 0 이하인
-    후보가 목록에서 빠지면서 큰 p 쪽 꼬리가 잘리고, 남은 후보들의 p 분포는 균등보다
-    아래로 쏠린다(후보의 약 절반만 남으므로 대략 2배). 후보별 p 자체는 여전히 옳고
-    이건 선택 효과다 — 기존 도구도 같은 성질을 갖는다. 진짜로 무너지면(탐색 이득이
-    귀무에 안 잡히면) 이 값이 50%를 훌쩍 넘으므로 이 상한으로도 충분히 갈린다.
-    """
-    combos, answer, seen, masks = _synthetic(
-        n_lots=4, per_lot=25, targets_per_lot=5, n_combos=60,
-        measured_per_lot=3, seed=11)
-    agg, _rep = mc._aggregate_metro(masks, combos, answer, seen)
-    obs = {k: v["score"] for k, v in agg.items()}
-    perm = mc._permutation_stats_metro(masks, combos, answer, seen, obs,
-                                       1000, mc.PERM_SEED)
+    **전수 계측과 나란히 잰다.** 샘플링 조건 하나만 보면 상한을 아무리 잡아도
+    "지금 값이 옳은지" 를 못 말한다. 전수 계측은 명목대로 나오는 것이 확인돼 있으므로
+    (모듈 docstring 참조) 두 조건의 **차이**가 곧 열린 결함의 크기다.
 
-    ps = list(perm["p"].values())
-    assert len(ps) > 20, "후보가 너무 적어 분포를 못 본다"
-    small = sum(1 for p in ps if p <= 0.05) / len(ps)
-    assert small < 0.15, f"무신호 데이터인데 p<=0.05 가 {small:.1%} — 탐색 이득이 귀무에 안 잡힌다"
+    ⚠️ 이 테스트는 **결함이 있는 상태를 고정한다.** 샘플링 조건의 p 는 명목보다 약
+    2배 작게 나오고, 원인은 귀무 회차에서 후보 키가 정의되지 않는 것을 "안 넘었다" 로
+    세는 것이다(모듈 docstring "열린 결함" 절). 여기 상한 15% 는 그 편향을 잡지
+    **못하고**, 잡는 것은 아래 `_ratio` 대비다. 결함을 고치면 그 대비가 1.0 에
+    가까워지면서 이 테스트가 빨간불이 되어 **개선을 확인해 준다.**
+    """
+    def _small_p_rate(measured_per_lot):
+        combos, answer, seen, masks = _synthetic(
+            n_lots=4, per_lot=25, targets_per_lot=5, n_combos=60,
+            measured_per_lot=measured_per_lot, seed=11)
+        agg, _rep = mc._aggregate_metro(masks, combos, answer, seen)
+        obs = {k: v["score"] for k, v in agg.items()}
+        perm = mc._permutation_stats_metro(masks, combos, answer, seen, obs,
+                                           1000, mc.PERM_SEED)
+        ps = list(perm["p"].values())
+        assert len(ps) > 20, "후보가 너무 적어 분포를 못 본다"
+        return sum(1 for p in ps if p <= 0.10) / len(ps)
+
+    full = _small_p_rate(25)              # 전수 계측
+    sampled = _small_p_rate(3)            # lot 당 3장
+
+    # 탐색 이득이 귀무에 아예 안 잡히면 이 값이 50% 를 훌쩍 넘는다 — 그건 다른 사고다
+    assert sampled < 0.35, f"무신호 데이터인데 p<=0.10 이 {sampled:.1%} — 탐색 이득이 귀무에 안 잡힌다"
+    # 전수 계측은 명목(10%)대로다. 이쪽이 무너지면 스윕·순열 자체가 틀린 것이다
+    assert full < 0.15, f"전수 계측인데 p<=0.10 이 {full:.1%}"
+    # 알려진 편향의 크기. 고치면 1.0 에 가까워지고 이 단언이 빨간불이 된다
+    assert sampled / full > 1.5, (
+        f"샘플링/전수 비 {sampled / full:.2f} — 편향이 줄었다면 좋은 일이니 "
+        f"모듈 docstring 의 '열린 결함' 절과 함께 이 단언을 갱신하라")
 
 
 def test_sampling_raises_the_p_floor_even_when_the_split_is_perfect():
@@ -618,3 +690,20 @@ def test_sampling_raises_the_p_floor_even_when_the_split_is_perfect():
     assert perm["n_permutations_total"] == 9          # 3 x 3
     assert perm["p_min_possible"] == 1 / 9            # 그래도 바닥이 0.111
     assert perm["p"][(*key, "ge")] == 1 / 9           # 완전 분리가 바닥에 닿을 뿐이다
+
+
+def test_a_where_clause_that_filters_everything_raises_instead_of_reporting_no_signal():
+    """`where` 값 오타는 **설정 오류로 멈춘다** — 도메인 결론으로 둔갑하면 안 된다.
+
+    `{'subitem_id': 'AVERAGE'}` 처럼 값이 틀리면 아무 행도 안 걸러지는 게 아니라
+    **모든 행이 걸러진다.** 막지 않으면 결과가 status='no_signal' 로 나가고 note 는
+    "lot 내부 대조로는 보이지 않는다" 는 도메인 판단을 말한다 — 오타 하나가 분석
+    결론으로 LLM 에게 전달된다. 중복 행 방어의 반대쪽 극단이다.
+    """
+    import pytest
+
+    targets, controls = _metro_groups()
+    typo = [{"level": "metro", "columns": ["step_seq", "item"],
+             "where": {"subitem_id": "AVERAGE"}}]        # AVG 오타
+    with pytest.raises(ValueError, match="전부"):
+        _prepare(targets, controls, typo)

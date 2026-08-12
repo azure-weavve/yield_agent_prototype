@@ -76,26 +76,62 @@ lot 마다 달라진다 — 어떤 lot 이 전 스텝을 같은 슬롯으로만 
 4행처럼 주저앉는다. 그래서 `p_min_possible` 을 후보마다 싣는 것이 metro 에서는 특히
 중요하다(작은 표본의 바닥값을 "약한 신호" 로 오독하는 것을 막는다).
 
-거짓 양성 보정 (2026-08-12)
----------------------------
+⚠️ 열린 결함: 샘플링 조건에서 p_permutation 이 작게 나온다 (2026-08-12)
+------------------------------------------------------------------------
 
-**신호가 전혀 없는 합성 데이터**에서 무신호 조합의 p 분포를 봤다. 분할점 탐색의 이득이
-귀무에 반영되지 않으면 여기서 작은 p 가 쏟아진다.
+**신호가 전혀 없는 합성 데이터**에서 무신호 조합의 p 분포를 재 보면, 계측 샘플링이
+걸린 조건에서 작은 p 가 명목보다 약 2배 나온다.
 
 ```
-  조건                          후보 수     p<=0.05      p<=0.10     최소 p
+  조건                          후보 수     p<=0.05     p<=0.10     p<=0.50
   ---------------------------------------------------------------------------
-  전수 계측                     386~397    5.1~8.1%    10~13%      0.0010
-  lot 당 3장, 스텝마다 다름     189~216    4.2~7.7%    14~17%      0.009~0.027
+  전수 계측                       98%       4.2%        8.5%        53.4%   <- 명목대로
+  lot 당 3장, 스텝마다 다름       61%       6.8%       20.5%        94.5%   <- 부푼다
+  lot 당 3장, MIN_SCORE 끔        78%       5.4%       16.1%        74.2%   <- 절단 꺼도 남는다
 ```
 
-`p <= 0.05` 가 기대치 5% 근처다 — **탐색 이득은 귀무가 제대로 흡수하고 있다.**
+**원인은 귀무 회차에서 후보 키가 "정의되지 않는" 것을 "안 넘었다" 로 세는 것이다.**
+라벨을 섞으면 그 조합의 타깃이나 대조군이 통째로 비어(`_aggregate_metro` 의
+`if not t_i or not c_i` / `nt == 0`) 키가 아예 사라지는 회차가 생긴다. 그런데
+`commonality._null_distribution` 은 없는 키를 `-inf` 로 읽어 미달로 센다. **정의되지
+않은 것과 넘지 못한 것이 같은 취급을 받아** 귀무가 실제보다 약해 보이고 p 가 작아진다.
 
-`p <= 0.10` 대역이 조금 높은 것은 버그가 아니라 **선택 효과**다. `MIN_SCORE` 절단이
-**관측 쪽만** 거르므로 점수 0 이하 후보가 목록에서 빠지고, 그만큼 큰 p 쪽 꼬리가
-잘린다(후보의 약 절반만 남으니 대략 2배). **후보별 p 자체는 여전히 옳다** — 그 키의
-귀무 분포에 그 키의 관측을 댄 값이고, 선택은 귀무 분포를 바꾸지 않는다. 목록 전체를
-볼 때의 보정은 `fdr_table` 과 `p_family_wise` 가 맡는다. 기존 도구도 같은 성질이다.
+측정: 키-회차 중 키가 아예 정의되지 않는 비율이 **전수 계측 0.0% vs lot 당 3장 6.6%**
+이고, 참조집합을 "그 키가 정의된 회차" 로 제한하면 `p<=0.05` 가 7.0%→0.6%,
+`p<=0.50` 이 95.5%→47.1% 로 균등에 붙는다(다만 작은 p 쪽은 과보정 기미가 있어
+추정량 교체는 설계 판단이 필요하다 — 그래서 지금은 **고치지 않고 결함으로 적어 둔다**).
+
+**기존 3개 축(eqp_ch·ppid·step_passage)은 이 경로를 거의 안 탄다.** 그쪽은 `passed`
+마스크가 라벨과 무관해 키가 회차마다 사라지지 않고, 소실은 `MIN_SCORE` 절단(=진짜로
+안 넘었다)에서만 온다. 원리적으로는 같은 자리지만 metro 의 계측 샘플링이 그것을
+심각하게 만든다.
+
+**따라서 metro 의 `p_permutation` 은 사내 조건에서 낙관적이다. `fdr_table` 과
+`p_family_wise` 를 함께 읽어야 한다** — 이 둘은 같이 재 봤을 때 건전했다(무신호
+데이터에서 fdr 0.59~0.99, family-wise 0.988~0.995). 목록 수준 보정은 제 역할을 한다.
+
+⚠️ 게이트 판별선은 metro 에서 거의 안 걸린다 (2026-08-12)
+-----------------------------------------------------------
+
+게이트(`domain/engine.py::_passes`)는 `score >= 0.5` 와 `target_pass >= 2` 만 본다.
+그 선을 **신호가 전혀 없는** 데이터에 걸어 봤다.
+
+```
+  lot 당 3장 (사내 조건)   후보 314개 중 판별선 통과 153개 (48.7%)
+  전수 계측                후보 588개 중 판별선 통과   0개 ( 0.0%)
+```
+
+원인이 두 겹이다. ① 분할점을 **최대화해서** 고르므로 score 가 구조적으로 부풀고,
+② 샘플링으로 `nt`≈3·`nc`≈9 가 되면 coverage 가 거칠게 양자화돼 0.5 를 우연히 넘기
+쉽다. `MIN_TARGET`(2)은 `nt=3` 에서 방어가 되지 않는다.
+
+그리고 metro 는 **별도 도구**라 게이트가 metro 안에서만 최고 점수를 비교한다. 즉
+**순수 잡음 후보가 metro 의 1등이 되어 승인될 수 있다.** 같은 실행의 `fdr_table` 이
+"이 중 대부분이 가짜" 라고 말하는데 게이트는 그것을 읽지 않는다.
+
+**그래서 metro 후보는 `score` 만으로 채택하면 안 된다.** 게이트에 통계를 물리는 것은
+범위 밖(2단계에서 미룬 별건)이라 지금은 `hypotheses.yaml` 이 LLM 에게 `fdr_table` 과
+`p_permutation` 을 함께 읽으라고 지시하는 것으로 막는다.
 
 성능 실측 (2026-08-12, 같은 입력)
 ---------------------------------
@@ -117,6 +153,7 @@ lot 마다 달라진다 — 어떤 lot 이 전 스텝을 같은 슬롯으로만 
 부족한 경우와 느린 경우가 서로 반대쪽에 있다.
 """
 
+import re
 import sqlite3
 
 from tools.commonality import (MIN_SCORE, MIN_TARGET, N_PERMUTATIONS, PERM_SEED,
@@ -128,6 +165,11 @@ from tools.commonality import (MIN_SCORE, MIN_TARGET, N_PERMUTATIONS, PERM_SEED,
 # "이 5종이 통계값, 나머지가 포인트" 라는 완전한 분류가 있어야, 나중에 포인트 레벨을
 # 얹을 때 통계값이 포인트인 척 섞여 들어오지 않는다 (설계 §8).
 STAT_TOKENS = frozenset({"AVG", "MAX", "MIN", "STD", "RANGE"})
+
+# 개별 측정 포인트의 이름 규칙 (P01, P12 ...). **실데이터를 보고 넓혀야 하는 자리다.**
+# 여기 안 맞는 subitem_id 는 `meta.unknown_subitems` 로 드러나므로, 사내 형식이 다르면
+# 첫 실행에서 그 목록이 통째로 튀어나와 바로 알 수 있다 (조용히 틀리지 않는다).
+_POINT_ID = re.compile(r"P\d+")
 
 # 기본 legend. `where` 가 **행을 거른다** — 기존 legend 는 columns 로 키를 만들 뿐
 # 행을 안 걸렀다. 이것이 3단계에서 legend 에 새로 들어가는 유일한 기능이다.
@@ -159,7 +201,7 @@ def _build_metro_index(rows, bits: dict[str, int], legend):
     combos  (레벨, 스텝, item) -> [(값, wafer 비트), ...]  **값 내림차순**
     answer  같은 키 -> 그 조합에 계측값이 있는 wafer 마스크 = 분모 재료
     seen    계측 행이 하나라도 있는 wafer 마스크
-    unknown 통계 토큰도 아니고 legend 가 고른 것도 아닌 subitem_id (보고용)
+    unknown 통계 토큰도 **개별 포인트 이름 규칙도** 안 맞는 subitem_id (보고용)
 
     **정렬은 여기서 한 번만 한다.** 라벨과 무관하므로 순열 회차마다 다시 정렬하면
     회차 수만큼 낭비다. 아래 `_aggregate_metro` 는 이 정렬을 훑기만 한다.
@@ -181,7 +223,11 @@ def _build_metro_index(rows, bits: dict[str, int], legend):
         sub = _norm(r["subitem_id"])
         # 모르는 토큰은 **드러낸다.** 조용히 포인트로 취급하면, 사내 데이터에 새
         # 통계 토큰이 생겼을 때 그것이 포인트인 척 섞여도 아무도 모른다.
-        if sub not in STAT_TOKENS:
+        #
+        # 통계 토큰 **과 포인트 이름 규칙 둘 다** 로 판정한다. "통계 토큰이 아니면
+        # 전부 포인트" 로 두면 이 목록이 정상 포인트 전체가 되어(실데이터면 수천 개)
+        # 그 안에 새 토큰이 한 줄 섞여도 아무도 못 본다 — 목적이 정확히 무력화된다.
+        if sub not in STAT_TOKENS and not _POINT_ID.fullmatch(sub):
             unknown.add(r["subitem_id"])
         for lvl in legend:
             want = lvl.get("where") or {}
@@ -201,6 +247,18 @@ def _build_metro_index(rows, bits: dict[str, int], legend):
                     f"`where` 로 행을 하나만 남겨야 한다 (예: {{'subitem_id': 'AVG'}}).")
             combos.setdefault(key, []).append((r["value"], b))
             answer[key] = answer.get(key, 0) | b
+
+    # 계측 행은 있는데 조합이 하나도 안 나왔다 = `where` 가 **전부** 걸러냈다.
+    # 오타 하나면(`{'subitem_id': 'AVERAGE'}`) 결과가 status='no_signal' 로 나가고,
+    # note 는 "lot 내부 대조로는 보이지 않는다" 는 **도메인 결론**을 말한다. 설정
+    # 오류가 분석 결과로 둔갑해 LLM 까지 가느니 여기서 멈춘다 — 위 중복 행 방어의
+    # 반대쪽 극단이고, 둘 다 막아야 `where` 가 조용히 틀릴 자리가 없어진다.
+    if rows and not combos:
+        wants = [lvl.get("where") for lvl in legend if lvl.get("where")]
+        raise ValueError(
+            f"legend 의 where {wants} 가 계측 행 {len(rows)}개를 **전부** 걸러냈다. "
+            f"값 오타를 의심하라 (본 subitem_id: "
+            f"{sorted({r['subitem_id'] for r in rows})[:8]}).")
 
     for key in combos:
         combos[key].sort(key=lambda vb: -vb[0])
@@ -470,8 +528,9 @@ def find_metro_commonality(target_wafers: list[str], control_wafers: list[str],
             # 계측 행이 아예 없는 wafer. 다른 축의 missing_history 와 다른 뜻이다 —
             # 이력은 있는데 그 스텝을 안 쟀을 뿐일 수 있다.
             "missing_metro": sorted(set(missing)),
-            # 통계 토큰도 legend 선택도 아닌 subitem_id. 사내에 새 통계 토큰이
-            # 생기면 여기서 보인다 (조용히 개별 포인트로 섞이지 않는다).
+            # 통계 토큰(STAT_TOKENS)도 포인트 이름 규칙(_POINT_ID)도 안 맞는
+            # subitem_id. **비어 있는 것이 정상이다** — 사내에 새 통계 토큰이 생기거나
+            # 포인트 이름 형식이 다르면 여기에 나타난다.
             "unknown_subitems": sorted(unknown),
         },
         "note": note,
