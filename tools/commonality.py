@@ -87,13 +87,19 @@ from contextlib import contextmanager
  
 import ya_config
  
-# config 에 없으면 쓰는 기본값 (실데이터 보고 조정 — 지금 못 박지 않는다)
-MIN_TARGET = getattr(ya_config, "COMMONALITY_MIN_TARGET", 2)
-TOP_K = getattr(ya_config, "COMMONALITY_TOP_K", 20)
-MIN_SCORE = getattr(ya_config, "COMMONALITY_MIN_SCORE", 0.0)
+# 탐색 범위 (실데이터 보고 조정 — 지금 못 박지 않는다). 판별선은 여기가 아니라
+# domain/engine.py 가 읽는 ya_config.COMMONALITY_PASS_* 다.
+#
+# ⚠️ `getattr(ya_config, ..., 기본값)` 으로 읽지 않는다. 그 형태는 이름이 틀려도
+#    조용히 기본값으로 떨어져서, 실제로 세 상수가 config 에 없는 이름을 찾느라
+#    **env 로 조정이 안 되는 상태였는데 아무도 못 알아챘다**(2026-08-23 확인).
+#    직접 참조하면 이름이 틀린 순간 AttributeError 로 즉시 걸린다.
+MIN_TARGET = ya_config.COMMONALITY_MIN_TARGET
+TOP_K = ya_config.COMMONALITY_TOP_K
+MIN_SCORE = ya_config.COMMONALITY_MIN_SCORE
 
 # 순열검정 반복 횟수. 0 이면 순열을 돌리지 않는다 (기존 동작).
-N_PERMUTATIONS = getattr(ya_config, "COMMONALITY_PERMUTATIONS", 1000)
+N_PERMUTATIONS = ya_config.COMMONALITY_PERMUTATIONS
 # 층화 경우의 수가 이 이하면 전수 열거한다 — 정확하고 더 빠르다.
 PERM_EXHAUSTIVE_MAX = 10000
 # 고정 시드. 같은 입력이 같은 p 를 내야 테스트도 감사도 성립한다.

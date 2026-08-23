@@ -15,6 +15,45 @@ import ya_config
 from tools import commonality as cm
 
 
+# ------------------------------------------------------------------ 탐색 범위 노브
+
+def test_search_scope_knobs_are_switchable_by_env():
+    """탐색 범위 3종을 .env 로 바꿀 수 있어야 한다.
+
+    예전에는 `getattr(ya_config, "COMMONALITY_TOP_K", 20)` 처럼 읽었는데 config 에
+    그 이름이 **없어서** 항상 기본값으로 떨어졌다. 오타가 나도 조용히 동작하므로
+    아무도 못 알아챘고, .env 에 값을 넣어도 안 먹는 상태가 유지됐다. 지금은 직접
+    참조라 이름이 틀리면 AttributeError 로 즉시 걸린다 - 이 테스트는 그 위에
+    "실제로 env 가 끝까지 흐르는가" 를 잠근다.
+
+    별도 프로세스로 확인하는 이유는 test_eds_search.py 와 같다: `ya_config` 는
+    import 시점에 env 를 읽으므로 이미 import 된 이 세션에서는 반영되지 않는다.
+    """
+    import os
+    import subprocess
+    import sys
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    proc = subprocess.run(
+        [sys.executable, "-c",
+         "from tools import commonality as c; "
+         "print(c.MIN_TARGET, c.TOP_K, c.MIN_SCORE)"],
+        capture_output=True, cwd=root,
+        env={**os.environ, "COMMONALITY_MIN_TARGET": "5",
+             "COMMONALITY_TOP_K": "3", "COMMONALITY_MIN_SCORE": "0.25"})
+
+    assert proc.returncode == 0, proc.stderr.decode("utf-8", "replace")
+    assert proc.stdout.decode().split() == ["5", "3", "0.25"]
+
+
+def test_search_scope_defaults_match_config():
+    """모듈 상수가 config 를 그대로 받는다 - 중간에 다른 기본값이 끼면 안 된다."""
+    assert cm.MIN_TARGET == ya_config.COMMONALITY_MIN_TARGET
+    assert cm.TOP_K == ya_config.COMMONALITY_TOP_K
+    assert cm.MIN_SCORE == ya_config.COMMONALITY_MIN_SCORE
+    assert cm.N_PERMUTATIONS == ya_config.COMMONALITY_PERMUTATIONS
+
+
 # ------------------------------------------------------------------ 픽스처
 
 def _make_db(tmp_path, monkeypatch, yield_rows, history_rows):
