@@ -751,7 +751,7 @@ def test_report_node_appends_evidence_line_for_approved_claim():
         "finalize_status": "confirmed",
         "final_claims": [{"claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH9_B",
                           "score": 1.0, "target_pass": 3, "target_total": 3,
-                          "control_pass": 0, "control_total": 6}],
+                          "control_pass": 0, "control_total": 6, "rank": 1}],
     })
     assert "[근거 1]" in out["report"]
     assert "eqp_ch_commonality:chamber:CC002000:ETCH9_B" in out["report"]
@@ -793,7 +793,7 @@ def test_report_node_appends_evidence_line_regardless_of_client():
             "finalize_status": "confirmed",
             "final_claims": [{"claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH9_B",
                               "score": 1.0, "target_pass": 3, "target_total": 3,
-                              "control_pass": 0, "control_total": 6}],
+                              "control_pass": 0, "control_total": 6, "rank": 1}],
         })
     finally:
         nodes._llm = original
@@ -821,7 +821,7 @@ def test_report_node_passes_the_approved_claim_to_the_report():
 
     approved = {"claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH9_B", "score": 1.0,
                 "target_pass": 3, "target_total": 3,
-                "control_pass": 0, "control_total": 6}
+                "control_pass": 0, "control_total": 6, "rank": 1}
     original = nodes._llm
     nodes._llm = _RecordingClient()
     try:
@@ -903,7 +903,7 @@ def test_report_node_keeps_the_evidence_line_when_the_llm_fails():
     """[근거] 줄은 LLM 산문이 없어도 붙어야 한다 - 코드가 붙이는 이유가 그것이다."""
     claim = {"claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH9_B",
              "score": 1.0, "target_pass": 3, "target_total": 3,
-             "control_pass": 0, "control_total": 6}
+             "control_pass": 0, "control_total": 6, "rank": 1}
     out = _with_failing_llm(lambda: nodes.report_node({
         "target_wafers": ["W2406_02"], "target_source": "manual",
         "target_group": ["W2406_02"], "status_summary": "요약", "findings": [],

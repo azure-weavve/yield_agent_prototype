@@ -184,6 +184,23 @@ class ScriptedMockLLMClient(LLMClient):
                 "챔버까지 좁혔다. 그 스텝의 센서 분포로 '왜' 를 본다.")
 
         sensor = self._result(tool_msgs, "compare_sensor_distribution")
+        if sensor.get("status") == "no_signal":
+            # **봤는데 안 갈렸다.** 아래 "못 봤다" 와 구분해야 한다 - 여기서 0.5 로
+            # 물러서면 게이트가 반드시 반려하는데(< CONFIDENCE_THRESHOLD) 이 스크립트에는
+            # 더 시도할 것이 없어 같은 finalize 를 루프 한계까지 되풀이한다(실측: M2423
+            # 에서 loop 5·6·7 이 동일한 호출이었고 확정될 분석이 inconclusive 로 끝났다).
+            #
+            # 센서가 안 갈렸다는 것은 **관측된 사실**이지 근거의 부재가 아니다. 1단은
+            # 이미 게이트의 승인 조건(claim_id 조회 + 순위 1등)을 넘었으므로 그것으로
+            # 판단하되, 2단이 무엇을 말했는지를 결론 문장에 그대로 남긴다 - "센서를 안
+            # 보고 확정" 하는 조용한 오확증과는 반대다.
+            return self._call(
+                "finalize",
+                {"claim_id": top.claim_id,
+                 "hypothesis": hyp + " - 다만 2단 센서 분포는 두 그룹을 가르지 못했다",
+                 "confidence": 0.85},
+                "1단은 갈렸고 2단은 갈리지 않았다. 1단 근거로 판단하되 그 사실을 결론에 남긴다.")
+
         if sensor.get("status") != "ok":
             # 2단이 갈리지 않았거나(no_signal) 아예 못 돌았다(fetch_failed/insufficient_sample).
             # 1단 근거는 그대로 남기되 확신도를 낮춰 물러선다 — 센서 결과를 안 보고 0.9 를

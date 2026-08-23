@@ -70,6 +70,12 @@ COMMONALITY_PASS_MIN_SCORE = float(os.getenv("COMMONALITY_PASS_MIN_SCORE", "0.5"
 COMMONALITY_PASS_MIN_TARGET = int(os.getenv("COMMONALITY_PASS_MIN_TARGET", "2"))
 COMMONALITY_PERMUTATIONS = int(os.getenv("COMMONALITY_PERMUTATIONS", "1000"))
 
+# 리포트/LLM 프롬프트에 싣는 근거 묶음의 상한. 후보는 도구마다 COMMONALITY_TOP_K
+# 만큼 나올 수 있고 계측 축은 무신호에서도 절반 가까이가 판별선을 넘는다 - 상한이
+# 없으면 근거를 살리려던 변경이 오히려 보고서를 못 읽게 만든다. 잘린 수는 리포트에
+# 그대로 적어 숨기지 않는다.
+REPORT_MAX_EVIDENCE = int(os.getenv("REPORT_MAX_EVIDENCE", "8"))
+
 # 센서(2단): "local" = yield.db 의 sensor_log, "http" = 사내 FDC, "off" = 미연결
 # "off" 는 도구를 아예 **등록하지 않는다**(tools/agent_tools.py). FDC 배선 전에
 # 투입하면 LLM 이 2단을 부르고 매번 실패해 루프만 태우는데, 실패 메시지는

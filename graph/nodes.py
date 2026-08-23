@@ -258,8 +258,12 @@ def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) ->
         update["final_confidence"] = conf
         # **통과 후보를 전부 싣는다.** LLM 이 고른 것만 남기면 나머지 축의 근거가
         # 여기서 사라진다 - 그게 예전 계약의 결함이었다.
-        update["final_claims"] = evidence.groups_to_dicts(groups, picked)
-        head = evidence.format_group_line(update["final_claims"][0])
+        _record_evidence(update, groups, picked)
+        # 머리말은 **LLM 이 지목한 묶음**으로 쓴다. 1등이 여럿일 때 groups[0] 을 쓰면
+        # "승인" 이라면서 제출한 것과 다른 claim 의 수치를 보여 주게 되고, LLM 이
+        # 산문에서 엉뚱한 claim 을 인용하게 된다.
+        head = evidence.format_group_line(
+            next(c for c in update["final_claims"] if c.get("picked_by_llm")))
         more = (f" 그 밖에 {len(groups) - 1}개 근거를 함께 싣는다."
                 if len(groups) > 1 else "")
         return f"승인 (근거 확인): {head}.{more} 리포팅으로 진행한다."
@@ -272,6 +276,7 @@ def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) ->
         update["finalize_status"] = "no_signal"
         update["final_hypothesis"] = hypothesis
         update["final_confidence"] = conf
+        _record_evidence(update, groups, picked)
         return ("신호 없음 (등록 가설 전부 대조 완료, 분리되는 후보 없음): "
                 "lot 내부 대조로는 원인을 좁힐 수 없다. 리포팅으로 진행한다.")
 
@@ -285,6 +290,7 @@ def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) ->
         update["finalize_status"] = "no_comparable_data"
         update["final_hypothesis"] = hypothesis
         update["final_confidence"] = conf
+        _record_evidence(update, groups, picked)
         return (f"비교 가능한 데이터 없음 ({', '.join(sorted(ran_statuses))}): "
                 f"대조에 쓸 짝이 없어 계산이 성립하지 않는다. 리포팅으로 진행한다.")
 
@@ -294,10 +300,41 @@ def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) ->
         update["finalize_status"] = "inconclusive"
         update["final_hypothesis"] = hypothesis
         update["final_confidence"] = conf
+        _record_evidence(update, groups, picked)
         return "미확정 (루프 한계 도달): 확정 근거 없이 리포팅으로 진행한다."
 
     # (5) 반려
     return _gate_rejection(claim_id, claim, bundle, unrun, conf, conf_note, groups)
+
+
+def _record_evidence(update: dict, groups, picked) -> None:
+    """판별선을 넘은 근거를 상태에 싣는다. **모든 종료 경로에서 부른다.**
+
+    예전에는 승인(confirmed) 경로에서만 실었다. 그런데 루프 한계로 끝나는
+    inconclusive 는 "확정은 못 했지만 판별선을 넘은 후보는 있다" 는 상태라,
+    거기서 목록을 버리면 **가장 도움이 필요한 보고서에서 근거가 전부 사라진다**
+    (다축 fixture M2423 이 실제로 그렇게 끝났다: 통과 후보 3개, 리포트 근거 0줄).
+    no_signal·no_comparable_data 는 정의상 통과 후보가 없어 빈 목록이 되지만,
+    "왜 비었는가" 를 경로마다 다시 따지지 않도록 같은 함수를 탄다.
+
+    상한을 두는 이유: 후보는 도구마다 `COMMONALITY_TOP_K` 만큼 나올 수 있고
+    계측 축은 무신호에서도 절반 가까이가 판별선을 넘는다. 상한이 없으면 리포트와
+    운영 LLM 프롬프트에 근거 블록이 수십 개 쏟아져, 근거를 살리려던 변경이
+    보고서를 오히려 못 읽게 만든다. 잘린 수는 마지막 항목에 남겨 숨기지 않는다.
+    """
+    limit = ya_config.REPORT_MAX_EVIDENCE
+    dicts = evidence.groups_to_dicts(groups, picked)
+    if len(dicts) > limit:
+        kept = dicts[:limit]
+        if picked is not None and not any(d.get("picked_by_llm") for d in kept):
+            # **지목한 묶음은 잘라 내지 않는다.** 1등이 동점으로 여럿일 때 LLM 이
+            # 정렬상 뒤쪽을 지목하면 그것이 상한 밖으로 밀려날 수 있는데, 그러면
+            # 리포트에 서술의 축이 없어지고 승인 문구가 참조할 대상도 사라진다.
+            kept = kept[:limit - 1] + [d for d in dicts if d.get("picked_by_llm")]
+        dicts, hidden = kept, len(dicts) - len(kept)
+        if hidden:
+            dicts[-1]["more_below"] = hidden
+    update["final_claims"] = dicts
 
 
 def _confidence(raw) -> tuple[float, str]:
@@ -391,7 +428,13 @@ def report_node(state: dict) -> dict:
     # 근거가 리포트에서 사라지지 않게 하려는 것이 이 기능의 목적이다.
     # 여러 줄인 이유: 축이 여럿이면 근거도 여럿이고, 그중 하나만 남기던 것이
     # 고치려던 문제다. 순서는 코드가 매긴 순위이며 LLM 이 고른 것은 표시된다.
-    for i, group in enumerate(claims, start=1):
+    for group in claims:
         mark = " ←서술 기준" if group.get("picked_by_llm") else ""
-        report += f"\n[근거 {i}]{mark} {evidence.format_group_line(group)}"
+        # 번호는 위치가 아니라 **등수**다. 동점이 1·2 로 찍히면 앞선 것이 더 강해
+        # 보이는데, 그 오독을 막으려고 등수를 따로 계산해 둔 것이다.
+        report += (f"\n[근거 {group.get('rank', '?')}]{mark} "
+                   f"{evidence.format_group_line(group)}")
+        if group.get("more_below"):
+            report += (f"\n[근거 ...] 순위 밖 {group['more_below']}건은 생략했다 "
+                       f"(전체는 분석 과정 기록에 있다)")
     return {"report": report}

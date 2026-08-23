@@ -370,3 +370,39 @@ def test_operational_client_works_without_claims():
         target_wafers=["W1"], target_source="manual", target_group=["W1"],
         status_summary="s", findings=[], hypothesis=None, confidence=0.2,
         finalize_status="no_signal", claims=[]) == "산문 리포트"
+
+
+def test_sensor_no_signal_is_not_treated_like_a_missing_sensor():
+    """"봤는데 안 갈렸다" 와 "못 봤다" 를 구분한다 - 안 하면 라이브락이다.
+
+    둘 다 0.5 로 물러서면 게이트가 반드시 반려하는데(< CONFIDENCE_THRESHOLD) 이
+    스크립트에는 더 시도할 것이 없어 **같은 finalize 를 루프 한계까지 되풀이한다.**
+    확정될 분석이 inconclusive 로 끝나고 바퀴 두세 개가 버려진다.
+
+    센서가 안 갈렸다는 것은 관측된 사실이지 근거의 부재가 아니다. 1단 근거로
+    판단하되 2단이 무엇을 말했는지를 결론에 남긴다. `fetch_failed`(못 봤다)는
+    기존 계약대로 확정하지 않는다 - tests/test_e2e.py 가 그쪽을 지킨다.
+    """
+    llm = ScriptedMockLLMClient()
+    msgs = [HUMAN]
+    msgs += [llm.analyze_step(msgs), _tm("finalize", "반려")]
+    msgs += [llm.analyze_step(msgs), _tm("hyp_eqp_ch_commonality", {
+        "hypothesis_id": "eqp_ch_commonality", "status": "ok", "candidates": [
+            {"level": "chamber", "key": "ETCH9_B", "value": ["Etch", "ETCH9_B"],
+             "claim_id": "eqp_ch_commonality:chamber:Etch:ETCH9_B",
+             "step_seq": "Etch", "score": 1.0, "target_pass": 3, "passes": True}]})]
+    msgs += [llm.analyze_step(msgs), _tm("hyp_ppid_commonality", {
+        "hypothesis_id": "ppid_commonality", "status": "no_signal", "candidates": []})]
+    msgs += [llm.analyze_step(msgs), _tm("compare_sensor_distribution",
+                                         {"status": "no_signal", "candidates": []})]
+
+    ai = llm.analyze_step(msgs)
+    args = ai.tool_calls[0]["args"]
+    assert ai.tool_calls[0]["name"] == "finalize"
+    assert args["confidence"] >= 0.8          # 게이트가 받을 수 있어야 반복이 멈춘다
+    assert args["claim_id"] == "eqp_ch_commonality:chamber:Etch:ETCH9_B"
+    # 2단이 무엇을 말했는지가 결론에 남는다 (조용히 생략하지 않는다)
+    assert "가르지 못했다" in args["hypothesis"]
+
+    # 같은 상태를 다시 물어도 같은 답이다 - 반복이 아니라 종료다
+    assert llm.analyze_step(msgs).tool_calls[0]["args"] == args

@@ -253,7 +253,10 @@ def test_both_axes_survive_the_gate_and_reach_the_report():
         "finalize_status": "confirmed", "final_claims": claims,
     })["report"]
 
-    assert "[근거 1]" in report and "[근거 2]" in report
+    # 번호는 위치가 아니라 **등수**다. 이 lot 은 두 근거가 동점이므로 **둘 다**
+    # `[근거 1]` 로 찍혀야 한다 - 1·2 로 찍히면 앞선 것이 더 강해 보인다.
+    assert report.count("[근거 1]") == 2
+    assert "[근거 2]" not in report
     # 두 축의 이름이 모두 리포트에 남는다
     assert f"{MULTI_TRUTH_EQP}_{MULTI_TRUTH_CH}" in report
     assert MULTI_TRUTH_PPID in report

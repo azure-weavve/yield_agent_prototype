@@ -128,8 +128,15 @@ class Bundle:
         buckets: dict = {}
         for claim in self.passing():
             # 목록이 없으면 claim_id 로 스스로만의 버킷을 만든다 (접기 대상 아님)
-            key = (frozenset(claim.target_wafers) if claim.target_wafers
-                   else ("__unfoldable__", claim.claim_id))
+            if not claim.target_wafers:
+                key = ("__unfoldable__", claim.claim_id)
+            else:
+                # **대조군까지 같아야 접는다.** 타깃만 보면 "타깃 3장 · 반례 0건" 과
+                # "타깃 3장 · 반례 3건" 이 한 근거로 접히고, 그러면 리포트가
+                # "구분되지 않는다" 고 말하면서 바로 옆에 구분되는 수치를 찍는다.
+                # 반례가 있고 없고는 2x2 가 실제로 가르는 것이라, 그 차이가 남아
+                # 있으면 두 후보는 같은 사실이 아니다.
+                key = (frozenset(claim.target_wafers), frozenset(claim.control_wafers))
             buckets.setdefault(key, []).append(claim)
 
         groups = [ClaimGroup(claims=tuple(sorted(cs, key=_sort_key)))

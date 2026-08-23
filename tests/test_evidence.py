@@ -271,3 +271,98 @@ def test_axis_specific_fields_survive_in_extra():
     assert claim.extra["coverage_target"] == 1.0
     # 1급 필드는 extra 로 중복되지 않는다
     assert "score" not in claim.extra and "target_wafers" not in claim.extra
+
+
+def test_same_targets_but_different_counterexamples_do_not_fold():
+    """반례가 다르면 접지 않는다 - 2x2 가 실제로 가르는 차이다.
+
+    타깃만 보고 접으면 "타깃 3장 · 대조군 반례 0건" 과 "타깃 3장 · 반례 3건" 이
+    한 근거가 되고, 리포트가 **"구분되지 않는다" 고 말하면서 바로 옆에 구분되는
+    수치를 찍는다.** 접기의 뜻은 "같은 사실의 두 이름" 인데 이건 다른 사실이다.
+    """
+    a = _cand("a:1", "CH_B", 1.0, 0.02, ["W1", "W2", "W3"])
+    b = _cand("b:1", "PPID_X", 0.5, 0.40, ["W1", "W2", "W3"], level="ppid")
+    b["control_wafers"] = ["C1", "C2", "C3"]      # 반례 3건
+    b["control_pass"] = 3
+
+    groups = evidence.build_bundle([_finding("hyp_a", "a", "ok", [a]),
+                                    _finding("hyp_b", "b", "ok", [b])]).ranked_groups()
+    assert len(groups) == 2
+    assert not any(g.confounded for g in groups)
+    # 반례 없는 쪽이 앞선다 (p 가 작다)
+    assert groups[0].lead.key == "CH_B"
+
+
+def test_same_targets_and_same_counterexamples_still_fold():
+    """반례까지 같으면 접는다 - 교락의 정의 그대로다 (설비 롤업 ~ 챔버)."""
+    a = _cand("a:1", "ETCH9", 0.8, 0.02, ["W1", "W2", "W3"], level="equipment")
+    b = _cand("b:1", "ETCH9_B", 0.8, 0.02, ["W1", "W2", "W3"])
+    for c in (a, b):
+        c["control_wafers"] = ["C1"]
+        c["control_pass"] = 1
+
+    groups = evidence.build_bundle([_finding("hyp_a", "a", "ok", [a]),
+                                    _finding("hyp_b", "b", "ok", [b])]).ranked_groups()
+    assert len(groups) == 1 and groups[0].confounded
+
+
+def test_evidence_list_is_capped_and_says_how_many_were_hidden(monkeypatch):
+    """근거 목록에 상한이 있고, 잘린 수를 숨기지 않는다.
+
+    후보는 도구마다 `COMMONALITY_TOP_K` 만큼 나올 수 있고 계측 축은 무신호에서도
+    절반 가까이가 판별선을 넘는다. 상한이 없으면 근거를 살리려던 변경이 리포트와
+    운영 LLM 프롬프트를 수십 블록으로 채워 오히려 못 읽게 만든다.
+    """
+    import ya_config
+    from graph import nodes
+
+    monkeypatch.setattr(ya_config, "REPORT_MAX_EVIDENCE", 2)
+    findings = [
+        _finding(f"hyp_{i}", f"h{i}", "ok",
+                 [_cand(f"{i}:1", f"K{i}", 0.9 - i / 100, 0.01 + i / 100, [f"W{i}"])])
+        for i in range(5)
+    ]
+    bundle = evidence.build_bundle(findings)
+    update = {}
+    nodes._record_evidence(update, bundle.ranked_groups(), None)
+
+    assert len(update["final_claims"]) == 2
+    assert update["final_claims"][-1]["more_below"] == 3
+    # 잘렸다는 사실이 리포트에 나온다
+    report = nodes.report_node({
+        "target_wafers": ["W0"], "target_source": "manual", "target_group": ["W0"],
+        "status_summary": "s", "findings": [], "final_hypothesis": "h",
+        "final_confidence": 0.9, "finalize_status": "confirmed",
+        "final_claims": update["final_claims"],
+    })["report"]
+    assert "순위 밖 3건은 생략" in report
+
+
+def test_the_picked_group_is_never_truncated_away(monkeypatch):
+    """상한을 넘겨도 **LLM 이 지목한 묶음**은 남는다.
+
+    1등이 동점으로 여럿일 때 LLM 이 정렬상 뒤쪽을 지목하면 상한 밖으로 밀려날 수
+    있다. 그러면 리포트에 서술의 축이 없어지고, 승인 문구가 참조할 대상도 사라져
+    게이트가 StopIteration 으로 죽는다(상한을 넣으면서 실제로 그렇게 됐다).
+    """
+    import ya_config
+    from graph import nodes
+
+    monkeypatch.setattr(ya_config, "REPORT_MAX_EVIDENCE", 2)
+    findings = [
+        _finding(f"hyp_{i}", f"h{i}", "ok",
+                 [_cand(f"z{i}:1", f"K{i}", 0.9, 0.01, [f"W{i}"])])   # 전부 동점
+        for i in range(5)
+    ]
+    groups = evidence.build_bundle(findings).ranked_groups()
+    assert len({g.rank_key for g in groups}) == 1, "이 fixture 는 전부 동점이어야 한다"
+
+    last = groups[-1]                       # 정렬상 맨 뒤 = 상한 밖
+    update = {}
+    nodes._record_evidence(update, groups, last)
+
+    claims = update["final_claims"]
+    assert len(claims) == 2
+    assert sum(1 for c in claims if c["picked_by_llm"]) == 1
+    assert claims[-1]["claim_id"] == last.lead.claim_id
+    assert claims[-1]["more_below"] == 3
