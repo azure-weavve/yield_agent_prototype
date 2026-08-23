@@ -707,3 +707,44 @@ def test_a_where_clause_that_filters_everything_raises_instead_of_reporting_no_s
              "where": {"subitem_id": "AVERAGE"}}]        # AVG 오타
     with pytest.raises(ValueError, match="전부"):
         _prepare(targets, controls, typo)
+
+
+def test_candidates_carry_the_wafer_sets_they_point_at():
+    """계측 후보도 자기가 가리키는 wafer 를 싣고 온다.
+
+    다른 축은 집계 중에 마스크가 공짜로 나오지만 여기는 분할점 탐색이 순열 경로라
+    그 안에서 모을 수 없다. 그래서 top_k 로 자른 뒤 행을 한 번 더 훑는데, 그때
+    `_sweep` 과 **같은 부등호**를 써야 카운트와 목록이 어긋나지 않는다 - 이 테스트가
+    그 일치를 잠근다. ge 는 "split 이상", le 는 "split 이하" 다.
+    """
+    targets, controls = _metro_groups()
+    res = mc.find_metro_commonality(targets, controls, legend=mc.METRO_LEGEND)
+
+    assert res["candidates"], "이 fixture 는 후보를 내야 한다"
+    for c in res["candidates"]:
+        assert len(c["target_wafers"]) == c["target_pass"], c["key"]
+        assert len(c["control_wafers"]) == c["control_pass"], c["key"]
+        # 목록은 실제로 그 그룹 소속이어야 한다 (분모 밖 wafer 가 새면 안 된다)
+        assert set(c["target_wafers"]) <= set(targets), c["key"]
+        assert set(c["control_wafers"]) <= set(controls), c["key"]
+
+
+def test_split_masks_follows_the_same_inequality_as_the_sweep():
+    """되짚기가 `_sweep` 과 같은 경계를 쓴다 — 경계값 wafer 가 한쪽으로만 간다.
+
+    ge 의 split 은 그 값을 **포함**하고, le 의 split 도 그 값을 **포함**한다.
+    한쪽이라도 부등호가 엇갈리면 경계에 정확히 놓인 wafer 가 목록에서 빠지거나
+    두 번 세어져, target_pass 와 길이가 어긋난다.
+    """
+    rows = [(10.0, 0b0001), (9.0, 0b0010), (8.0, 0b0100), (7.0, 0b1000)]
+    t_valid = c_valid = 0b1111
+
+    t_ge, _ = mc._split_masks(rows, 9.0, "ge", t_valid, c_valid)
+    assert t_ge == 0b0011                      # 10.0 과 9.0 (9.0 포함)
+
+    t_le, _ = mc._split_masks(rows, 9.0, "le", t_valid, c_valid)
+    assert t_le == 0b1110                      # 9.0, 8.0, 7.0 (9.0 포함)
+
+    # 두 방향의 합집합이 전체보다 크다 = 경계값이 양쪽에 다 든다. 이는 정상이다 -
+    # ge 후보와 le 후보는 서로 여집합이 아니라 각자 최적 분할점을 따로 고른다.
+    assert t_ge | t_le == 0b1111

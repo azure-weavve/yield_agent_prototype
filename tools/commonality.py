@@ -230,13 +230,21 @@ def _build_index(rows, bits: dict[str, int], legend) -> tuple[dict, dict, int, d
     return passed, answer, seen, colmap
 
 
-def _aggregate(strata_masks, passed, answer, seen, universal) -> tuple[dict, list]:
+def _aggregate(strata_masks, passed, answer, seen, universal,
+               collect_bits: bool = False) -> tuple[dict, list]:
     """라벨(stratum 별 타깃·대조군 마스크)에서 후보별 2x2 카운트를 낸다 — 순수 함수.
 
     strata_masks = [(root_lot_id, t_mask, c_mask), ...]
 
     **실제 데이터와 순열 귀무가 이 함수 하나를 같이 탄다.** 귀무를 다른 코드로 세면
     분모 규칙·절단·stratum 스킵이 갈려, 실제와 다른 것을 재게 된다(설계 §1-4).
+
+    `collect_bits` 는 **출력만 늘린다.** 켜면 후보가 가리키는 wafer 마스크를 카운트와
+    같은 누적에서 함께 모은다. 귀무는 점수만 읽고 목록은 버리므로 기본은 꺼 두는데,
+    켠 채로 순열을 돌리면 실측 +22% 였다(2026-08-23, 타깃 5/대조군 92).
+    ⚠️ 이 플래그가 a/b/c/d 나 stratum 스킵에 영향을 주게 만들면 안 된다 — 그 순간
+    위 문단이 거짓이 되고 귀무가 실제와 다른 것을 재기 시작한다.
+    tests/test_commonality.py 가 두 값이 플래그와 무관함을 단언으로 지킨다.
     """
     agg: dict[tuple, dict] = {}
     strata_report = []
@@ -271,6 +279,13 @@ def _aggregate(strata_masks, passed, answer, seen, universal) -> tuple[dict, lis
             e["c"] += c_
             e["d"] += nc - c_
             e["strata"] += 1
+            # 출력만 늘린다 — 위 다섯 줄에 영향이 없다. 키를 기본 dict 에 넣지 않고
+            # 여기서만 만드는 이유는 귀무 경로의 dict 크기를 원래대로 두기 위해서다
+            # (넣었더니 순열 비용이 붙었다). 마스크도 여기서 다시 잡는다 — 관측은
+            # 한 번뿐이라 재계산이 싸고, 귀무 경로에는 분기 하나만 남는다.
+            if collect_bits:
+                e["a_bits"] = e.get("a_bits", 0) | (p_bits & t_mask)
+                e["c_bits"] = e.get("c_bits", 0) | (p_bits & c_mask)
     return agg, strata_report
 
 
@@ -552,7 +567,8 @@ def find_commonality(target_wafers: list[str], control_wafers: list[str],
             c_mask |= bits[w]
         strata_masks.append((rl, t_mask, c_mask))
 
-    agg, strata_report = _aggregate(strata_masks, passed, answer, seen_bits, universal)
+    agg, strata_report = _aggregate(strata_masks, passed, answer, seen_bits, universal,
+                                    collect_bits=True)   # 관측만 — 귀무는 목록을 안 쓴다
 
     # 이력이 아예 없는 wafer 는 신호가 아니라 보고 대상이다. stratum 이 스킵돼도
     # 집계와 무관하게 세야 하므로 _aggregate 밖에 둔다.
@@ -603,6 +619,12 @@ def find_commonality(target_wafers: list[str], control_wafers: list[str],
             "coverage_control": round(cov_c, 3),
             "score": round(score, 3),
             "n_strata": e["strata"],
+            # **이 후보가 가리키는 실제 wafer.** 카운트만 있으면 두 후보가 같은
+            # 3장을 말하는지 다른 3장을 말하는지 코드가 구분할 수 없다 - 축이
+            # 여럿일 때 한 사실의 두 이름(교락)과 독립 근거 둘이 같아 보인다.
+            # 길이는 정의상 target_pass·control_pass 와 같다(같은 누적에서 나온다).
+            "target_wafers": _names(e.get("a_bits", 0), bits),
+            "control_wafers": _names(e.get("c_bits", 0), bits),
         }
         if perm:
             cand["p_permutation"] = round(perm["p"][key], 4)

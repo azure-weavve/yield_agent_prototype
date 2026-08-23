@@ -29,6 +29,12 @@ class Claim:
     control_total: int
     p_permutation: float | None = None
     p_min_possible: float | None = None    # 이 표본이 낼 수 있는 최소 p (바닥값)
+    # 이 후보가 가리키는 실제 wafer. 카운트만 담으면 두 후보가 **같은 3장**을 말하는지
+    # **다른 3장**을 말하는지 게이트가 구분할 수 없다 - 축이 여럿일 때 한 사실의 두
+    # 이름(교락)과 독립 근거 둘이 똑같아 보인다. 축 무관 필드라 1급으로 둔다
+    # (metro 의 split_value 처럼 축마다 있고 없는 것과 다르다).
+    target_wafers: tuple[str, ...] = ()
+    control_wafers: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -111,5 +117,9 @@ def build_bundle(findings: list[dict]) -> Bundle:
                 control_total=int(c.get("control_total") or 0),
                 p_permutation=c.get("p_permutation"),
                 p_min_possible=c.get("p_min_possible"),
+                # frozen dataclass 라 tuple 로 받는다. 도구가 아직 안 싣는 경우
+                # (센서 등 다른 형태의 결과)에도 빈 튜플로 안전하게 떨어진다.
+                target_wafers=tuple(c.get("target_wafers") or ()),
+                control_wafers=tuple(c.get("control_wafers") or ()),
             )
     return Bundle(claims=claims, statuses=statuses, ran=ran)

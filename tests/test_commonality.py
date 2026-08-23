@@ -46,6 +46,50 @@ def test_search_scope_knobs_are_switchable_by_env():
     assert proc.stdout.decode().split() == ["5", "3", "0.25"]
 
 
+def test_collect_bits_changes_outputs_only_never_the_counts():
+    """wafer 목록 누적 플래그가 2x2 카운트를 건드리면 안 된다.
+
+    이 플래그는 순열 경로의 비용(실측 +22%)을 피하려고 둔 것이라, 관측은 켜고
+    귀무는 끈 채로 돈다. 그래서 **켜고 끈 결과의 a/b/c/d 가 정확히 같아야** 한다 -
+    다르면 귀무가 실제와 다른 것을 재게 되고, 순열 p 가 조용히 뜻을 잃는다.
+    """
+    from data.generate_dummy import MULTI_CONTROLS, MULTI_TARGETS
+
+    targets = sorted(MULTI_TARGETS)
+    controls = sorted(MULTI_CONTROLS)
+    wafers_all = targets + controls
+    bits = {w: 1 << i for i, w in enumerate(wafers_all)}
+    legend = [{"level": "chamber", "columns": ["eqp_id", "ch_id"]}]
+
+    with cm._conn() as conn:
+        rows = cm._history(conn, wafers_all, legend)
+    passed, answer, seen, _colmap = cm._build_index(rows, bits, legend)
+    t_mask = 0
+    for w in targets:
+        t_mask |= bits[w]
+    c_mask = 0
+    for w in controls:
+        c_mask |= bits[w]
+    masks = [("M2423", t_mask, c_mask)]
+
+    off, rep_off = cm._aggregate(masks, passed, answer, seen, set())
+    on, rep_on = cm._aggregate(masks, passed, answer, seen, set(), collect_bits=True)
+
+    assert rep_off == rep_on
+    assert set(off) == set(on)
+    counts = ("a", "b", "c", "d", "strata")
+    for key in off:
+        assert {k: off[key][k] for k in counts} == {k: on[key][k] for k in counts}, key
+
+    # 그리고 켠 쪽만 목록 재료를 들고 있다 — 길이는 카운트와 같다.
+    assert cm._score_map(off) == cm._score_map(on)
+    for key, e in on.items():
+        assert e["a_bits"].bit_count() == e["a"]
+        assert e["c_bits"].bit_count() == e["c"]
+    # 끈 쪽은 키 자체가 없다 — 귀무 경로의 dict 를 원래 크기로 두려는 의도적 형태다.
+    assert all("a_bits" not in e and "c_bits" not in e for e in off.values())
+
+
 def test_search_scope_defaults_match_config():
     """모듈 상수가 config 를 그대로 받는다 - 중간에 다른 기본값이 끼면 안 된다."""
     assert cm.MIN_TARGET == ya_config.COMMONALITY_MIN_TARGET

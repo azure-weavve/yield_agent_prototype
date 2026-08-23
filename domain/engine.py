@@ -63,6 +63,11 @@ def evaluate(spec: dict, group_ids: list[str], control_ids: list[str]) -> dict:
             "control_pass": cand["control_pass"], "control_total": cand["control_total"],
             "coverage_target": cand["coverage_target"],
             "coverage_control": cand["coverage_control"],
+            # 이 후보가 가리키는 실제 wafer. 카운트만으로는 두 후보가 같은 wafer 를
+            # 말하는지(교락) 다른 wafer 를 말하는지(독립 근거) 구분할 수 없다 —
+            # 축이 여럿일 때 그 둘이 게이트에게 똑같아 보이는 것이 문제였다.
+            "target_wafers": cand["target_wafers"],
+            "control_wafers": cand["control_wafers"],
             # 게이트는 이 값을 **판정에 쓰지 않는다**(_passes 참조). 리포트와 감사
             # 기록에 흐르게 하는 것이 목적이다 - 자동 차단은 실데이터를 본 뒤에 얹는다.
             "p_permutation": cand.get("p_permutation"),

@@ -35,11 +35,11 @@ def _passing_candidates():
     return out
 
 
-def _target_wafers(cand):
-    """후보가 가리키는 타깃 wafer 를 step_history 에서 되짚는다.
+def _target_wafers_from_db(cand):
+    """후보가 가리키는 타깃 wafer 를 step_history 에서 **독립적으로** 되짚는다.
 
-    도구가 아직 이 집합을 실어 보내지 않으므로(그것이 다음 작업이다) 테스트가
-    직접 되짚는다. 도구가 싣기 시작하면 이 함수는 그 필드와 대조하는 자리가 된다.
+    도구가 싣어 보내는 `target_wafers` 를 그대로 믿고 검사하면 동어반복이 된다.
+    여기서는 원천 테이블에서 따로 세어, 도구가 실은 값과 대조하는 데 쓴다.
     """
     ph = ",".join("?" * len(MULTI_TARGETS))
     with sqlite3.connect(ya_config.DB_PATH) as conn:
@@ -116,7 +116,7 @@ def test_fixture_has_both_a_foldable_and_an_unfoldable_pair():
     cands = _passing_candidates()
     jaccards = []
     for a, b in itertools.combinations(cands, 2):
-        wa, wb = _target_wafers(a), _target_wafers(b)
+        wa, wb = _target_wafers_from_db(a), _target_wafers_from_db(b)
         jaccards.append(len(wa & wb) / len(wa | wb))
 
     assert 1.0 in jaccards, "설비 롤업과 챔버가 같은 wafer 를 가리켜야 한다"
@@ -124,8 +124,56 @@ def test_fixture_has_both_a_foldable_and_an_unfoldable_pair():
 
     ch = next(c for c in cands if c["level"] == "chamber")
     ppid = next(c for c in cands if c["level"] == "ppid")
-    assert _target_wafers(ch) == set(MULTI_TRUTH_CH_WAFERS)
-    assert _target_wafers(ppid) == set(MULTI_TRUTH_PPID_WAFERS)
+    assert _target_wafers_from_db(ch) == set(MULTI_TRUTH_CH_WAFERS)
+    assert _target_wafers_from_db(ppid) == set(MULTI_TRUTH_PPID_WAFERS)
+
+
+def test_candidates_carry_the_wafer_sets_they_point_at():
+    """후보가 **자기가 가리키는 wafer 를 싣고 온다** — 교락을 코드가 잡을 재료다.
+
+    카운트만 있으면 "타깃 4/6" 두 개가 같은 4장인지 다른 4장인지 알 수 없다.
+    여기서는 도구가 실은 목록을 step_history 에서 따로 센 것과 대조한다 -
+    도구가 준 값끼리만 비교하면 동어반복이라 아무것도 안 지킨다.
+    """
+    for c in _passing_candidates():
+        assert set(c["target_wafers"]) == _target_wafers_from_db(c), c["claim_id"]
+        # 길이는 카운트와 정의상 같아야 한다. 어긋나면 집계와 목록이 다른 규칙으로
+        # 세어진 것이고, 그 순간 겹침 계산이 조용히 틀어진다.
+        assert len(c["target_wafers"]) == c["target_pass"]
+        assert len(c["control_wafers"]) == c["control_pass"]
+        assert c["control_wafers"] == []          # 이 lot 은 대조군이 안 거친다
+
+
+def test_wafer_sets_reach_the_gate_layer():
+    """게이트가 읽는 Claim 까지 목록이 살아서 간다.
+
+    엔진이 실어도 `graph/evidence.py` 의 Claim 이 안 받으면 코드 게이트는 못 본다 -
+    coverage_target 이나 split_value 가 지금 그렇게 잘려 나가고 있다. 축 무관 필드인
+    wafer 집합은 1급으로 받아야 접기 규칙을 게이트에서 쓸 수 있다.
+    """
+    from graph import evidence
+
+    findings = [{"loop": 1, "tool": f"hyp_{spec['id']}", "args": {},
+                 "result": engine.evaluate(spec, MULTI_TARGETS, MULTI_CONTROLS),
+                 "thought": ""}
+                for spec in registry.load_hypotheses()]
+    bundle = evidence.build_bundle(findings)
+
+    passing = bundle.passing()
+    assert len(passing) == 3
+    for claim in passing:
+        assert claim.target_wafers, claim.claim_id
+        assert len(claim.target_wafers) == claim.target_pass
+
+    by_key = {c.key: c for c in passing}
+    assert set(by_key[MULTI_TRUTH_PPID].target_wafers) == set(MULTI_TRUTH_PPID_WAFERS)
+    chamber = by_key[f"{MULTI_TRUTH_EQP}_{MULTI_TRUTH_CH}"]
+    assert set(chamber.target_wafers) == set(MULTI_TRUTH_CH_WAFERS)
+
+    # 그리고 이것이 요점이다: 게이트가 이제 **교락과 독립 근거를 구분할 수 있다.**
+    rollup = by_key[MULTI_TRUTH_EQP]
+    assert set(rollup.target_wafers) == set(chamber.target_wafers)          # 교락
+    assert set(chamber.target_wafers) != set(by_key[MULTI_TRUTH_PPID].target_wafers)
 
 
 def test_current_contract_drops_evidence():

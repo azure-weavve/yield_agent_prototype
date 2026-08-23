@@ -358,8 +358,29 @@ def _aggregate_metro(strata_masks, combos, answer, seen) -> tuple[dict, list]:
             agg[(*key, direction)] = {
                 "score": score, "split": split, "a": a, "c": c,
                 "nt": nt, "nc": nc, "strata": n_strata,
+                # 분모에 든 wafer 마스크. 방향과 무관하게 조합당 한 번 잡히므로
+                # 여기 실어 두면 최종 후보의 wafer 목록을 **순열 경로 밖에서**
+                # 되짚을 수 있다 (_split_masks). 순열은 score 만 읽고 버린다.
+                "t_valid": t_valid, "c_valid": c_valid,
             }
     return agg, strata_report
+
+
+def _split_masks(rows, split, direction, t_valid, c_valid) -> tuple[int, int]:
+    """분할점 한쪽에 든 wafer 마스크. **최종 후보에만 부른다 (순열 경로 밖).**
+
+    `_sweep` 이 훑으면서 마스크까지 모으게 하면 순열 회차마다 같은 비용이 붙는다.
+    귀무는 점수만 쓰므로 그건 통째로 낭비다 - top_k 로 자른 뒤 후보 수십 개에
+    대해서만 행을 한 번 더 훑는 편이 싸다.
+
+    `_sweep` 과 같은 부등호를 써야 카운트(a·c)와 목록 길이가 어긋나지 않는다:
+    ge 는 "split 이상", le 는 "split 이하" 다.
+    """
+    m = 0
+    for v, b in rows:
+        if (v >= split) if direction == "ge" else (v <= split):
+            m |= b
+    return m & t_valid, m & c_valid
 
 
 def _permutation_stats_metro(strata_masks, combos, answer, seen,
@@ -485,6 +506,7 @@ def find_metro_commonality(target_wafers: list[str], control_wafers: list[str],
             "coverage_control": round(e["c"] / e["nc"], 3),
             "score": round(e["score"], 3),
             "n_strata": e["strata"],
+            "_key": key,          # 아래에서 wafer 목록을 되짚을 때만 쓰고 지운다
         }
         if perm:
             cand["p_permutation"] = round(perm["p"][key], 4)
@@ -496,6 +518,17 @@ def find_metro_commonality(target_wafers: list[str], control_wafers: list[str],
                                    -r["target_pass"], r["step_seq"], r["key"]))
     truncated = max(0, len(candidates) - top_k)
     candidates = candidates[:top_k]
+
+    # **이 후보가 가리키는 실제 wafer.** 자른 뒤에 채운다 - 버릴 후보까지 행을
+    # 다시 훑을 이유가 없다. 다른 축(commonality)은 집계 중에 마스크가 공짜로
+    # 나오지만 여기는 분할점 탐색이 순열 경로라 그 안에서 모을 수 없다.
+    for cand in candidates:
+        key = cand.pop("_key")
+        e = agg[key]
+        t_bits, c_bits = _split_masks(combos[key[:3]], e["split"], key[3],
+                                      e["t_valid"], e["c_valid"])
+        cand["target_wafers"] = _names(t_bits, bits)
+        cand["control_wafers"] = _names(c_bits, bits)
 
     def _lt(wafers):
         dist: dict[str, int] = {}

@@ -86,7 +86,8 @@ def test_evaluate_passes_requires_status_ok(fx_db, monkeypatch):
         "candidates": [{"level": "chamber", "step_seq": "Etch", "key": "ETCH9_B",
                         "score": 1.0, "target_pass": 3, "target_total": 3,
                         "control_pass": 0, "control_total": 3,
-                        "coverage_target": 1.0, "coverage_control": 0.0}],
+                        "coverage_target": 1.0, "coverage_control": 0.0,
+                        "target_wafers": ["G1", "G2", "G3"], "control_wafers": []}],
         "meta": None, "note": None,
     })
     res = engine.evaluate({"id": "eqp_ch", "legend": EQP_CH}, ["G1", "G2", "G3"], ["C1", "C2", "C3"])
