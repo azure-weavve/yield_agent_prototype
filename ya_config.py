@@ -48,7 +48,10 @@ LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "2"))
 # 선언하므로, 최소한 (가설 수 + 첫 finalize 시도 + 마지막 finalize) 만큼은 있어야
 # 한다. 모자라면 no_signal 케이스가 루프 소진(inconclusive)으로 끝나 사유가 틀린
 # 보고가 된다. 가설 4개인 지금은 6 이 딱 맞아떨어져 여유가 없어서 7 로 둔다.
-# tests/test_state.py 가 이 관계를 단언으로 지킨다.
+# tests/test_state.py 가 이 관계를 단언으로 지킨다 (마진 +3 - 왜 +2 로는 모자란지도
+# 거기 적혀 있다). **가설을 5개로 늘리면 그 테스트가 걸린다. 숫자를 올리기 전에
+# 게이트의 "전부 돌린 뒤에만 no_signal" 규칙부터 다시 볼 것** - 지금 metro 축은
+# 계측 짝이 없어 상시 빈손인데도 그 규칙 때문에 반드시 한 바퀴를 먹는다.
 MAX_LOOPS = 7
 CONFIDENCE_THRESHOLD = 0.8 # finalize 승인 임계 확신도
 
@@ -67,7 +70,10 @@ COMMONALITY_PASS_MIN_SCORE = float(os.getenv("COMMONALITY_PASS_MIN_SCORE", "0.5"
 COMMONALITY_PASS_MIN_TARGET = int(os.getenv("COMMONALITY_PASS_MIN_TARGET", "2"))
 COMMONALITY_PERMUTATIONS = int(os.getenv("COMMONALITY_PERMUTATIONS", "1000"))
 
-# 센서(2단): "local" = yield.db 의 sensor_log, "http" = 사내 FDC
+# 센서(2단): "local" = yield.db 의 sensor_log, "http" = 사내 FDC, "off" = 미연결
+# "off" 는 도구를 아예 **등록하지 않는다**(tools/agent_tools.py). FDC 배선 전에
+# 투입하면 LLM 이 2단을 부르고 매번 실패해 루프만 태우는데, 실패 메시지는
+# "근거를 더 좁혀라" 로 읽혀 같은 호출을 반복하기까지 한다.
 SENSOR_MODE = os.getenv("SENSOR_MODE", "local")
 SENSOR_HTTP_URL = os.getenv("SENSOR_HTTP_URL", "https://<사내-fdc-호스트>/sensor")
 # 2단 반환 절단 — fetch 량과 무관하게 유계로 만든다 (후보≠결론)

@@ -87,3 +87,58 @@ def test_compare_sensor_distribution_tool_invokes():
     assert res["status"] == "ok"
     assert res["candidates"][0]["sensor_name"] == f"{SENSOR_REAL}_avg"
     assert "refetch_key" in res
+
+
+def test_sensor_tool_is_not_registered_when_sensors_are_off():
+    """`SENSOR_MODE=off` 면 2단 도구를 아예 안 준다.
+
+    등록해 두면 LLM 이 부르고, 실패가 "인자를 확인하고 다시 호출하라" 로 돌아와
+    같은 호출을 반복하며 루프만 태운다. FDC 배선 전 사내 투입에서 실제로 이 모양이
+    된다 - 그때 코드를 고치지 않고 .env 로 끌 수 있어야 한다.
+
+    별도 프로세스로 확인하는 이유는 test_eds_search.py 와 같다: 도구 목록은 모듈
+    import 시점에 만들어지므로 이미 import 된 이 세션에서는 반영되지 않는다.
+    """
+    import os
+    import subprocess
+    import sys
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    probe = ("from tools.agent_tools import TOOLS_BY_NAME as T; "
+             "print('compare_sensor_distribution' in T, 'search_similar' in T)")
+
+    off = subprocess.run([sys.executable, "-c", probe], capture_output=True,
+                         cwd=root, env={**os.environ, "SENSOR_MODE": "off"})
+    assert off.returncode == 0, off.stderr.decode("utf-8", "replace")
+    assert off.stdout.decode().split() == ["False", "True"]
+
+    on = subprocess.run([sys.executable, "-c", probe], capture_output=True,
+                        cwd=root, env={**os.environ, "SENSOR_MODE": "local"})
+    assert on.returncode == 0, on.stderr.decode("utf-8", "replace")
+    assert on.stdout.decode().split() == ["True", "True"]
+
+
+def test_turning_sensors_off_does_not_touch_the_hypothesis_budget():
+    """센서를 꺼도 게이트의 `no_signal` 전제는 그대로다 - 흔한 오해를 못박는다.
+
+    게이트가 "다 돌렸는가" 를 셀 때 보는 것은 `hyp_` 로 시작하는 도구뿐이다
+    (`graph/nodes.py`). 2단 도구를 빼는 것은 **LLM 이 헛호출로 바퀴를 태우는 것**을
+    막을 뿐, 루프 예산의 산수를 바꾸지 않는다. 예산을 실제로 먹는 것은 상시 빈손인
+    metro 축처럼 `hyp_` 인 축이다.
+    """
+    import os
+    import subprocess
+    import sys
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    probe = ("from tools.agent_tools import TOOLS_BY_NAME as T; "
+             "print(sum(1 for n in T if n.startswith('hyp_')))")
+
+    counts = []
+    for mode in ("off", "local"):
+        p = subprocess.run([sys.executable, "-c", probe], capture_output=True,
+                           cwd=root, env={**os.environ, "SENSOR_MODE": mode})
+        assert p.returncode == 0, p.stderr.decode("utf-8", "replace")
+        counts.append(p.stdout.decode().strip())
+
+    assert counts[0] == counts[1]

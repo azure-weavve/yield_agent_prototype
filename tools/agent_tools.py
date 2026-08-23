@@ -10,6 +10,7 @@ graph/nodes.py 의 tools 노드(게이트)가 claim_id 로 EvidenceBundle 을 �
 
 from langchain_core.tools import tool
 
+import ya_config
 from domain import registry
 from tools import sensor_compare as sc
 from tools import yield_tools as yt
@@ -56,7 +57,15 @@ def finalize(claim_id: str = "", hypothesis: str = "", confidence: float = 0.0) 
 
 _HYPOTHESIS_TOOLS = registry.build_tools(registry.load_hypotheses())
 
-_BASE_TOOLS = [get_wafer, search_similar, compare_sensor_distribution]
+# 쓸 수 없는 도구는 아예 등록하지 않는다. 등록해 두면 LLM 이 부르고, 실패 메시지가
+# "인자를 확인하고 다시 호출하라" 로 돌아와 같은 호출을 반복하며 루프만 태운다.
+#
+# ⚠️ EDS 는 같은 방식으로 못 끈다 — 고정 골격의 형제 묶기(`tools/grouping.py` 의
+#    normalize_target)가 같은 `get_searcher()` 를 쓰므로, 끄면 도구가 아니라
+#    파이프라인이 선다. search_similar 는 항상 등록한다.
+_BASE_TOOLS = [get_wafer, search_similar]
+if ya_config.SENSOR_MODE != "off":
+    _BASE_TOOLS.append(compare_sensor_distribution)
 
 ANALYSIS_TOOLS = [*_BASE_TOOLS, *_HYPOTHESIS_TOOLS]
 ALL_TOOLS = ANALYSIS_TOOLS + [finalize]

@@ -90,3 +90,53 @@ def test_no_targets_short_circuits_to_report():
     assert state["target_group"] == []
     assert state["finalize_status"] == "no_anomaly"
     assert state["findings"] == []           # 분석 루프도 그룹 묶기도 돌지 않았다
+
+
+def test_sensorless_deployment_still_reaches_confirmed():
+    """`SENSOR_MODE=off` 구성에서도 분석이 확정까지 간다.
+
+    2단이 없는 것과 2단이 근거를 못 낸 것은 다르다. 후자는 기다리면 언젠가 근거가
+    나오지만 전자는 안 나온다 - 그런데 둘을 같게 다루면 센서 미연결 구성에서는
+    **무엇도 확정되지 못하고 매번 루프 소진**으로 끝난다. FDC 배선 전 사내 투입이
+    정확히 그 상태라, 이 경로가 서면 도구를 끈 의미가 없다.
+
+    게이트의 승인 조건(claim_id 조회 + 도구 내 최고 점수 + 확신도)은 센서를 요구하지
+    않으므로 1단 근거만으로 승인이 성립한다. 여기서 지키는 것은 그 사실이다.
+
+    별도 프로세스인 이유: 도구 목록이 모듈 import 시점에 정해진다.
+    """
+    import json
+    import os
+    import subprocess
+    import sys
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    probe = (
+        "import json;"
+        "from graph.build import build_graph;"
+        "from tools.agent_tools import TOOLS_BY_NAME as T;"
+        "s = build_graph().invoke({'target_wafers': ['W2406_02'],"
+        "                          'target_source': 'manual'});"
+        "print(json.dumps({"
+        "  'sensor_tool': 'compare_sensor_distribution' in T,"
+        "  'accepted': s.get('finalize_accepted'),"
+        "  'status': s.get('finalize_status'),"
+        "  'hypothesis': s.get('final_hypothesis') or '',"
+        "  'sensor_calls': sum(1 for f in s['findings']"
+        "                      if f['tool'] == 'compare_sensor_distribution'),"
+        "  'has_report': bool(s.get('report')),"
+        "}))")
+
+    proc = subprocess.run([sys.executable, "-c", probe], capture_output=True,
+                          cwd=root, env={**os.environ, "SENSOR_MODE": "off"})
+    assert proc.returncode == 0, proc.stderr.decode("utf-8", "replace")
+    out = json.loads(proc.stdout.decode("utf-8").strip().splitlines()[-1])
+
+    assert out["sensor_tool"] is False        # 도구가 아예 등록되지 않았다
+    assert out["sensor_calls"] == 0           # 그래서 헛호출로 바퀴를 태우지 않는다
+    assert out["accepted"] is True
+    assert out["status"] == "confirmed"
+    assert out["has_report"] is True
+    assert "ETCH9_B" in out["hypothesis"]     # 1단 근거는 그대로 살아 있다
+    # 무엇이 없어서 그렇게 판단했는지가 결론 문장에 남는다 (조용한 축소가 아니다)
+    assert "센서가 연결되지 않은" in out["hypothesis"]

@@ -77,4 +77,9 @@ def get_store() -> SensorStore:
         return LocalSensorStore()
     if ya_config.SENSOR_MODE == "http":
         return HttpSensorStore()
+    if ya_config.SENSOR_MODE == "off":
+        # 이 경로로 오면 도구 등록 필터가 샌 것이다 (tools/agent_tools.py).
+        # "알 수 없는 모드" 로 뭉뚱그리면 오타인지 배선 오류인지 구분이 안 된다.
+        raise ValueError("SENSOR_MODE=off 인데 센서 조회가 호출됐다 - "
+                         "compare_sensor_distribution 이 등록되지 않아야 한다")
     raise ValueError(f"알 수 없는 SENSOR_MODE: {ya_config.SENSOR_MODE}")

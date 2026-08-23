@@ -15,6 +15,7 @@ from abc import ABC, abstractmethod
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 import ya_config
+from tools.agent_tools import TOOLS_BY_NAME
 
 
 class LLMClient(ABC):
@@ -122,14 +123,6 @@ class ScriptedMockLLMClient(LLMClient):
                 "등록 가설을 다 돌렸으나 분리되는 후보가 없다. 확정할 근거가 없으므로 물러선다.")
         top = passing[0]
 
-        if "compare_sensor_distribution" not in done:
-            return self._call(
-                "compare_sensor_distribution",
-                {"step_seq": top["step_seq"],
-                 "group_ids": target, "control_ids": control},
-                "챔버까지 좁혔다. 그 스텝의 센서 분포로 '왜' 를 본다.")
-
-        sensor = self._result(tool_msgs, "compare_sensor_distribution")
         val = top["value"][-1]
         if top["level"] == "step_passage":
             # 이 축은 키가 스텝 자체다 - "무엇을 썼는가" 가 아니라 "거쳤는가" 가 결론이다
@@ -138,6 +131,28 @@ class ScriptedMockLLMClient(LLMClient):
         else:
             hyp = (f"{top['value'][0]} 공정 {val} 편중(분리 점수 {top.get('score')}, "
                    f"불량군 {top['target_pass']}장 전용)이 원인")
+
+        if "compare_sensor_distribution" not in TOOLS_BY_NAME:
+            # 2단이 **아예 없는 구성**(SENSOR_MODE=off)이다. 아래 "근거를 못 냈다" 와
+            # 구분해야 한다 - 거기서는 기다리면 언젠가 근거가 나오지만 여기서는 안
+            # 나온다. 2단을 기다리며 물러서면 이 구성에서는 무엇도 확정되지 못하고
+            # 매번 루프 소진으로 끝난다. 1단 근거는 게이트의 승인 조건(claim_id·최고
+            # 점수)을 이미 충족하므로 그것으로 판단하되, 무엇이 없는지 문장에 남긴다.
+            return self._call(
+                "finalize",
+                {"claim_id": top["claim_id"],
+                 "hypothesis": hyp + " - 2단 센서가 연결되지 않은 구성이라 1단 경로 근거만으로 판단",
+                 "confidence": 0.85},
+                "센서 도구가 없는 구성이다. 1단 경로 근거로 판단한다.")
+
+        if "compare_sensor_distribution" not in done:
+            return self._call(
+                "compare_sensor_distribution",
+                {"step_seq": top["step_seq"],
+                 "group_ids": target, "control_ids": control},
+                "챔버까지 좁혔다. 그 스텝의 센서 분포로 '왜' 를 본다.")
+
+        sensor = self._result(tool_msgs, "compare_sensor_distribution")
         if sensor.get("status") != "ok":
             # 2단이 갈리지 않았거나(no_signal) 아예 못 돌았다(fetch_failed/insufficient_sample).
             # 1단 근거는 그대로 남기되 확신도를 낮춰 물러선다 — 센서 결과를 안 보고 0.9 를
