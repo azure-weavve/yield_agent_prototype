@@ -196,6 +196,41 @@ METRO_TRUTH_LE_SPLIT = 127.0              # "127.0 이하" 가 최적 분할
 METRO_UNMEASURED = ("T2421_06", "T2421_07",
                     "T2422_07", "T2422_08", "T2422_09", "T2422_10")
 
+# ---------------------------------------------------------------- 다축 독립 신호 케이스
+# 기존 케이스는 전부 **한 축만** 통과 후보를 낸다(2026-08-23 실측: metro/split/irreg/
+# adv 전부 1축). 유일한 2축 케이스인 RECENT_LOT 은 ETCH9_B 와 PPID_X 를 **같은 wafer
+# 에 심어** 둬서 두 후보가 가리키는 wafer 집합이 완전히 같다(Jaccard 1.0) — 독립 근거
+# 둘이 아니라 한 사실의 두 이름이다.
+#
+# 그래서 "서로 다른 wafer 를 가리키는 근거가 둘 이상"인 무대가 저장소에 없었다.
+# 게이트가 도구 안 최고 점수 하나만 승인하므로(graph/nodes.py) 이 상황에서 근거
+# 하나가 리포트에서 사라지는데, 그것을 재현할 데이터가 없으면 고쳤는지도 못 잰다.
+#
+# 두 신호를 **다른 스텝·다른 축·다른 wafer 부분집합**에 심는다:
+#   Photo 스텝  01~04 -> PHOT7_B   (설비/챔버 축)
+#   Etch  스텝  03~06 -> PPID_W    (PPID 축)
+# 겹침은 {03,04} 뿐이라 Jaccard = 2/6 ≈ 0.33 이다. 접기 규칙이 이 둘을 **합치면
+# 안 되고**, 같은 스텝의 설비 롤업(PHOT7)과 챔버(PHOT7_B)는 Jaccard 1.0 이라
+# **합쳐야 한다** — 한 lot 이 접기의 양쪽 경계를 다 시험한다.
+#
+# 두 신호를 대칭으로(둘 다 4/6 vs 0/6) 잡은 것도 의도다. 점수도 순열 p 도 같게 나와
+# **어느 쪽이 더 유력한지 데이터가 답하지 못한다.** 이 동점은 결함이 아니라 재현하려는
+# 상태 자체다 — "챔버 때문인지 레시피 때문인지 현재 증거로는 구분 불가"가 정밀분석을
+# 의뢰할 때 엔지니어가 알아야 하는 사실이고, 지금 게이트는 그걸 표현할 자리가 없어
+# 셋 중 아무거나 하나를 승인하고 나머지를 버린다.
+MULTI_ROOT_LOT = "M2423"
+MULTI_TARGETS = [f"{MULTI_ROOT_LOT}_{i:02d}" for i in range(1, 7)]     # 01~06
+MULTI_CONTROLS = [f"{MULTI_ROOT_LOT}_{i:02d}" for i in range(7, 13)]   # 07~12
+MULTI_WAFERS = set(MULTI_TARGETS + MULTI_CONTROLS)
+
+# 심어둔 정답. DB 에 안 나간다 (`_truth_*` 관행과 같은 취급).
+MULTI_TRUTH_CH_WAFERS = tuple(MULTI_TARGETS[:4])     # 01~04
+MULTI_TRUTH_PPID_WAFERS = tuple(MULTI_TARGETS[2:])   # 03~06
+MULTI_TRUTH_EQP, MULTI_TRUTH_CH = "PHOT7", "B"
+MULTI_TRUTH_PPID = "PPID_W"
+MULTI_CH_STEP = SH_STEPS[0][0]      # Photo  — 챔버 신호가 있는 스텝
+MULTI_PPID_STEP = ETCH_SEQ          # Etch   — PPID 신호가 있는 스텝
+
 # ---------------------------------------------------------------- 센서 (2단 깔때기)
 # 트레이스가 아니라 **wafer 1장의 구간 통계값**이다. 구간·통계 종류는 센서 이름에
 # 들어 있다(rf_power_steady_avg) — 사내 FDC 추출물 형태.
@@ -386,10 +421,25 @@ def generate():
         vectors.append(_unit(rng.standard_normal(DIM)))
         wafer_ids.append(wid)
 
+    # ---------------- 다축 독립 신호 lot — 기존 난수열 뒤에 붙인다
+    for wid in MULTI_TARGETS + MULTI_CONTROLS:
+        rows.append({
+            "wafer_id": wid,
+            "lot_id": f"{MULTI_ROOT_LOT}.1",
+            "yield": ADV_TARGET_YIELD if wid in MULTI_TARGETS else ADV_CONTROL_YIELD,
+            "_truth_defect": "none",         # 라벨 없음 — 실데이터와 같은 조건
+            # 심어둔 정답이 **둘**인 첫 케이스다 (다른 lot 은 전부 단일 원인).
+            "_truth_step": f"{MULTI_CH_STEP}+{MULTI_PPID_STEP}",
+            "date": RECENT_DATE,
+            "root_lot_id": MULTI_ROOT_LOT,
+        })
+        vectors.append(_unit(rng.standard_normal(DIM)))
+        wafer_ids.append(wid)
+
     _augment_yield(rows)
     steps = (_make_step_history(rows) + _make_adversarial_steps()
              + _make_split_lot_steps() + _make_irregular_step_steps()
-             + _make_metro_steps())
+             + _make_metro_steps() + _make_multi_axis_steps())
     sensors = _make_sensor_log(rows)
     _write_sqlite(rows, steps, sensors, _make_metro())
     _write_index(vectors, wafer_ids)
@@ -422,7 +472,7 @@ def _make_step_history(rows):
     for r in rows:
         wid = r["wafer_id"]
         if (wid in ADV_WAFERS or wid in SPLIT_WAFERS or wid in IRREG_WAFERS
-                or wid in METRO_WAFERS):                          # 전용 생성기
+                or wid in METRO_WAFERS or wid in MULTI_WAFERS):   # 전용 생성기
             continue
         for seq, area in SH_STEPS:
             eqp, ch, ppid = f"{area.upper()[:4]}1", "A", "PPID_Z"   # 기본: 공통 경로
@@ -527,6 +577,33 @@ def _make_irregular_step_steps():
             "eqp_id": f"ETCH{i}", "ch_id": "A", "ppid": f"PPID_E{i}",
             "timestamp": RECENT_DATE + " 11:00:00",
         })
+    return steps
+
+
+def _make_multi_axis_steps():
+    """다축 독립 신호 lot 의 wafer×스텝 이력 (rng 미사용).
+
+    기본 경로는 타깃·대조군이 완전히 같다. 두 신호만 갈린다:
+      Photo 스텝 — 타깃 01~04 가 PHOT7_B (설비도 PHOT7 로 갈려 롤업도 함께 뜬다)
+      Etch  스텝 — 타깃 03~06 이 PPID_W  (설비·챔버는 양쪽 공통이라 안 갈린다)
+
+    설비 롤업을 일부러 함께 갈리게 둔 이유: 챔버(PHOT7_B)와 설비(PHOT7)는 같은
+    wafer 를 가리키므로 **접기가 반드시 합쳐야 하는 쌍**이다. 두 신호 사이의
+    부분 겹침(Jaccard 0.33)은 **합치면 안 되는 쌍**이고, 한 lot 이 둘 다 낸다.
+    """
+    steps = []
+    for wid in MULTI_TARGETS + MULTI_CONTROLS:
+        for seq, area in SH_STEPS:
+            eqp, ch, ppid = f"{area.upper()[:4]}1", "A", "PPID_Z"
+            if seq == MULTI_CH_STEP and wid in MULTI_TRUTH_CH_WAFERS:
+                eqp, ch = MULTI_TRUTH_EQP, MULTI_TRUTH_CH
+            if seq == MULTI_PPID_STEP and wid in MULTI_TRUTH_PPID_WAFERS:
+                ppid = MULTI_TRUTH_PPID
+            steps.append({
+                "wafer_id": wid, "step_seq": seq, "area": area,
+                "eqp_id": eqp, "ch_id": ch, "ppid": ppid,
+                "timestamp": RECENT_DATE + " 10:00:00",
+            })
     return steps
 
 
