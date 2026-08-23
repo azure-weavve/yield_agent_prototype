@@ -82,27 +82,6 @@ def test_rerun_replaces_previous_claims_of_the_same_tool():
     assert set(b.claims) == {CAND_PASS["claim_id"]}
 
 
-def test_top_score_is_per_tool():
-    """legend 가 다른 두 도구의 점수는 비교 대상이 아니다."""
-    ppid = {"claim_id": "ppid_commonality:ppid:CC002000:PPID_X", "level": "ppid",
-            "step_seq": "CC002000", "key": "PPID_X", "passes": True,
-            "reject_reason": None, "score": 0.6,
-            "target_pass": 3, "target_total": 3, "control_pass": 2, "control_total": 5}
-    # 점수가 더 높은 미통과 후보 — passes 필터가 빠지면 이 0.9 가 새어 나온다
-    ppid_fail = {**ppid, "claim_id": "ppid_commonality:ppid:CC002000:PPID_Y",
-                 "key": "PPID_Y", "passes": False, "score": 0.9,
-                 "reject_reason": "분리 점수 미달"}
-    decoy = {**CAND_PASS, "claim_id": "eqp_ch_commonality:chamber:CD004000:PHOT2_X",
-             "key": "PHOT2_X", "score": 0.75}
-    b = evidence.build_bundle([
-        _finding("hyp_eqp_ch_commonality", "eqp_ch_commonality", "ok", [CAND_PASS, decoy]),
-        _finding("hyp_ppid_commonality", "ppid_commonality", "ok", [ppid, ppid_fail]),
-    ])
-    assert b.top_score("hyp_eqp_ch_commonality") == 1.0
-    assert b.top_score("hyp_ppid_commonality") == 0.6
-    assert b.top_score("hyp_nothing_ran") is None
-
-
 def test_permutation_p_survives_the_bundle():
     """순열 p 가 후보 dict 에서 Claim 까지 살아 간다.
 
@@ -173,3 +152,122 @@ def test_evidence_line_marks_a_p_that_sits_at_the_floor():
     line2 = evidence.format_evidence_line(asdict(b2.claims[CAND_PASS["claim_id"]]))
     assert line2.endswith("· 순열 p 0.1667")     # 같은 p 인데 바닥이 아니면 표시 없음
     assert "최소값" not in line2
+
+
+# ---------------------------------------------------------------- 접기와 순위
+
+def _cand(claim_id, key, score, p, wafers, level="chamber", step="CC002000"):
+    return {"claim_id": claim_id, "level": level, "step_seq": step, "key": key,
+            "passes": True, "reject_reason": None, "score": score,
+            "target_pass": len(wafers), "target_total": 6,
+            "control_pass": 0, "control_total": 6,
+            "p_permutation": p, "target_wafers": list(wafers), "control_wafers": []}
+
+
+def test_ranking_puts_permutation_p_ahead_of_the_raw_score():
+    """p 가 점수를 이긴다 - 점수는 축마다 다르게 부풀기 때문이다.
+
+    분할점을 탐색하는 축(계측)은 무신호 데이터에서도 후보의 절반 가까이가 판별선을
+    넘는다. 그 축의 0.9 와 경로 축의 0.9 는 같은 뜻이 아니다. p 는 그 탐색까지
+    포함해 잰 값이라 축을 가로질러 비교할 수 있는 유일한 자다.
+    """
+    b = evidence.build_bundle([
+        _finding("hyp_a", "a", "ok", [_cand("a:1", "HIGH_SCORE", 0.95, 0.40, ["W1", "W2"])]),
+        _finding("hyp_b", "b", "ok", [_cand("b:1", "LOW_P", 0.55, 0.01, ["W3", "W4"])]),
+    ])
+    groups = b.ranked_groups()
+    assert [g.lead.key for g in groups] == ["LOW_P", "HIGH_SCORE"]
+
+
+def test_missing_permutation_p_ranks_last():
+    """순열을 안 돌린 후보를 좋은 것으로 읽으면 안 된다 - 없는 것은 최하위다."""
+    b = evidence.build_bundle([
+        _finding("hyp_a", "a", "ok", [_cand("a:1", "NO_P", 1.0, None, ["W1", "W2"])]),
+        _finding("hyp_b", "b", "ok", [_cand("b:1", "HAS_P", 0.6, 0.5, ["W3", "W4"])]),
+    ])
+    assert [g.lead.key for g in b.ranked_groups()] == ["HAS_P", "NO_P"]
+
+
+def test_identical_wafer_sets_fold_across_axes():
+    """축이 달라도 같은 wafer 를 가리키면 한 근거다 (교락)."""
+    b = evidence.build_bundle([
+        _finding("hyp_a", "a", "ok", [_cand("a:1", "CH_B", 0.8, 0.02, ["W1", "W2", "W3"])]),
+        _finding("hyp_b", "b", "ok", [_cand("b:1", "PPID_X", 0.8, 0.02, ["W3", "W1", "W2"],
+                                            level="ppid")]),
+    ])
+    groups = b.ranked_groups()
+    assert len(groups) == 1
+    assert groups[0].confounded
+    assert {c.key for c in groups[0].claims} == {"CH_B", "PPID_X"}
+
+
+def test_partial_overlap_does_not_fold():
+    """부분 겹침은 접지 않는다 - 안 겹치는 wafer 가 두 가설을 가르는 정보다."""
+    b = evidence.build_bundle([
+        _finding("hyp_a", "a", "ok", [_cand("a:1", "CH_B", 0.8, 0.02, ["W1", "W2", "W3"])]),
+        _finding("hyp_b", "b", "ok", [_cand("b:1", "PPID_X", 0.8, 0.02, ["W2", "W3", "W4"],
+                                            level="ppid")]),
+    ])
+    groups = b.ranked_groups()
+    assert len(groups) == 2
+    assert not any(g.confounded for g in groups)
+
+
+def test_claims_without_wafer_sets_are_never_folded_together():
+    """wafer 목록이 없으면 각자 홀로 선다 - 빈 집합끼리 같다고 묶으면 안 된다.
+
+    센서처럼 목록을 안 싣는 결과나, 아직 이 필드를 안 채우는 축이 섞여 들어와도
+    서로 무관한 후보가 한 덩어리가 되어서는 안 된다.
+    """
+    a = _cand("a:1", "A", 0.8, 0.02, [])
+    c = _cand("b:1", "B", 0.7, 0.03, [])
+    b = evidence.build_bundle([_finding("hyp_a", "a", "ok", [a]),
+                               _finding("hyp_b", "b", "ok", [c])])
+    groups = b.ranked_groups()
+    assert len(groups) == 2
+    assert not any(g.confounded for g in groups)
+
+
+def test_tied_groups_share_a_rank_and_say_so():
+    """동점은 같은 등수를 받고, 그 사실이 근거 줄에 적힌다.
+
+    번호만 매기면 앞선 것이 더 강해 보인다. 우열을 못 가린다는 것 자체가 다음에
+    무엇을 볼지 정하는 입력이라, 조용히 순서로 뭉개면 안 된다.
+    """
+    b = evidence.build_bundle([
+        _finding("hyp_a", "a", "ok", [_cand("a:1", "A", 0.7, 0.03, ["W1", "W2"])]),
+        _finding("hyp_b", "b", "ok", [_cand("b:1", "B", 0.7, 0.03, ["W3", "W4"])]),
+    ])
+    dicts = evidence.groups_to_dicts(b.ranked_groups())
+    assert [d["rank"] for d in dicts] == [1, 1]
+    assert all(d["tied"] for d in dicts)
+    assert "정할 수 없다" in evidence.format_group_line(dicts[0])
+
+
+def test_distinct_ranks_are_not_marked_tied():
+    b = evidence.build_bundle([
+        _finding("hyp_a", "a", "ok", [_cand("a:1", "A", 0.7, 0.01, ["W1", "W2"])]),
+        _finding("hyp_b", "b", "ok", [_cand("b:1", "B", 0.7, 0.30, ["W3", "W4"])]),
+    ])
+    dicts = evidence.groups_to_dicts(b.ranked_groups())
+    assert [d["rank"] for d in dicts] == [1, 2]
+    assert not any(d["tied"] for d in dicts)
+    assert "정할 수 없다" not in evidence.format_group_line(dicts[0])
+
+
+def test_axis_specific_fields_survive_in_extra():
+    """축마다 있고 없는 값이 Bundle 경계에서 잘리지 않는다.
+
+    coverage_* 와 metro 의 split_value 가 여기서 사라져 **LLM 은 보는데 코드
+    게이트는 못 보는** 값이 됐었다. 1급 필드로 하나씩 늘리는 대신 한 자리에 모은다.
+    """
+    cand = _cand("m:1", "THK >= 129.0", 0.9, 0.02, ["W1", "W2"], level="metro")
+    cand.update({"coverage_target": 1.0, "coverage_control": 0.1,
+                 "item": "THK", "split_value": 129.0, "split_direction": "ge"})
+    b = evidence.build_bundle([_finding("hyp_metro", "metro_commonality", "ok", [cand])])
+    claim = b.claims["m:1"]
+    assert claim.extra["split_value"] == 129.0
+    assert claim.extra["split_direction"] == "ge"
+    assert claim.extra["coverage_target"] == 1.0
+    # 1급 필드는 extra 로 중복되지 않는다
+    assert "score" not in claim.extra and "target_wafers" not in claim.extra

@@ -9,7 +9,6 @@
 """
 
 import json
-from dataclasses import asdict
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
@@ -43,6 +42,7 @@ ANALYZE_SYSTEM_PROMPT = """너는 반도체 수율 분석 전문가다. 불량 �
 - 확신이 부족하면 근거를 좁힐 tool 을 하나 더 호출하라. 그룹 간 차이(장비·파라미터)가 핵심 근거다 - 가설 도구(hyp_*)로 두 그룹을 대조하라.
 - tool 을 호출할 때는 reason 인자에 현재 가설과 그 tool 을 고른 이유를 한 문장으로 반드시 담아라 - 이 서술이 그대로 분석 감사 기록에 남는다.
 - 원인을 좁혔고 근거가 충분하면 finalize(claim_id, hypothesis, confidence) 로 종료를 제안하라. claim_id 는 가설 도구 결과의 후보에 실려 온 값을 **그대로** 옮겨야 한다 - 지어내거나 문장으로 대신하면 반려된다. 지목할 근거가 없어 물러설 때는 claim_id 를 비우고 낮은 확신도로 제출하라.
+- **claim_id 는 결론 하나를 고르는 것이 아니라 서술의 축을 정하는 것이다.** 판별선을 넘은 후보는 게이트가 전부 접어서 줄 세워 리포트에 싣는다 - 다른 축의 근거를 버릴까 걱정해 지목을 미루지 마라. 다만 순위 1등이 아닌 것을 지목하면 반려된다.
 - 수치는 tool 결과를 그대로 인용하고 절대 임의로 만들지 마라."""
 
 
@@ -223,10 +223,16 @@ def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) ->
 
     승인 실권은 confidence 자기 신고도, LLM 이 쓴 문장도 아니라 **EvidenceBundle
     조회 결과**에 있다. LLM 은 도구가 발급한 claim_id 를 지목하고, 게이트는 그
-    claim 이 판별선을 넘었는지와 같은 도구 안에서 최고 점수인지를 확인한다.
+    claim 이 판별선을 넘었는지와 **축을 가로지른 순위에서 1등 묶음인지**를 확인한다.
+
+    게이트의 성격이 바뀌었다: 예전에는 "LLM 이 고른 하나를 승인/반려" 하는 이진
+    판정이었고, 지금은 **통과 후보 전부를 접어서 줄 세운 뒤 종료**한다. LLM 의
+    지목은 서술의 축을 정할 뿐이고, 무엇이 근거로 남는지는 코드가 정한다.
+    예전 계약은 도구 안 최고 점수 하나만 승인해서, 축이 여럿일 때 나머지 근거가
+    리포트에 도달하지 못했다(같은 wafer 를 가리키는 교락도 구분되지 않았다).
 
     판정은 위에서부터 처음 걸리는 줄로 결정된다:
-      (1) 지목한 claim 이 통과 + 최고 점수 + 확신도 충족 -> confirmed
+      (1) 지목한 claim 이 통과 + 1등 묶음 + 확신도 충족 -> confirmed
       (2) 등록 가설을 다 돌렸는데 통과 후보 0 + no_signal 있음 -> no_signal
       (3) 돌아간 가설이 전부 '계산 불가' -> no_comparable_data
       (4) 루프 한계 -> inconclusive (승인이 아니라 '미확정')
@@ -239,18 +245,24 @@ def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) ->
     claim = bundle.claims.get(claim_id)
     registered = {n for n in TOOLS_BY_NAME if n.startswith("hyp_")}
     unrun = sorted(registered - bundle.ran)
+    groups = bundle.ranked_groups()
+    picked = evidence.find_group(groups, claim_id) if claim_id else None
 
     # (1) 승인
     if (claim is not None and claim.passes
-            and claim.score >= bundle.top_score(claim.tool)
+            and picked is not None and picked.rank_key == groups[0].rank_key
             and conf >= ya_config.CONFIDENCE_THRESHOLD):
         update["finalize_accepted"] = True
         update["finalize_status"] = "confirmed"
         update["final_hypothesis"] = hypothesis
         update["final_confidence"] = conf
-        update["final_claim"] = asdict(claim)
-        return (f"승인 (근거 확인): {evidence.format_evidence_line(update['final_claim'])}. "
-                f"리포팅으로 진행한다.")
+        # **통과 후보를 전부 싣는다.** LLM 이 고른 것만 남기면 나머지 축의 근거가
+        # 여기서 사라진다 - 그게 예전 계약의 결함이었다.
+        update["final_claims"] = evidence.groups_to_dicts(groups, picked)
+        head = evidence.format_group_line(update["final_claims"][0])
+        more = (f" 그 밖에 {len(groups) - 1}개 근거를 함께 싣는다."
+                if len(groups) > 1 else "")
+        return f"승인 (근거 확인): {head}.{more} 리포팅으로 진행한다."
 
     # (2) 신호 없음 - 등록 가설을 다 돌렸는데 통과 후보가 하나도 없다.
     #     확신도를 보지 않는다: 물러섬 선언에 높은 확신도를 요구하면 모순이다.
@@ -285,7 +297,7 @@ def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) ->
         return "미확정 (루프 한계 도달): 확정 근거 없이 리포팅으로 진행한다."
 
     # (5) 반려
-    return _gate_rejection(claim_id, claim, bundle, unrun, conf, conf_note)
+    return _gate_rejection(claim_id, claim, bundle, unrun, conf, conf_note, groups)
 
 
 def _confidence(raw) -> tuple[float, str]:
@@ -296,7 +308,7 @@ def _confidence(raw) -> tuple[float, str]:
                      f"0~1 사이 숫자로 다시 제출하라)")
 
 
-def _gate_rejection(claim_id, claim, bundle, unrun, conf, conf_note) -> str:
+def _gate_rejection(claim_id, claim, bundle, unrun, conf, conf_note, groups) -> str:
     """왜 승인하지 않았는지를 LLM 이 다음 행동으로 옮길 수 있게 돌려준다."""
     if claim_id and claim is None:
         # 안내 대상은 **통과 후보뿐**이다. 번들 전체를 안내하면 LLM 이 거기서
@@ -315,12 +327,15 @@ def _gate_rejection(claim_id, claim, bundle, unrun, conf, conf_note) -> str:
         if not claim.passes:
             return (f"반려: {claim.claim_id} 는 판별선을 넘지 못했다 ({claim.reject_reason}). "
                     f"통과한 후보를 지목하라.")
-        top = bundle.top_score(claim.tool)
-        if claim.score < top:
-            best = max((c for c in bundle.passing() if c.tool == claim.tool),
-                       key=lambda c: c.score)
-            return (f"반려: {claim.claim_id}(점수 {claim.score}) 보다 강한 후보가 있다: "
-                    f"{best.claim_id}(점수 {best.score}). 근거가 가장 강한 후보를 지목하라.")
+        picked = evidence.find_group(groups, claim_id)
+        if picked is not None and groups and picked.rank_key != groups[0].rank_key:
+            # 순위는 코드가 매긴다. 순열 p 가 먼저이고 동점이면 분리 점수다 —
+            # 점수만 보고 고르면 탐색 폭이 넓은 축(계측)이 늘 이긴다.
+            best = groups[0].lead
+            return (f"반려: {claim.claim_id}(p {claim.p_permutation}, 점수 {claim.score}) "
+                    f"보다 앞선 근거가 있다: {best.claim_id}"
+                    f"(p {best.p_permutation}, 점수 {best.score}). "
+                    f"순위 1등을 서술의 축으로 지목하라 - 나머지 근거는 게이트가 함께 싣는다.")
         return (f"반려: 확신도 {conf:.2f} < {ya_config.CONFIDENCE_THRESHOLD}.{conf_note} "
                 f"근거를 좁힐 tool 을 더 호출하라.")
 
@@ -350,7 +365,7 @@ def _no_candidate_action(bundle, unrun) -> str:
 
 # ------------------------------------------------ 고정 골격: 리포팅
 def report_node(state: dict) -> dict:
-    claim = state.get("final_claim")
+    claims = state.get("final_claims") or []
     try:
         report = _llm_lazy().generate_report(
             target_wafers=state.get("target_wafers", []),
@@ -361,7 +376,7 @@ def report_node(state: dict) -> dict:
             hypothesis=state.get("final_hypothesis"),
             confidence=state.get("final_confidence"),
             finalize_status=state.get("finalize_status"),
-            claim=claim,
+            claims=claims,
         )
     except Exception as e:
         # 여기가 마지막 노드다 - 예외를 내보내면 분석을 다 해 놓고 결과를 전부 버린다.
@@ -372,8 +387,11 @@ def report_node(state: dict) -> dict:
                   f"[판정] {state.get('finalize_status') or '미상'}\n"
                   f"[결론] {state.get('final_hypothesis') or '원인 미확정'}"
                   f" (확신도 {state.get('final_confidence')})")
-    if claim:
-        # [근거] 줄은 클라이언트(LLM)가 아니라 여기서 코드로 붙인다 - 운영에서도
-        # 근거가 리포트에서 사라지지 않게 하려는 것이 이 기능의 목적이다.
-        report += f"\n[근거] {evidence.format_evidence_line(claim)}"
+    # [근거] 줄은 클라이언트(LLM)가 아니라 여기서 코드로 붙인다 - 운영에서도
+    # 근거가 리포트에서 사라지지 않게 하려는 것이 이 기능의 목적이다.
+    # 여러 줄인 이유: 축이 여럿이면 근거도 여럿이고, 그중 하나만 남기던 것이
+    # 고치려던 문제다. 순서는 코드가 매긴 순위이며 LLM 이 고른 것은 표시된다.
+    for i, group in enumerate(claims, start=1):
+        mark = " ←서술 기준" if group.get("picked_by_llm") else ""
+        report += f"\n[근거 {i}]{mark} {evidence.format_group_line(group)}"
     return {"report": report}

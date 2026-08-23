@@ -149,8 +149,8 @@ def test_case1_counterexample_still_reaches_confirmed_end_to_end():
     targets, _ = adv_group(ADV_COUNTEREX_LOT)
     state = build_graph().invoke({"target_wafers": targets, "target_source": "manual"})
     assert state["finalize_status"] == "confirmed"
-    assert state["final_claim"]["key"] == "ETCH1_B"
-    assert state["final_claim"]["control_pass"] == 1        # 반례가 근거에 그대로 남는다
+    assert state["final_claims"][0]["key"] == "ETCH1_B"
+    assert state["final_claims"][0]["control_pass"] == 1    # 반례가 근거에 그대로 남는다
 
 
 def test_case3_missing_history_still_reaches_confirmed_end_to_end():
@@ -160,4 +160,4 @@ def test_case3_missing_history_still_reaches_confirmed_end_to_end():
     targets, _ = adv_group(ADV_MISSING_LOT)
     state = build_graph().invoke({"target_wafers": targets, "target_source": "manual"})
     assert state["finalize_status"] == "confirmed"
-    assert state["final_claim"]["key"] == "ETCH3_B"
+    assert state["final_claims"][0]["key"] == "ETCH3_B"

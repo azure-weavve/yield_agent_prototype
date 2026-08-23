@@ -277,7 +277,7 @@ def test_generate_report_renders_inconclusive_status():
 def test_generate_report_no_longer_renders_evidence_line_itself():
     """[근거] 줄은 이제 mock 이 아니라 report_node 가 코드로 붙인다 (Task 8 최종 검토).
 
-    claim 을 넘겨도 mock 의 generate_report 자체는 [근거] 를 내지 않아야 한다 —
+    claims 를 넘겨도 mock 의 generate_report 자체는 [근거] 를 내지 않아야 한다 —
     안 그러면 report_node 가 붙이는 줄과 겹쳐 두 번 나온다.
     같은 계약(claim_id·분리 점수·3/3·0/6 단언)은 `tests/test_graph_nodes.py` 의
     `test_report_node_appends_evidence_line_for_approved_claim` 로 옮겼다.
@@ -287,8 +287,8 @@ def test_generate_report_no_longer_renders_evidence_line_itself():
         target_wafers=["W2406_02"], target_source="manual", target_group=TARGET,
         status_summary="s", findings=[], hypothesis="원인은 그 챔버다", confidence=0.9,
         finalize_status="confirmed",
-        claim={"claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH9_B", "score": 1.0,
-               "target_pass": 3, "target_total": 3,
-               "control_pass": 0, "control_total": 6},
+        claims=[{"claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH9_B", "score": 1.0,
+                 "target_pass": 3, "target_total": 3,
+                 "control_pass": 0, "control_total": 6}],
     )
     assert "[근거]" not in report

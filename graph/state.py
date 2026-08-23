@@ -25,5 +25,8 @@ class AgentState(TypedDict, total=False):
     finalize_status: str    # confirmed | no_signal | no_comparable_data | inconclusive | no_anomaly | unknown_target | isolated | control_insufficient | eds_lookup_failed | llm_call_failed
     final_hypothesis: str                           # 승인된 원인 가설 (LLM 서술)
     final_confidence: float                         # 승인 시 확신도
-    final_claim: dict                               # 승인된 claim (게이트가 확인한 근거 수치)
+    # 승인된 근거 **목록** (게이트가 접고 줄 세운 것). 예전에는 dict 하나였고, 그래서
+    # 축이 여럿일 때 LLM 이 고른 것 말고는 리포트에 도달하지 못했다. 각 항목은 대표
+    # claim + `confounded_with`(같은 wafer 를 가리키는 다른 이름들) + `picked_by_llm`.
+    final_claims: list[dict]
     report: str                                     # 최종 리포트

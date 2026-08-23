@@ -35,13 +35,17 @@ class LLMClient(ABC):
         hypothesis: str | None,
         confidence: float | None,
         finalize_status: str | None = None,
-        claim: dict | None = None,
+        claims: list[dict] | None = None,
     ) -> str:
         """감사 기록을 근거로 원인 리포트 생성.
 
         finalize_status 가 "inconclusive"(루프 한계 도달)면 결론을 확정 톤이 아니라
         "미확정 + 유력 가설(후보)" 톤으로 서술해야 한다.
-        claim 이 있으면 게이트가 확인한 근거 수치다 - 그대로 인용하고 바꾸지 않는다.
+        claims 는 게이트가 접고 줄 세운 근거 **목록**이다 - 수치를 그대로 인용하고
+        바꾸지 않는다. 하나만 고르지 마라: 순위는 코드가 매긴 것이고, `picked_by_llm`
+        이 붙은 것은 서술의 축일 뿐 나머지가 덜 중요하다는 뜻이 아니다.
+        `confounded_with` 가 있는 항목은 **같은 wafer 를 다른 이름으로도 설명할 수
+        있다**는 뜻이니, 둘 중 하나로 단정하지 말고 구분이 안 된다는 사실을 적어라.
         """
         ...
 
@@ -174,7 +178,7 @@ class ScriptedMockLLMClient(LLMClient):
     # -------------------------------------------------- report
     def generate_report(self, target_wafers, target_source, target_group, status_summary,
                         findings, hypothesis, confidence, finalize_status=None,
-                        claim=None) -> str:
+                        claims=None) -> str:
         lines = [
             f"[분석 대상 입력] ({target_source}) {', '.join(target_wafers) or '없음'}",
             f"[불량 그룹] {', '.join(target_group) or '없음'}",
@@ -298,7 +302,7 @@ class OpenAILLMClient(LLMClient):
 
     def generate_report(self, target_wafers, target_source, target_group, status_summary,
                         findings, hypothesis, confidence, finalize_status=None,
-                        claim=None) -> str:
+                        claims=None) -> str:
         sys = (
             "현장 반도체 엔지니어에게 한국어 높임말로 원인 분석 리포트를 쓴다. "
             "분석 과정(findings)의 수치는 절대 임의로 바꾸지 말고 그대로 인용하라. "
@@ -315,7 +319,10 @@ class OpenAILLMClient(LLMClient):
             "분석 루프가 아예 안 돌았으니 확정 결론을 쓰지 말고 재실행을 권하라. "
             "판정이 no_anomaly 면 '이상 없음'으로 서술하라. "
             "판정이 isolated/control_insufficient/unknown_target/eds_lookup_failed 이면 "
-            "'분석 미수행'과 그 사유를 명시하고 확정 결론을 쓰지 마라."
+            "'분석 미수행'과 그 사유를 명시하고 확정 결론을 쓰지 마라. "
+            "근거가 여러 건이면 **전부** 서술하라 - 하나로 줄이지 마라. 순위는 코드가 "
+            "매긴 것이며, 같은 wafer 를 두 이름으로 설명할 수 있는 항목(confounded_with)은 "
+            "'현재 증거로는 구분되지 않는다'고 밝히고 무엇을 더 봐야 갈리는지 적어라."
         )
         user = (
             f"분석 대상 입력 ({target_source}): {', '.join(target_wafers)}\n"

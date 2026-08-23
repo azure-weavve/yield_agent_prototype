@@ -210,11 +210,11 @@ def test_gate_returns_the_tool_reject_reason_for_a_failing_claim():
 
 
 def test_gate_rejects_claim_that_did_not_pass_even_when_score_ties_the_top():
-    """실패 후보의 점수가 통과 후보의 최고 점수와 같거나 높아도 여전히 반려돼야 한다.
+    """실패 후보의 점수가 1등과 같거나 높아도 여전히 반려돼야 한다.
 
-    top_score 는 통과 후보만 대상으로 하므로, 점수 비교만으로는 passes=False 를
-    걸러내지 못한다 — 표본 부족(target_pass 미달)처럼 점수는 높은데 판별선을
-    못 넘는 후보가 있을 수 있다.
+    순위 목록은 **통과 후보만** 담으므로 점수 비교만으로는 passes=False 를 걸러내지
+    못한다 — 표본 부족(target_pass 미달)처럼 점수는 높은데 판별선을 못 넘는 후보가
+    있다. 판별선 통과가 순위보다 먼저 확인돼야 한다.
     """
     near_miss = {
         "loop": 2, "tool": "hyp_eqp_ch_commonality", "args": {},
@@ -259,11 +259,15 @@ def test_gate_rejects_lower_scored_claim_and_names_the_stronger_one():
     assert "eqp_ch_commonality:chamber:CC002000:ETCH2_B" in out["messages"][0].content
 
 
-def test_gate_accepts_tied_top_score():
-    """설비 롤업과 챔버가 동점이면 더 구체적인 쪽을 지목해도 승인한다.
+def test_gate_accepts_a_claim_tied_at_the_top_rank():
+    """1등이 여럿이면 그중 아무것이나 지목해도 승인한다.
 
-    타깃 전원이 거친 설비를 대조군이 아무도 안 거치면 두 레벨이 같은 점수가 되고,
-    정렬은 문자열순이라 덜 구체적인 설비 롤업이 앞선다. 동점을 막으면 챔버 지목이 반려된다.
+    타깃 전원이 거친 설비를 대조군이 아무도 안 거치면 설비 롤업과 챔버가 같은
+    점수·같은 p 가 된다. 동점을 막으면 더 구체적인 챔버 지목이 반려된다.
+
+    이 fixture 의 후보에는 `target_wafers` 가 없어 접히지 않고 두 묶음으로 남는다 -
+    도구가 목록을 실어 보내면 같은 wafer 라 한 묶음으로 접힌다(교락). 여기서
+    지키는 것은 **동점 1등 중 무엇을 골라도 반려하지 않는다**는 규칙 쪽이다.
     """
     tied = {
         "loop": 2, "tool": "hyp_eqp_ch_commonality", "args": {},
@@ -284,14 +288,20 @@ def test_gate_accepts_tied_top_score():
     assert out["finalize_status"] == "confirmed"
 
 
-def test_gate_records_the_approved_claim():
-    """승인 시 근거 수치가 상태에 남는다 - 리포트가 LLM 문장에 의존하지 않게."""
+def test_gate_records_the_approved_claims():
+    """승인 시 근거 수치가 상태에 남는다 - 리포트가 LLM 문장에 의존하지 않게.
+
+    이제 담기는 것은 dict 하나가 아니라 **접어서 줄 세운 목록**이다. LLM 이 고른
+    것만 남기면 다른 축의 근거가 여기서 사라지는데, 그것이 고치려던 결함이다.
+    """
     out = nodes.tools_node({"messages": [_ai_finalize(0.9)], "loop_count": 4,
                             "findings": [EVIDENCE_FINDING]})
     assert out["finalize_status"] == "confirmed"
-    assert out["final_claim"]["claim_id"] == "eqp_ch_commonality:chamber:Etch:ETCH-9"
-    assert out["final_claim"]["score"] == 1.0
-    assert (out["final_claim"]["target_pass"], out["final_claim"]["control_pass"]) == (3, 0)
+    lead = out["final_claims"][0]
+    assert lead["claim_id"] == "eqp_ch_commonality:chamber:Etch:ETCH-9"
+    assert lead["score"] == 1.0
+    assert (lead["target_pass"], lead["control_pass"]) == (3, 0)
+    assert lead["picked_by_llm"] is True        # LLM 이 서술 축으로 지목한 묶음
 
 
 def test_gate_asks_for_the_unrun_hypothesis_before_declaring_no_signal():
@@ -739,15 +749,15 @@ def test_report_node_appends_evidence_line_for_approved_claim():
         "target_group": ["W2406_02"], "status_summary": "요약", "findings": [],
         "final_hypothesis": "원인은 그 챔버다", "final_confidence": 0.9,
         "finalize_status": "confirmed",
-        "final_claim": {"claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH9_B",
-                        "score": 1.0, "target_pass": 3, "target_total": 3,
-                        "control_pass": 0, "control_total": 6},
+        "final_claims": [{"claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH9_B",
+                          "score": 1.0, "target_pass": 3, "target_total": 3,
+                          "control_pass": 0, "control_total": 6}],
     })
-    assert "[근거]" in out["report"]
+    assert "[근거 1]" in out["report"]
     assert "eqp_ch_commonality:chamber:CC002000:ETCH9_B" in out["report"]
     assert "분리 점수 1.0" in out["report"]
     assert "타깃 3/3" in out["report"] and "대조군 0/6" in out["report"]
-    assert out["report"].count("[근거]") == 1   # 클라이언트가 또 붙이면 중복된다
+    assert out["report"].count("[근거 1]") == 1   # 클라이언트가 또 붙이면 중복된다
 
 
 def test_report_node_has_no_evidence_line_without_claim():
@@ -757,7 +767,7 @@ def test_report_node_has_no_evidence_line_without_claim():
         "target_group": ["W1"], "status_summary": "s", "findings": [],
         "final_hypothesis": None, "final_confidence": None,
     })
-    assert "[근거]" not in out["report"]
+    assert "[근거" not in out["report"]
 
 
 def test_report_node_appends_evidence_line_regardless_of_client():
@@ -781,13 +791,13 @@ def test_report_node_appends_evidence_line_regardless_of_client():
             "target_group": ["W2406_02"], "status_summary": "요약", "findings": [],
             "final_hypothesis": "원인은 그 챔버다", "final_confidence": 0.9,
             "finalize_status": "confirmed",
-            "final_claim": {"claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH9_B",
-                            "score": 1.0, "target_pass": 3, "target_total": 3,
-                            "control_pass": 0, "control_total": 6},
+            "final_claims": [{"claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH9_B",
+                              "score": 1.0, "target_pass": 3, "target_total": 3,
+                              "control_pass": 0, "control_total": 6}],
         })
     finally:
         nodes._llm = original
-    assert "[근거]" in out["report"]
+    assert "[근거 1]" in out["report"]
     assert "eqp_ch_commonality:chamber:CC002000:ETCH9_B" in out["report"]
 
 
@@ -795,7 +805,7 @@ def test_report_node_passes_the_approved_claim_to_the_report():
     """승인된 claim 이 **클라이언트까지** 전달돼야 한다 (리포트 본문 확인만으로는 부족).
 
     `report_node` 는 `[근거]` 줄을 자기가 붙이므로, 리포트 문자열에서 claim_id 를
-    찾는 것만으로는 `generate_report(claim=...)` 인자를 지워도 통과한다. 그 인자는
+    찾는 것만으로는 `generate_report(claims=...)` 인자를 지워도 통과한다. 그 인자는
     운영 클라이언트의 "수치를 그대로 인용하라" 프롬프트를 만드는 유일한 통로라
     여기서 인자 자체를 잠근다.
     """
@@ -820,12 +830,12 @@ def test_report_node_passes_the_approved_claim_to_the_report():
             "target_group": ["W2406_02"], "status_summary": "요약", "findings": [],
             "final_hypothesis": "ETCH9_B 편중", "final_confidence": 0.9,
             "finalize_status": "confirmed",
-            "final_claim": approved,
+            "final_claims": [approved],
         })
     finally:
         nodes._llm = original
 
-    assert received.get("claim") == approved
+    assert received.get("claims") == [approved]
     assert "eqp_ch_commonality:chamber:CC002000:ETCH9_B" in out["report"]
 
 # ---------------------------------------------------------------- LLM 호출 실패
@@ -898,9 +908,9 @@ def test_report_node_keeps_the_evidence_line_when_the_llm_fails():
         "target_wafers": ["W2406_02"], "target_source": "manual",
         "target_group": ["W2406_02"], "status_summary": "요약", "findings": [],
         "final_hypothesis": "원인은 그 챔버다", "final_confidence": 0.9,
-        "finalize_status": "confirmed", "final_claim": claim,
+        "finalize_status": "confirmed", "final_claims": [claim],
     }))
-    assert "[근거]" in out["report"]
+    assert "[근거 1]" in out["report"]
     assert "eqp_ch_commonality:chamber:CC002000:ETCH9_B" in out["report"]
 
 

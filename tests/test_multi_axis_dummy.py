@@ -176,23 +176,100 @@ def test_wafer_sets_reach_the_gate_layer():
     assert set(chamber.target_wafers) != set(by_key[MULTI_TRUTH_PPID].target_wafers)
 
 
-def test_current_contract_drops_evidence():
-    """**고쳐야 할 동작의 박제.** 근거가 3개인데 계약이 담는 것은 1개다.
+def _bundle():
+    from graph import evidence
 
-    게이트는 `claim.score >= bundle.top_score(claim.tool)` 로 도구 안 최고 점수만
-    승인하고(`graph/nodes.py`), 상태의 `final_claim` 은 dict 하나다(`graph/state.py`).
-    셋이 동점이므로 **어느 것을 골라도 승인**되며, 고르는 순간 나머지 둘은 리포트에서
-    사라진다. 다축 집계가 들어오면 이 단언이 깨져야 한다.
+    findings = [{"loop": 1, "tool": f"hyp_{spec['id']}", "args": {},
+                 "result": engine.evaluate(spec, MULTI_TARGETS, MULTI_CONTROLS),
+                 "thought": ""}
+                for spec in registry.load_hypotheses()]
+    return evidence.build_bundle(findings)
+
+
+def test_rollup_and_chamber_fold_into_one_group():
+    """설비 롤업과 챔버는 **한 근거로 접힌다** - 같은 wafer 의 두 이름이다.
+
+    안 접으면 리포트에 근거가 둘로 보이고, 읽는 사람은 독립된 두 증거로 읽는다.
+    확신도가 부풀고 정밀분석 의뢰가 둘로 늘어난다.
     """
-    cands = _passing_candidates()
-    assert len(cands) == 3
-    assert len({c["_hypothesis_id"] for c in cands}) == 2
+    groups = _bundle().ranked_groups()
+    folded = [g for g in groups if g.confounded]
 
-    # 도구별 최고 점수가 곧 그 도구의 통과 후보 전부다 = 동점이라 우열이 없다.
-    for hid in ("eqp_ch_commonality", "ppid_commonality"):
-        same_tool = [c for c in cands if c["_hypothesis_id"] == hid]
-        assert len({c["score"] for c in same_tool}) == 1
+    assert len(folded) == 1
+    keys = {c.key for c in folded[0].claims}
+    assert keys == {MULTI_TRUTH_EQP, f"{MULTI_TRUTH_EQP}_{MULTI_TRUTH_CH}"}
+    assert set(folded[0].lead.target_wafers) == set(MULTI_TRUTH_CH_WAFERS)
 
-    # 그런데 승인되어 리포트로 나가는 것은 claim_id 하나뿐이다.
-    from graph import state
-    assert state.AgentState.__annotations__["final_claim"] is dict
+
+def test_the_two_real_signals_do_not_fold():
+    """부분 겹침은 접지 않는다 - 겹치지 않는 wafer 가 두 가설을 가르는 정보다.
+
+    두 신호는 {03,04} 만 공유한다(Jaccard 0.33). 접기 기준을 "충분히 겹치면" 으로
+    두면 이런 쌍이 임계값에 따라 합쳐졌다 갈라졌다 하고, 합쳐지는 순간 **무엇이
+    다른지가 사라진다.** 그래서 기준은 임의 임계가 아니라 집합 동일이다.
+    """
+    groups = _bundle().ranked_groups()
+
+    assert len(groups) == 2, "교락 쌍은 접히고 서로 다른 두 신호는 남아야 한다"
+    wafer_sets = [frozenset(g.lead.target_wafers) for g in groups]
+    assert wafer_sets[0] != wafer_sets[1]
+    assert set(map(frozenset, wafer_sets)) == {
+        frozenset(MULTI_TRUTH_CH_WAFERS), frozenset(MULTI_TRUTH_PPID_WAFERS)}
+
+
+def test_both_axes_survive_the_gate_and_reach_the_report():
+    """**고친 동작.** 근거가 둘이면 둘 다 상태와 리포트에 남는다.
+
+    예전 계약은 도구 안 최고 점수 하나만 승인해서, 축이 여럿일 때 LLM 이 고르지
+    않은 축의 근거가 여기서 사라졌다. 이 테스트가 그 유실을 막는다.
+    """
+    from dataclasses import asdict
+
+    from graph import evidence, nodes
+
+    bundle = _bundle()
+    groups = bundle.ranked_groups()
+    lead_claim = groups[0].lead
+
+    update = {}
+    verdict = nodes._finalize_gate(
+        {"claim_id": lead_claim.claim_id, "hypothesis": "다축", "confidence": 0.9},
+        loop=3, update=update,
+        findings=[{"loop": 1, "tool": f"hyp_{spec['id']}", "args": {},
+                   "result": engine.evaluate(spec, MULTI_TARGETS, MULTI_CONTROLS),
+                   "thought": ""}
+                  for spec in registry.load_hypotheses()])
+
+    assert update["finalize_status"] == "confirmed"
+    assert "승인" in verdict
+    claims = update["final_claims"]
+    assert len(claims) == 2, "두 축의 근거가 모두 실려야 한다"
+    assert sum(1 for c in claims if c["picked_by_llm"]) == 1
+
+    report = nodes.report_node({
+        "target_wafers": MULTI_TARGETS, "target_source": "manual",
+        "target_group": MULTI_TARGETS, "status_summary": "요약", "findings": [],
+        "final_hypothesis": "다축", "final_confidence": 0.9,
+        "finalize_status": "confirmed", "final_claims": claims,
+    })["report"]
+
+    assert "[근거 1]" in report and "[근거 2]" in report
+    # 두 축의 이름이 모두 리포트에 남는다
+    assert f"{MULTI_TRUTH_EQP}_{MULTI_TRUTH_CH}" in report
+    assert MULTI_TRUTH_PPID in report
+    # 교락은 "같은 사실" 로 명시된다 - 근거를 둘로 세지 않는다
+    assert "교락" in report and "구분되지 않는다" in report
+
+
+def test_ranking_is_deterministic_when_the_evidence_ties():
+    """동점이어도 순서가 흔들리지 않는다 - 리포트가 실행마다 바뀌면 안 된다.
+
+    이 lot 은 두 근거의 p 도 점수도 같다. 우열을 못 가리는 것이 사실이지만,
+    그 사실을 **매번 같은 순서로** 보여야 사람이 리포트를 비교할 수 있다.
+    """
+    orders = [tuple(g.lead.claim_id for g in _bundle().ranked_groups())
+              for _ in range(3)]
+    assert len(set(orders)) == 1
+
+    groups = _bundle().ranked_groups()
+    assert groups[0].rank_key[:2] == groups[1].rank_key[:2]   # p·점수가 동점이다
