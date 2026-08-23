@@ -314,7 +314,8 @@ def _sweep(rows, t_valid: int, c_valid: int, nt: int, nc: int):
     return best
 
 
-def _aggregate_metro(strata_masks, combos, answer, seen) -> tuple[dict, list]:
+def _aggregate_metro(strata_masks, combos, answer, seen,
+                     collect_bits: bool = False) -> tuple[dict, list]:
     """라벨에서 조합별 최적 후보를 낸다 — 순수 함수. 실제와 귀무가 이 함수를 같이 탄다.
 
     strata_masks = [(root_lot_id, t_mask, c_mask), ...]
@@ -355,14 +356,17 @@ def _aggregate_metro(strata_masks, combos, answer, seen) -> tuple[dict, list]:
         for direction, (score, split, a, c) in best.items():
             if score <= MIN_SCORE:
                 continue       # 귀무에도 같은 절단을 건다 (설계 §1-4)
-            agg[(*key, direction)] = {
+            entry = {
                 "score": score, "split": split, "a": a, "c": c,
                 "nt": nt, "nc": nc, "strata": n_strata,
-                # 분모에 든 wafer 마스크. 방향과 무관하게 조합당 한 번 잡히므로
-                # 여기 실어 두면 최종 후보의 wafer 목록을 **순열 경로 밖에서**
-                # 되짚을 수 있다 (_split_masks). 순열은 score 만 읽고 버린다.
-                "t_valid": t_valid, "c_valid": c_valid,
             }
+            if collect_bits:
+                # 분모에 든 wafer 마스크. 최종 후보의 wafer 목록을 **순열 경로 밖에서**
+                # 되짚는 데 쓴다(_split_masks). 순열은 score 만 읽고 버리므로 귀무에는
+                # 싣지 않는다 - `commonality._aggregate` 가 같은 이유로 같은 형태다.
+                entry["t_valid"] = t_valid
+                entry["c_valid"] = c_valid
+            agg[(*key, direction)] = entry
     return agg, strata_report
 
 
@@ -462,7 +466,8 @@ def find_metro_commonality(target_wafers: list[str], control_wafers: list[str],
             c_mask |= bits[w]
         strata_masks.append((rl, t_mask, c_mask))
 
-    agg, strata_report = _aggregate_metro(strata_masks, combos, answer, seen_bits)
+    agg, strata_report = _aggregate_metro(strata_masks, combos, answer, seen_bits,
+                                          collect_bits=True)  # 관측만
 
     # 계측 행이 아예 없는 wafer 는 신호가 아니라 보고 대상이다. stratum 이 스킵돼도
     # 집계와 무관하게 세야 하므로 _aggregate_metro 밖에 둔다.

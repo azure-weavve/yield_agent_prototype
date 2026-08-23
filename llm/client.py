@@ -50,15 +50,23 @@ class LLMClient(ABC):
         ...
 
 
-# EQP_CH 로 안 갈릴 때 순서대로 써 보는 나머지 등록 가설 (이름, 그 tool 을 고른 이유).
-# **hypotheses.yaml 에 가설을 추가하면 여기도 추가해야 한다** — 게이트는 등록 가설을
-# 전부 돌린 뒤에만 no_signal 을 선언하므로, 빠뜨리면 데모가 루프 한계까지 가서
-# inconclusive 로 끝난다(사유가 틀린 보고가 된다).
+# EQP_CH 가 갈렸어도 **반드시 함께 보는** 축. 챔버와 레시피는 같은 스텝의 같은 wafer 를
+# 두 이름으로 부르는 일이 흔하다(더미 RECENT_LOT 에서 ETCH9_B 와 PPID_X 가 정확히 같은
+# 3장을 가리킨다). 챔버가 갈렸다고 여기서 멈추면 그 교락이 아예 관측되지 않아, 게이트가
+# 접을 것도 없고 리포트는 근거 하나만 든 채 확신에 찬 문장을 쓴다 — 다축 집계가 잡으려는
+# 상황 자체가 데모에서 한 번도 안 나타난다.
+_ALWAYS_WITH_CHAMBER = (
+    "hyp_ppid_commonality",
+    "챔버가 갈렸지만 레시피도 함께 본다 - 같은 wafer 를 두 이름으로 설명하는 "
+    "교락인지 확인해야 의뢰 대상을 정할 수 있다.")
+
+# 경로 축이 전부 조용할 때 순서대로 써 보는 나머지 등록 가설 (이름, 고른 이유).
+# **hypotheses.yaml 에 가설을 추가하면 여기(또는 위)에도 추가해야 한다** — 게이트는
+# 등록 가설을 전부 돌린 뒤에만 no_signal 을 선언하므로, 빠뜨리면 데모가 루프 한계까지
+# 가서 inconclusive 로 끝난다(사유가 틀린 보고가 된다).
 _FALLBACK_HYPOTHESES = [
-    ("hyp_ppid_commonality",
-     "EQP_CH 로는 두 그룹이 안 갈렸다. 2차 legend(PPID)로 대조한다."),
     ("hyp_step_passage_commonality",
-     "PPID 로도 안 갈렸다. 스텝 통과 여부(비정규 스텝 포함)로 대조한다."),
+     "설비·PPID 로도 안 갈렸다. 스텝 통과 여부(비정규 스텝 포함)로 대조한다."),
     ("hyp_metro_commonality",
      "경로 축으로는 안 갈렸다. 계측값 구간(두께·CD)으로 대조한다."),
 ]
@@ -103,6 +111,15 @@ class ScriptedMockLLMClient(LLMClient):
 
         res = self._result(tool_msgs, "hyp_eqp_ch_commonality")
         passing = [c for c in res.get("candidates", []) if c["passes"]]
+
+        # 통과 여부와 무관하게 레시피 축을 함께 돌린다 (교락 확인 - 위 상수 참조).
+        ppid_name, ppid_why = _ALWAYS_WITH_CHAMBER
+        if ppid_name not in done:
+            return self._call(ppid_name,
+                              {"group_ids": target, "control_ids": control}, ppid_why)
+        passing += [c for c in self._result(tool_msgs, ppid_name).get("candidates", [])
+                    if c["passes"]]
+
         for name, why in _FALLBACK_HYPOTHESES:
             # EQP_CH 로 안 갈렸다. 남은 등록 가설을 순서대로 써 본다 - 첫 no_signal 로
             # 물러서면 안 써 본 가설을 남긴 채 포기하는 셈이고, 게이트도 no_signal 을
@@ -125,16 +142,26 @@ class ScriptedMockLLMClient(LLMClient):
                                "원인이 root_lot 전체에 걸렸을 수 있어 lot 밖 대조군이 필요하다",
                  "confidence": 0.2},
                 "등록 가설을 다 돌렸으나 분리되는 후보가 없다. 확정할 근거가 없으므로 물러선다.")
-        top = passing[0]
+        # **지목은 게이트와 같은 순위 함수로 고른다.** 도구는 후보를 점수순으로
+        # 돌려주는데 게이트는 순열 p 로 줄을 세운다 - 둘이 어긋나면 반려가 오고,
+        # 이 스크립트에는 그 반려에 반응할 분기가 없어 같은 finalize 를 루프 한계까지
+        # 되풀이한다(확정될 분석이 inconclusive 로 끝난다). 순위를 여기서 다시
+        # 구현하지 않고 게이트가 쓰는 것을 그대로 부르면 어긋날 자리가 없어진다.
+        top = self._top_ranked(tool_msgs)
+        if top is None:                      # 방어: 위에서 passing 을 확인했으므로 정상 경로는 아니다
+            return self._call(
+                "finalize",
+                {"claim_id": "", "hypothesis": "통과 후보를 순위로 정렬하지 못했다",
+                 "confidence": 0.2},
+                "후보는 있으나 순위를 매길 수 없다. 지목 없이 물러선다.")
 
-        val = top["value"][-1]
-        if top["level"] == "step_passage":
+        if top.level == "step_passage":
             # 이 축은 키가 스텝 자체다 - "무엇을 썼는가" 가 아니라 "거쳤는가" 가 결론이다
-            hyp = (f"불량군만 {top['step_seq']} 스텝을 거쳤다(분리 점수 {top.get('score')}, "
-                   f"불량군 {top['target_pass']}장 전용)")
+            hyp = (f"불량군만 {top.step_seq} 스텝을 거쳤다(분리 점수 {top.score}, "
+                   f"불량군 {top.target_pass}장 전용)")
         else:
-            hyp = (f"{top['value'][0]} 공정 {val} 편중(분리 점수 {top.get('score')}, "
-                   f"불량군 {top['target_pass']}장 전용)이 원인")
+            hyp = (f"{top.step_seq} 공정 {top.key} 편중(분리 점수 {top.score}, "
+                   f"불량군 {top.target_pass}장 전용)이 원인")
 
         if "compare_sensor_distribution" not in TOOLS_BY_NAME:
             # 2단이 **아예 없는 구성**(SENSOR_MODE=off)이다. 아래 "근거를 못 냈다" 와
@@ -144,7 +171,7 @@ class ScriptedMockLLMClient(LLMClient):
             # 점수)을 이미 충족하므로 그것으로 판단하되, 무엇이 없는지 문장에 남긴다.
             return self._call(
                 "finalize",
-                {"claim_id": top["claim_id"],
+                {"claim_id": top.claim_id,
                  "hypothesis": hyp + " - 2단 센서가 연결되지 않은 구성이라 1단 경로 근거만으로 판단",
                  "confidence": 0.85},
                 "센서 도구가 없는 구성이다. 1단 경로 근거로 판단한다.")
@@ -152,7 +179,7 @@ class ScriptedMockLLMClient(LLMClient):
         if "compare_sensor_distribution" not in done:
             return self._call(
                 "compare_sensor_distribution",
-                {"step_seq": top["step_seq"],
+                {"step_seq": top.step_seq,
                  "group_ids": target, "control_ids": control},
                 "챔버까지 좁혔다. 그 스텝의 센서 분포로 '왜' 를 본다.")
 
@@ -163,7 +190,7 @@ class ScriptedMockLLMClient(LLMClient):
             # 내면 없는 근거를 있다고 말하는 꼴이라, 이 Stage 가 없앤 조용한 오확증이 된다.
             return self._call(
                 "finalize",
-                {"claim_id": top["claim_id"],
+                {"claim_id": top.claim_id,
                  "hypothesis": hyp + " - 다만 2단 센서 근거는 확보하지 못했다",
                  "confidence": 0.5},
                 f"1단은 갈렸지만 2단이 근거를 못 냈다(status={sensor.get('status')}). "
@@ -172,7 +199,7 @@ class ScriptedMockLLMClient(LLMClient):
         hyp += f" - {c['sensor_name']} 효과크기 {c['effect_size']}"
         return self._call(
             "finalize",
-            {"claim_id": top["claim_id"], "hypothesis": hyp, "confidence": 0.9},
+            {"claim_id": top.claim_id, "hypothesis": hyp, "confidence": 0.9},
             "챔버 편중에 센서 근거까지 붙었다. 근거 충분.")
 
     # -------------------------------------------------- report
@@ -239,6 +266,28 @@ class ScriptedMockLLMClient(LLMClient):
             raise ValueError("messages 에서 GROUPS_JSON 라인을 찾지 못했다")
         groups = json.loads(m.group(1))
         return groups["target"], groups["control"]
+
+    @staticmethod
+    def _top_ranked(tool_msgs):
+        """지금까지 본 도구 결과 전부에서 게이트 기준 1등 claim.
+
+        **게이트가 쓰는 함수를 그대로 부른다.** 여기서 순위를 다시 구현하면 규칙이
+        바뀔 때 한쪽만 고쳐져 조용히 어긋나고, 그 어긋남은 "반려 - 다시 제출 - 반려"
+        왕복으로만 드러난다(루프 한계까지 가서 inconclusive 로 끝난다).
+
+        지연 import 는 순환을 피하려는 것이 아니라(순환은 없다) 데모 전용 경로 때문에
+        운영 import 그래프를 넓히지 않으려는 것이다.
+        """
+        from graph import evidence
+
+        findings = []
+        for msg in tool_msgs:
+            try:
+                findings.append({"tool": msg.name, "result": json.loads(msg.content)})
+            except (TypeError, ValueError):
+                continue          # 도구 오류는 문자열로 온다 - 증거가 아니다
+        groups = evidence.build_bundle(findings).ranked_groups()
+        return groups[0].lead if groups else None
 
     @staticmethod
     def _result(tool_msgs, name):
@@ -331,9 +380,13 @@ class OpenAILLMClient(LLMClient):
             f"결론 가설: {hypothesis or '미확정'} / 확신도: {confidence} / "
             f"판정: {finalize_status or '미상'}"
         )
-        if claim:
-            user += (f"\n게이트가 확인한 근거(수치를 그대로 인용하라): "
-                     f"{json.dumps(claim, ensure_ascii=False)}")
+        if claims:
+            user += (f"\n게이트가 확인한 근거 {len(claims)}건 "
+                     f"(순위는 코드가 매겼다. 수치를 그대로 인용하고, 하나만 고르지 말고 "
+                     f"전부 서술하라. rank 가 같은 항목은 우열을 가릴 수 없다는 뜻이고, "
+                     f"confounded_with 가 있으면 같은 wafer 를 다른 이름으로도 설명할 수 "
+                     f"있다는 뜻이니 둘 중 하나로 단정하지 마라): "
+                     f"{json.dumps(claims, ensure_ascii=False)}")
         resp = self.llm.invoke([SystemMessage(content=sys), HumanMessage(content=user)])
         return resp.content.strip()
 

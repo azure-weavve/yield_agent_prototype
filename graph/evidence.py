@@ -76,11 +76,17 @@ class ClaimGroup:
 
     @property
     def rank_key(self) -> tuple:
+        """**우열을 가르는 값.** 이게 같으면 동점이고, 동점은 우열이 없다는 뜻이다."""
         return _rank_key(self.lead)
+
+    @property
+    def sort_key(self) -> tuple:
+        """표시 순서를 고정하는 값. 우열 비교에 쓰면 안 된다."""
+        return _sort_key(self.lead)
 
 
 def _rank_key(claim: Claim) -> tuple:
-    """순위 기준: 순열 p 가 먼저, 동점이면 분리 점수, 그다음 결정론적 tie-break.
+    """순위 기준: 순열 p 가 먼저, 동점이면 분리 점수. **여기까지가 우열이다.**
 
     **원시 점수를 1순위로 쓰지 않는다.** 점수는 탐색 폭에 따라 부풀고(계측 축은
     무신호에서도 후보의 48.7%가 판별선을 넘는다), 축마다 그 부풀림 정도가 다르다.
@@ -88,7 +94,17 @@ def _rank_key(claim: Claim) -> tuple:
     p 가 없으면(순열을 껐으면) 최하위로 민다 - 없는 것을 좋은 것으로 읽으면 안 된다.
     """
     p = claim.p_permutation
-    return (1.0 if p is None else p, -claim.score, claim.claim_id)
+    return (1.0 if p is None else p, -claim.score)
+
+
+def _sort_key(claim: Claim) -> tuple:
+    """정렬용. 우열(`_rank_key`)에 **표시 순서 고정용 tie-break** 만 덧붙인다.
+
+    둘을 한 튜플로 겸하게 두었더니 게이트는 claim_id 까지 넣어 비교하고 등수 계산은
+    빼고 비교해서, **동점이라고 보고해 놓고 게이트는 반려하는** 상태가 됐다.
+    claim_id 는 우열이 아니므로 우열을 묻는 자리에서는 절대 보이면 안 된다.
+    """
+    return (*_rank_key(claim), claim.claim_id)
 
 
 @dataclass(frozen=True)
@@ -116,9 +132,9 @@ class Bundle:
                    else ("__unfoldable__", claim.claim_id))
             buckets.setdefault(key, []).append(claim)
 
-        groups = [ClaimGroup(claims=tuple(sorted(cs, key=_rank_key)))
+        groups = [ClaimGroup(claims=tuple(sorted(cs, key=_sort_key)))
                   for cs in buckets.values()]
-        return sorted(groups, key=lambda g: g.rank_key)
+        return sorted(groups, key=lambda g: g.sort_key)
 
 
 def find_group(groups: list[ClaimGroup], claim_id: str) -> ClaimGroup | None:
@@ -143,9 +159,16 @@ def group_to_dict(group: ClaimGroup, picked: bool = False) -> dict:
     """
     lead = asdict(group.lead)
     lead["picked_by_llm"] = picked
+    # 접힌 쪽도 **자기 수치를 그대로 들고 간다.** 이름만 남기면 접기가 곧 정보
+    # 손실이 된다 - 같은 wafer 를 가리켜도 분모(target_total)와 p 는 다를 수 있고,
+    # 그 차이가 "어느 이름으로 의뢰할 것인가" 를 정하는 재료다. 예를 들어 계측
+    # 후보는 분모가 계측된 몇 장뿐이라 같은 wafer 를 가리켜도 근거의 무게가 다르다.
     lead["confounded_with"] = [
         {"claim_id": c.claim_id, "hypothesis_id": c.hypothesis_id,
-         "level": c.level, "key": c.key, "step_seq": c.step_seq}
+         "level": c.level, "key": c.key, "step_seq": c.step_seq,
+         "score": c.score, "p_permutation": c.p_permutation,
+         "target_pass": c.target_pass, "target_total": c.target_total,
+         "control_pass": c.control_pass, "control_total": c.control_total}
         for c in group.claims[1:]
     ]
     return lead
@@ -157,13 +180,13 @@ def groups_to_dicts(groups: list[ClaimGroup], picked: ClaimGroup | None = None) 
     번호만 매기면 `[근거 1]` 과 `[근거 2]` 가 강약으로 읽힌다. 그런데 p 도 점수도
     같으면 우열을 가릴 근거가 실제로 없다 - 그 "못 가린다" 를 표현하지 못하는 것이
     바로 이 프로젝트가 고치려는 결함이다(무엇을 모르는지 알아야 다음에 무엇을 볼지
-    추천할 수 있다). tie-break 로 쓰는 claim_id 는 등수 계산에서 뺀다 - 그건 표시
-    순서를 고정하려고 넣은 것이지 우열이 아니다.
+    추천할 수 있다). 표시 순서를 고정하는 claim_id 는 `sort_key` 에만 있고 `rank_key`
+    에는 없다 - 우열을 묻는 자리에 그것이 섞이면 안 된다.
     """
     out: list[dict] = []
     rank, prev = 0, None
     for i, group in enumerate(groups):
-        key = group.rank_key[:2]          # (p, -score) — claim_id 는 우열이 아니다
+        key = group.rank_key              # 우열만. claim_id 는 여기 없다
         if key != prev:
             rank, prev = i + 1, key
         item = group_to_dict(group, picked=(group is picked))
@@ -186,12 +209,22 @@ def format_group_line(group: dict) -> str:
         line += f" · 대상 {', '.join(wafers)}"
     others = group.get("confounded_with") or []
     if others:
-        names = ", ".join(f"{o['key']}({o['level']})" for o in others)
         # 여기가 이 기능의 요점이다. 같은 wafer 를 두 이름으로 부르는 것을 근거 둘로
         # 세면 확신도가 부풀고, 하나를 버리면 의뢰 대상을 못 정한다. 둘 다 적되
         # **하나의 사실**임을 밝히고, 무엇을 더 봐야 갈리는지를 남긴다.
-        line += (f"\n        같은 wafer 를 {names} 로도 설명할 수 있다 (교락) - "
-                 f"현재 증거로는 구분되지 않는다")
+        #
+        # 분모까지 적는 이유: 같은 wafer 를 가리켜도 그 wafer 가 **몇 장 중 몇 장인지**
+        # 는 축마다 다르다(계측 축은 잰 wafer 만 분모다). 이름만 적으면 접힌 쪽이
+        # 대표와 같은 무게인 것처럼 읽힌다.
+        for o in others:
+            detail = ""
+            if o.get("target_total") is not None:
+                detail = (f" · 타깃 {o['target_pass']}/{o['target_total']}"
+                          f" · 대조군 {o['control_pass']}/{o['control_total']}")
+                if o.get("p_permutation") is not None:
+                    detail += f" · 순열 p {o['p_permutation']}"
+            line += (f"\n        같은 wafer 를 {o['key']}({o['level']}) 로도 설명할 수 "
+                     f"있다 (교락){detail} - 현재 증거로는 구분되지 않는다")
     if group.get("tied"):
         # 번호만 보면 앞선 것이 더 강해 보인다. 실제로는 순열 p 도 분리 점수도 같아
         # 우열을 가릴 근거가 없다 - 그 사실이 다음에 무엇을 볼지 정하는 입력이다.

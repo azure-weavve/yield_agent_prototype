@@ -50,7 +50,16 @@ def test_scripted_sequence():
          "step_seq": "Etch", "score": 1.0, "target_pass": 3, "passes": True},
     ]})]
 
-    # 3) 2단 — 지목된 스텝의 센서 분포
+    # 3) 챔버가 갈렸어도 레시피 축을 **함께** 돌린다 - 교락 확인용.
+    #    여기서 멈추면 같은 wafer 를 두 이름으로 부르는 상황이 관측되지 않아,
+    #    게이트가 접을 것도 없고 리포트가 근거 하나만 든 채 확신에 찬 문장을 쓴다.
+    ai = llm.analyze_step(msgs)
+    assert ai.tool_calls[0]["name"] == "hyp_ppid_commonality"
+    assert ai.tool_calls[0]["args"]["group_ids"] == TARGET
+    msgs += [ai, _tm("hyp_ppid_commonality", {"hypothesis_id": "ppid_commonality",
+                                              "status": "no_signal", "candidates": []})]
+
+    # 4) 2단 — 지목된 스텝의 센서 분포
     ai = llm.analyze_step(msgs)
     assert ai.tool_calls[0]["name"] == "compare_sensor_distribution"
     assert ai.tool_calls[0]["args"]["step_seq"] == "Etch"
@@ -249,6 +258,9 @@ def test_scripted_keeps_claim_id_when_stage2_fails():
             {"level": "chamber", "key": "ETCH9_B", "value": ["Etch", "ETCH9_B"],
              "claim_id": "eqp_ch_commonality:chamber:Etch:ETCH9_B",
              "step_seq": "Etch", "score": 1.0, "target_pass": 3, "passes": True}]})]
+    # 챔버가 갈렸어도 레시피 축을 함께 돌린다 (교락 확인) - 그다음이 2단이다
+    msgs += [llm.analyze_step(msgs), _tm("hyp_ppid_commonality", {
+        "hypothesis_id": "ppid_commonality", "status": "no_signal", "candidates": []})]
     ai = llm.analyze_step(msgs)
     assert ai.tool_calls[0]["name"] == "compare_sensor_distribution"
     msgs += [ai, _tm("compare_sensor_distribution",
@@ -292,3 +304,69 @@ def test_generate_report_no_longer_renders_evidence_line_itself():
                  "control_pass": 0, "control_total": 6}],
     )
     assert "[근거]" not in report
+
+
+# ---------------------------------------------------------------- 운영 클라이언트 계약
+# mock 만 테스트하면 사내 경로(LLM_MODE=openai)는 **한 줄도 실행되지 않는다.**
+# 실제로 generate_report 의 인자 이름만 바꾸고 본문을 안 고쳐 NameError 가 났는데,
+# 297개 테스트가 전부 통과했다. 리포트는 report_node 가 예외를 삼켜 stub 으로
+# 대체하므로 사내에서는 **조용히 산문 리포트가 사라질** 뿐이었다.
+
+class _CapturingLLM:
+    """사내 서빙 대역. 프롬프트만 받아 둔다."""
+
+    def __init__(self):
+        self.seen = None
+
+    def invoke(self, messages):
+        self.seen = messages[-1].content
+
+        class _Resp:
+            content = "산문 리포트"
+        return _Resp()
+
+
+def _openai_client():
+    from llm.client import OpenAILLMClient
+
+    client = OpenAILLMClient.__new__(OpenAILLMClient)   # 연결 없이 메서드만 시험
+    client.llm = _CapturingLLM()
+    return client
+
+
+def test_operational_client_renders_a_report_without_raising():
+    """운영 클라이언트의 generate_report 가 실제로 돌아야 한다.
+
+    report_node 가 예외를 삼키므로 여기서 안 잡으면 사내에서만 조용히 깨진다.
+    """
+    client = _openai_client()
+    report = client.generate_report(
+        target_wafers=["W2406_02"], target_source="manual", target_group=["W2406_02"],
+        status_summary="요약", findings=[], hypothesis="h", confidence=0.9,
+        finalize_status="confirmed",
+        claims=[{"claim_id": "a", "rank": 1}, {"claim_id": "b", "rank": 1}])
+    assert report == "산문 리포트"
+
+
+def test_operational_client_passes_every_claim_to_the_prompt():
+    """근거를 **전부** 프롬프트에 넣어야 한다 - 하나만 넣으면 다축이 무의미해진다."""
+    client = _openai_client()
+    client.generate_report(
+        target_wafers=["W1"], target_source="manual", target_group=["W1"],
+        status_summary="s", findings=[], hypothesis="h", confidence=0.9,
+        finalize_status="confirmed",
+        claims=[{"claim_id": "chamber-a", "rank": 1}, {"claim_id": "ppid-b", "rank": 1}])
+    prompt = client.llm.seen
+    assert "chamber-a" in prompt and "ppid-b" in prompt
+    assert "근거 2건" in prompt
+    # 하나만 고르지 말라는 지시가 함께 가야 한다
+    assert "전부 서술" in prompt
+
+
+def test_operational_client_works_without_claims():
+    """근거가 없는 판정(no_signal 등)에서도 돌아야 한다."""
+    client = _openai_client()
+    assert client.generate_report(
+        target_wafers=["W1"], target_source="manual", target_group=["W1"],
+        status_summary="s", findings=[], hypothesis=None, confidence=0.2,
+        finalize_status="no_signal", claims=[]) == "산문 리포트"

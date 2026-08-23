@@ -261,6 +261,58 @@ def test_both_axes_survive_the_gate_and_reach_the_report():
     assert "교락" in report and "구분되지 않는다" in report
 
 
+def test_every_tied_group_is_accepted_not_just_the_first():
+    """동점 1등이 여럿이면 **그중 무엇을 지목해도** 승인돼야 한다.
+
+    처음에는 `groups[0].lead` 만 넣어 시험해서 통과했는데, 게이트가 우열 비교에
+    표시 순서용 claim_id 까지 넣고 있어 **두 번째 동점 묶음은 반려**됐다. 리포트는
+    "등수 1, 동점" 이라 하면서 게이트는 "더 앞선 근거가 있다" 고 반려하는, 서로
+    모순되는 상태였다. LLM 은 문자열 정렬 순서를 알 길이 없으니 반려를 받아도
+    고칠 수가 없고 루프 한계까지 왕복하다 inconclusive 로 끝난다.
+
+    그래서 하나가 아니라 **동점 전부**를 넣어 본다.
+    """
+    from graph import evidence, nodes
+
+    findings = [{"loop": 1, "tool": f"hyp_{spec['id']}", "args": {},
+                 "result": engine.evaluate(spec, MULTI_TARGETS, MULTI_CONTROLS),
+                 "thought": ""}
+                for spec in registry.load_hypotheses()]
+    groups = evidence.build_bundle(findings).ranked_groups()
+    dicts = evidence.groups_to_dicts(groups)
+
+    tied = [g for g, d in zip(groups, dicts) if d["rank"] == 1]
+    assert len(tied) == 2, "이 fixture 는 1등이 둘이어야 한다"
+
+    for group in tied:
+        update = {}
+        nodes._finalize_gate(
+            {"claim_id": group.lead.claim_id, "hypothesis": "h", "confidence": 0.9},
+            loop=3, update=update, findings=findings)
+        assert update.get("finalize_status") == "confirmed", (
+            f"{group.lead.claim_id} 를 지목했더니 반려됐다 - 등수가 같은데 반려하면 "
+            f"LLM 이 고칠 방법이 없다")
+        assert len(update["final_claims"]) == 2
+
+
+def test_rank_key_carries_no_display_tiebreak():
+    """우열을 묻는 값에 표시 순서용 tie-break 가 섞이면 안 된다.
+
+    이 둘을 한 튜플로 겸하게 두어 위 결함이 생겼다. 등수를 계산하는 쪽과 게이트가
+    같은 값을 봐야 "동점이라 보고하고 반려" 같은 모순이 안 생긴다.
+    """
+    from graph import evidence
+
+    groups = evidence.build_bundle([
+        {"loop": 1, "tool": f"hyp_{spec['id']}", "args": {},
+         "result": engine.evaluate(spec, MULTI_TARGETS, MULTI_CONTROLS), "thought": ""}
+        for spec in registry.load_hypotheses()]).ranked_groups()
+
+    assert groups[0].rank_key == groups[1].rank_key      # 우열은 같다
+    assert groups[0].sort_key != groups[1].sort_key      # 표시 순서만 다르다
+    assert len(groups[0].rank_key) == 2                  # (p, -score) 뿐이다
+
+
 def test_ranking_is_deterministic_when_the_evidence_ties():
     """동점이어도 순서가 흔들리지 않는다 - 리포트가 실행마다 바뀌면 안 된다.
 
@@ -272,4 +324,4 @@ def test_ranking_is_deterministic_when_the_evidence_ties():
     assert len(set(orders)) == 1
 
     groups = _bundle().ranked_groups()
-    assert groups[0].rank_key[:2] == groups[1].rank_key[:2]   # p·점수가 동점이다
+    assert groups[0].rank_key == groups[1].rank_key   # p·점수가 동점이다
