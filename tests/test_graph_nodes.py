@@ -361,6 +361,137 @@ def test_gate_tells_how_to_step_back_only_when_stepping_back_would_work():
     assert "claim_id 를 비우" in out["messages"][0].content
 
 
+# 전축이 조용한데 한 축만 판별선을 못 넘은 후보를 낸 상태. 통과 후보는 0개다.
+_WEAK_IN_SILENCE = {
+    "loop": 2, "tool": "hyp_eqp_ch_commonality", "args": {},
+    "result": {"hypothesis_id": "eqp_ch_commonality", "status": "no_signal", "candidates": [
+        {"claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH9_B", "step_seq": "CC002000",
+         "key": "ETCH9_B", "level": "chamber", "passes": False,
+         "reject_reason": "분리 점수 0.4 < 0.5", "score": 0.4,
+         "target_pass": 4, "target_total": 4, "control_pass": 3, "control_total": 5},
+    ]},
+    "thought": "판별선을 못 넘은 후보",
+}
+_ALL_NO_PAIR = [{
+    "loop": 2, "tool": t, "args": {},
+    "result": {"hypothesis_id": h, "status": "no_paired_stratum", "candidates": []},
+    "thought": "짝 없음",
+} for t, h in [("hyp_eqp_ch_commonality", "eqp_ch_commonality"),
+               ("hyp_ppid_commonality", "ppid_commonality"),
+               ("hyp_step_passage_commonality", "step_passage_commonality"),
+               ("hyp_metro_commonality", "metro_commonality")]]
+
+
+def test_gate_tells_how_to_step_back_when_the_named_claim_missed_the_line():
+    """통과 후보가 0개면, 지목한 claim 이 실재하든 아니든 물러설 길을 알려 줘야 한다.
+
+    '판별선 미달' 분기는 `_no_candidate_action` 을 안 거쳐 "통과한 후보를 지목하라"
+    만 돌려준다 - 지목할 통과 후보가 **하나도 없는데도**. 그래서 지어낸 claim_id 를
+    낸 LLM 은 물러설 길을 안내받고, 실재하는 미통과 claim 을 정직하게 지목한 LLM 은
+    막다른 길에 몰려 루프 한계까지 왕복하다 inconclusive 로 끝난다(조치가 다르다:
+    재시도 vs lot 밖 대조군).
+    """
+    findings = [_WEAK_IN_SILENCE, PPID_SILENT, STEP_PASSAGE_SILENT, METRO_SILENT]
+    ai = _ai_finalize(0.9, claim_id="eqp_ch_commonality:chamber:CC002000:ETCH9_B")
+    out = nodes.tools_node({"messages": [ai], "loop_count": 3, "findings": findings})
+    assert "finalize_accepted" not in out
+    assert "claim_id 를 비우" in out["messages"][0].content
+
+
+def test_gate_tells_how_to_step_back_when_every_axis_is_uncomputable():
+    """(3)번이 열리는 상태에서도 물러설 길을 알려 줘야 한다.
+
+    안내 조건이 `no_signal in statuses` 뿐이라 (3)이 열리는 상태(정의상 NO_DATA
+    상태만 있어 no_signal 이 섞일 수 없다)에는 **한 번도 안 붙었다.** 그래서
+    no_comparable_data(→ 적재/추출 범위 확인)여야 할 것이 inconclusive(→ 재시도)로
+    나간다 - (3)에 하한을 붙이면서 만든 거울상 오보고다.
+    """
+    _assert_covers_every_hypothesis(_ALL_NO_PAIR)
+    ai = _ai_finalize(0.9, claim_id="지어낸_ID")
+    out = nodes.tools_node({"messages": [ai], "loop_count": 3, "findings": _ALL_NO_PAIR})
+    assert "finalize_accepted" not in out
+    assert "claim_id 를 비우" in out["messages"][0].content
+
+
+def test_gate_does_not_promise_stepping_back_while_axes_remain_unrun():
+    """반대로, 아직 안 돌린 축이 있으면 (3)은 안 열리므로 물러서기를 권하면 안 된다.
+
+    (2)도 안 열린다(no_signal status 가 없다). 여기서 "비우고 제출하라" 고 하면
+    같은 반려가 돌아와 라이브락이다 - 안내 조건을 넓히면서 이 경계가 무너지기 쉽다.
+    """
+    ai = _ai_finalize(0.9, claim_id="지어낸_ID")
+    out = nodes.tools_node({"messages": [ai], "loop_count": 3,
+                            "findings": [_ALL_NO_PAIR[0]]})
+    assert "claim_id 를 비우" not in out["messages"][0].content
+
+
+def test_report_node_does_not_send_coverage_when_no_axis_ever_ran():
+    """커버리지 줄을 소음이라 지운 보고서에는 클라이언트에도 넘기지 않는다.
+
+    코드는 [커버리지] 줄을 억제하면서 같은 값을 프롬프트에는 무조건 넘겨, "이상
+    없음"(분석 루프에 들어가지도 않은) 보고서에서 LLM 이 안 본 축 4개를 나열하게
+    했다. 두 렌더링이 엇갈리면 안 된다.
+    """
+    received = {}
+
+    class _RecordingClient:
+        def analyze_step(self, messages):
+            raise NotImplementedError
+
+        def generate_report(self, **kwargs):
+            received.update(kwargs)
+            return "고정된 산문 리포트"
+
+    original = nodes._llm
+    nodes._llm = _RecordingClient()
+    try:
+        nodes.report_node({"target_wafers": [], "target_source": "auto",
+                           "target_group": [], "status_summary": "수율 임계 미만 lot 없음",
+                           "findings": [], "finalize_status": "no_anomaly"})
+    finally:
+        nodes._llm = original
+    assert received["coverage"] is None
+
+
+def test_report_node_names_a_verdict_when_the_gate_never_judged():
+    """게이트를 안 거치고 끝나도 판정이 '미상'으로 나가면 안 된다.
+
+    루프 한계 강제 종료와 tool 없는 텍스트 응답은 게이트를 안 탄다. finalize_status
+    가 비면 운영 프롬프트의 "확정 결론을 쓰지 마라" 가드가 **하나도** 안 붙어,
+    확정 근거 없이 끝난 분석에 LLM 이 확신에 찬 문장을 쓴다.
+    """
+    out = nodes.report_node({"target_wafers": ["W1"], "target_source": "manual",
+                             "target_group": ["W1"], "status_summary": "s",
+                             "findings": [EQP_CH_SILENT]})
+    assert out["finalize_status"] == "inconclusive"
+
+
+def test_report_node_keeps_evidence_when_the_gate_never_judged():
+    """게이트를 안 거쳐도 판별선을 넘은 근거는 리포트에 남아야 한다.
+
+    근거를 모든 종료 경로에 싣는 계약(`_record_evidence`)은 게이트 **안**에만
+    있었다. 게이트를 안 타는 경로에서는 감사 기록에 p 0.03 · 타깃 3/3 인 후보가
+    있는데 리포트 근거가 0줄이다 - 가장 도움이 필요한 보고서에서 근거가 사라진다.
+    """
+    strong = {
+        "loop": 2, "tool": "hyp_eqp_ch_commonality", "args": {},
+        "result": {"hypothesis_id": "eqp_ch_commonality", "status": "ok", "candidates": [
+            {"claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH9_B",
+             "step_seq": "CC002000", "key": "ETCH9_B", "level": "chamber",
+             "passes": True, "reject_reason": None, "score": 1.0,
+             "target_pass": 3, "target_total": 3, "control_pass": 0, "control_total": 6,
+             "p_permutation": 0.03, "target_wafers": ["W1", "W2", "W3"],
+             "control_wafers": ["C1"]},
+        ]},
+        "thought": "통과 후보",
+    }
+    out = nodes.report_node({"target_wafers": ["W1"], "target_source": "manual",
+                             "target_group": ["W1"], "status_summary": "s",
+                             "findings": [strong]})
+    assert "[근거 1]" in out["report"]
+    assert "eqp_ch_commonality:chamber:CC002000:ETCH9_B" in out["report"]
+
+
 def test_gate_records_which_axes_it_did_not_run():
     """부분 커버리지로 물러설 때 '무엇을 안 봤는지'가 결론과 함께 나간다.
 

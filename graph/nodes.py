@@ -430,6 +430,13 @@ def _gate_rejection(claim_id, claim, bundle, unrun, conf, conf_note, groups) -> 
 
     if claim is not None:
         if not claim.passes:
+            # 지목할 통과 후보가 **하나도 없으면** "통과한 후보를 지목하라" 는 실행할 수
+            # 없는 지시다. 지어낸 claim_id 는 위에서 `_no_candidate_action` 을 타 물러설
+            # 길을 안내받는데, 실재하는 미통과 claim 을 정직하게 지목한 쪽만 막다른 길에
+            # 몰려 루프 한계까지 왕복하다 inconclusive 로 끝나던 자리다.
+            if not bundle.passing():
+                return (f"반려: {claim.claim_id} 는 판별선을 넘지 못했다 "
+                        f"({claim.reject_reason}). {_no_candidate_action(bundle, unrun)}")
             return (f"반려: {claim.claim_id} 는 판별선을 넘지 못했다 ({claim.reject_reason}). "
                     f"통과한 후보를 지목하라.")
         picked = evidence.find_group(groups, claim_id)
@@ -459,11 +466,19 @@ def _no_candidate_action(bundle, unrun) -> str:
     안내도 같아야 한다 - 한쪽만 다음 행동을 알려주면 다른 쪽은 왕복만 하다
     루프 한계로 끝난다.
     """
-    # 물러서는 길은 **실제로 열려 있을 때만** 알려 준다. (2)번은 어떤 축이
-    # no_signal 을 냈을 때만 열리므로, 그렇지 않은데 "비우고 제출하라" 고 하면
-    # 같은 반려가 돌아와 라이브락이 된다.
+    # 물러서는 길은 **실제로 열려 있을 때만** 알려 준다. 열려 있지도 않은데 "비우고
+    # 제출하라" 고 하면 같은 반려가 돌아와 라이브락이다.
+    #
+    # 판단 기준은 "(2)가 열리는가" 가 아니라 **"물러서면 어떤 종료든 열리는가"** 다.
+    # (2)만 보면 (3)이 열리는 상태 - 정의상 NO_DATA 상태만 있어 no_signal 이 섞일 수
+    # 없다 - 에는 한 번도 안 붙어, no_comparable_data(적재/추출 범위 확인)여야 할 것이
+    # inconclusive(재시도)로 나간다.
+    ran_statuses = set(bundle.statuses.values())
+    opens_no_signal = "no_signal" in ran_statuses                       # (2)
+    opens_no_data = (bool(ran_statuses) and not unrun                    # (3)
+                     and ran_statuses <= cm.NO_DATA_STATUSES)
     step_back = (" 지목할 것이 없어 물러설 때는 claim_id 를 비우고 finalize 하라."
-                 if "no_signal" in bundle.statuses.values() else "")
+                 if opens_no_signal or opens_no_data else "")
     # 축이 0개 돌아간 상태를 **먼저** 가른다. 아래 "하나를 더 보거나" 는 사실과 안 맞고,
     # 2단 센서는 step_seq 를 요구하는데 그 값을 낼 근거가 아직 없다. (이 분기가 맨
     # 아래에 있을 때는 unrun 이 항상 비어 있지 않아 도달할 수 없는 죽은 코드였다.)
@@ -488,7 +503,20 @@ def report_node(state: dict) -> dict:
     # 있는 경로가 하나라도 있으면 "커버리지는 사실이다" 라는 전제가 무너지고, 운영
     # 프롬프트가 "안 본 축 이름을 반드시 적어라" 로 지시하는 탓에 LLM 이 실제로 다
     # 돌린 축을 안 봤다고 지어낸다. findings 가 유일한 진실이다.
-    coverage = _coverage(evidence.build_bundle(state.get("findings") or []))
+    bundle = evidence.build_bundle(state.get("findings") or [])
+    coverage = _coverage(bundle)
+    # **게이트를 안 거치고 끝나는 종료를 여기서 메운다** (루프 한계 강제 종료, tool 없는
+    # 텍스트 응답). 그 경로에는 판정도 근거도 안 실려서, 판정이 '미상' 이면 운영
+    # 프롬프트의 "확정 결론을 쓰지 마라" 가드가 하나도 안 붙고, 감사 기록에 판별선을
+    # 넘은 후보가 있어도 리포트 근거가 0줄이 된다 - 게이트 안에만 있던 계약이라
+    # 게이트를 안 타면 통째로 빠졌다. 사유는 inconclusive 다: 코드가 결론을 지어내지
+    # 않으면서 "확정 근거 없이 끝났다" 를 정직하게 말하는 자리.
+    verdict = state.get("finalize_status")
+    if not verdict:
+        verdict = "inconclusive"
+        gateless = {}
+        _record_evidence(gateless, bundle.ranked_groups(), None)
+        claims = gateless["final_claims"]
     try:
         report = _llm_lazy().generate_report(
             target_wafers=state.get("target_wafers", []),
@@ -498,9 +526,11 @@ def report_node(state: dict) -> dict:
             findings=state["findings"],
             hypothesis=state.get("final_hypothesis"),
             confidence=state.get("final_confidence"),
-            finalize_status=state.get("finalize_status"),
+            finalize_status=verdict,
             claims=claims,
-            coverage=coverage,
+            # 커버리지 줄을 소음이라 지운 보고서에는 프롬프트에도 넘기지 않는다 -
+            # 두 렌더링이 엇갈리면 "이상 없음" 보고서에서 LLM 이 안 본 축을 나열한다.
+            coverage=coverage if coverage.get("ran") else None,
         )
     except Exception as e:
         # 여기가 마지막 노드다 - 예외를 내보내면 분석을 다 해 놓고 결과를 전부 버린다.
@@ -508,7 +538,7 @@ def report_node(state: dict) -> dict:
         # 따로 찍으므로, 여기서 필요한 것은 '왜 산문이 없는지'와 결론뿐이다.
         report = (f"[리포트 생성 실패] LLM 호출이 실패해 산문 리포트를 만들지 못했다 "
                   f"({type(e).__name__}: {e}). 아래는 코드가 적은 결론이다.\n"
-                  f"[판정] {state.get('finalize_status') or '미상'}\n"
+                  f"[판정] {verdict}\n"
                   f"[결론] {state.get('final_hypothesis') or '원인 미확정'}"
                   f" (확신도 {state.get('final_confidence')})")
     # [근거] 줄은 클라이언트(LLM)가 아니라 여기서 코드로 붙인다 - 운영에서도
@@ -530,4 +560,4 @@ def report_node(state: dict) -> dict:
     # 없는 보고서(이상 없음 등)에서는 소음일 뿐이다.
     if coverage.get("ran"):
         report += f"\n[커버리지] {_coverage_phrase(coverage)}"
-    return {"report": report}
+    return {"report": report, "finalize_status": verdict}
