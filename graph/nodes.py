@@ -234,8 +234,10 @@ def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) ->
 
     판정은 위에서부터 처음 걸리는 줄로 결정된다:
       (1) 지목한 claim 이 통과 + 1등 묶음 + 확신도 충족 -> confirmed
-      (2) 등록 가설을 다 돌렸는데 통과 후보 0 + no_signal 있음 -> no_signal
-      (3) 돌아간 가설이 전부 '계산 불가' -> no_comparable_data
+      (2) 지목 없이 물러섰는데 통과 후보 0 + no_signal 있음 -> no_signal
+          (전축 실행은 전제 조건이 아니다. 어디까지 봤는지는 coverage 로 나간다.)
+      (3) 지목 없이 물러섰고 등록 가설을 다 돌렸는데 전부 '계산 불가' -> no_comparable_data
+          ((2)와 달리 전축을 요구한다. "볼 것이 없었다" 는 부분 커버리지로는 참이 아니다.)
       (4) 루프 한계 -> inconclusive (승인이 아니라 '미확정')
       (5) 그 외 -> 반려. 무엇이 모자란지 그대로 돌려준다.
     """
@@ -244,8 +246,11 @@ def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) ->
     hypothesis = args.get("hypothesis", "")
     claim_id = (args.get("claim_id") or "").strip()
     claim = bundle.claims.get(claim_id)
+    # **반려 경로에서는 상태에 쓰지 않는다.** 쓰면 loop 1 에 종료 제안했다가
+    # 반려당하는 흔한 경로에서 `ran: []` 가 굳고, 그 뒤 축을 더 돌려도 갱신은 다음
+    # finalize 때만 일어난다 - 마지막 finalize 없이 루프 한계로 끝나면 다 돌린 축을
+    # 하나도 안 돌렸다고 보고한다. 커버리지는 **종료된 판정의 기록**이다.
     coverage = _coverage(bundle)
-    update["coverage"] = coverage
     unrun = coverage["unrun"]
     groups = bundle.ranked_groups()
     picked = evidence.find_group(groups, claim_id) if claim_id else None
@@ -260,6 +265,7 @@ def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) ->
         update["final_confidence"] = conf
         # **통과 후보를 전부 싣는다.** LLM 이 고른 것만 남기면 나머지 축의 근거가
         # 여기서 사라진다 - 그게 예전 계약의 결함이었다.
+        update["coverage"] = coverage
         _record_evidence(update, groups, picked)
         # 머리말은 **LLM 이 지목한 묶음**으로 쓴다. 1등이 여럿일 때 groups[0] 을 쓰면
         # "승인" 이라면서 제출한 것과 다른 claim 의 수치를 보여 주게 되고, LLM 이
@@ -292,6 +298,7 @@ def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) ->
         update["finalize_status"] = "no_signal"
         update["final_hypothesis"] = hypothesis
         update["final_confidence"] = conf
+        update["coverage"] = coverage
         _record_evidence(update, groups, picked)
         if unrun:
             return (f"신호 없음 ({_coverage_phrase(coverage)}): 대조한 축에서는 원인을 "
@@ -300,16 +307,25 @@ def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) ->
         return (f"신호 없음 ({_coverage_phrase(coverage)}, 분리되는 후보 없음): "
                 f"lot 내부 대조로는 원인을 좁힐 수 없다. 리포팅으로 진행한다.")
 
-    # (3) 계산 불가 - 돌아간 가설이 전부 그룹 수준 사실(대조 짝 없음·타깃 부족)에서 멈췄다.
-    #     이 상태는 legend 와 무관하므로 **아직 안 돌린 가설을 기다리지 않는다** - 기다리면
-    #     LLM 이 루프 한계까지 왕복하다 inconclusive("확정 근거 없음")로 끝나고, 진짜 사유인
-    #     데이터 결측이 리포트에서 사라진다. 사람이 할 일도 다르다(적재/추출 범위 확인).
+    # (3) 계산 불가 - 등록 가설을 다 돌렸는데 전부 그룹 수준 사실(대조 짝 없음·타깃
+    #     부족)에서 멈췄다. 사람이 할 일이 다르다(적재/추출 범위 확인).
+    #
+    #     **(2)번과 달리 여기에는 전축 실행을 요구한다.** 둘은 성격이 다르다:
+    #     (2)는 "대조한 축에서는 못 찾았다" 라 부분 커버리지로도 정직하지만, (3)은
+    #     "볼 것이 없었다, 적재 범위를 확인하라" 는 **주장**이라 전축을 봐야 참이다.
+    #     `no_paired_stratum` 은 축 무관한 사유(대조군 짝 없음)와 축 고유한 사유(그
+    #     축 원자료 결측)를 같은 이름으로 부르고, metro 는 계측 짝이 없어 **상시**
+    #     후자다. unrun 을 안 보면 metro 하나만 돌고도 (3)이 걸려, 데이터가 있는
+    #     챔버·PPID·경로 축을 한 번도 안 건드린 채 엔지니어에게 틀린 조치가 나간다.
+    #     `not claim_id` 는 (2)번과 같은 이유다 - 지목을 제출한 것은 물러선 것이 아니다.
     ran_statuses = set(bundle.statuses.values())
-    if ran_statuses and ran_statuses <= cm.NO_DATA_STATUSES:
+    if (ran_statuses and not unrun and not claim_id
+            and ran_statuses <= cm.NO_DATA_STATUSES):
         update["finalize_accepted"] = True
         update["finalize_status"] = "no_comparable_data"
         update["final_hypothesis"] = hypothesis
         update["final_confidence"] = conf
+        update["coverage"] = coverage
         _record_evidence(update, groups, picked)
         return (f"비교 가능한 데이터 없음 ({', '.join(sorted(ran_statuses))}): "
                 f"대조에 쓸 짝이 없어 계산이 성립하지 않는다. 리포팅으로 진행한다.")
@@ -320,6 +336,7 @@ def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) ->
         update["finalize_status"] = "inconclusive"
         update["final_hypothesis"] = hypothesis
         update["final_confidence"] = conf
+        update["coverage"] = coverage
         _record_evidence(update, groups, picked)
         return "미확정 (루프 한계 도달): 확정 근거 없이 리포팅으로 진행한다."
 
@@ -377,12 +394,14 @@ def _coverage_phrase(coverage: dict) -> str:
     """커버리지를 사람이 읽는 한 줄로. 게이트 응답과 리포트가 같은 문장을 쓴다."""
     ran = coverage.get("ran") or []
     unrun = coverage.get("unrun") or []
-    parts = [f"등록 축 {len(ran) + len(unrun)}개 중 {len(ran)}개 대조"]
+    no_data = coverage.get("no_data") or []
+    # `ran` 은 계산이 성립하지 않은 축도 포함한다. 그대로 세면 "2개 대조" 라고 해 놓고
+    # 바로 뒤에서 그중 하나는 계산이 안 됐다고 말하는 엇갈린 줄이 된다 - 같은 줄 안에서
+    # 바로 깎아 준다.
+    hole = f"(그중 {len(no_data)}개는 계산 불가: {', '.join(no_data)})" if no_data else ""
+    parts = [f"등록 축 {len(ran) + len(unrun)}개 중 {len(ran)}개 대조{hole}"]
     if unrun:
         parts.append(f"안 돌린 축 {len(unrun)}개: {', '.join(unrun)}")
-    no_data = coverage.get("no_data") or []
-    if no_data:
-        parts.append(f"돌았으나 계산이 성립하지 않은 축: {', '.join(no_data)}")
     return ". ".join(parts)
 
 
@@ -445,6 +464,12 @@ def _no_candidate_action(bundle, unrun) -> str:
     # 같은 반려가 돌아와 라이브락이 된다.
     step_back = (" 지목할 것이 없어 물러설 때는 claim_id 를 비우고 finalize 하라."
                  if "no_signal" in bundle.statuses.values() else "")
+    # 축이 0개 돌아간 상태를 **먼저** 가른다. 아래 "하나를 더 보거나" 는 사실과 안 맞고,
+    # 2단 센서는 step_seq 를 요구하는데 그 값을 낼 근거가 아직 없다. (이 분기가 맨
+    # 아래에 있을 때는 unrun 이 항상 비어 있지 않아 도달할 수 없는 죽은 코드였다.)
+    if not bundle.ran:
+        return (f"그룹 대조 근거가 없다. 가설 도구로 두 그룹을 먼저 대조하라: "
+                f"{', '.join(unrun)}.")
     if unrun:
         # 명령문이 아니라 선택지다. 판정에서 전축 강제를 걷어내 놓고 여기에
         # "먼저 호출하라" 를 남기면 LLM 은 여전히 체크리스트를 소화하러 간다 -
@@ -452,15 +477,18 @@ def _no_candidate_action(bundle, unrun) -> str:
         return (f"통과한 후보가 없다. 아직 안 돌린 가설 도구: {', '.join(unrun)}. "
                 f"이 중 하나를 더 보거나, 2단 센서로 근거를 좁혀라 - 전부 돌릴 "
                 f"의무는 없다.{step_back}")
-    if bundle.ran:
-        return ("등록 가설을 다 돌렸으나 판별선을 넘은 후보가 없다. "
-                "2단 센서로 근거를 더 좁히거나 대조군을 다시 보라." + step_back)
-    return "그룹 대조 근거가 없다. 가설 도구(hyp_*)로 두 그룹을 먼저 대조하라."
+    return ("등록 가설을 다 돌렸으나 판별선을 넘은 후보가 없다. "
+            "2단 센서로 근거를 더 좁히거나 대조군을 다시 보라." + step_back)
 
 
 # ------------------------------------------------ 고정 골격: 리포팅
 def report_node(state: dict) -> dict:
     claims = state.get("final_claims") or []
+    # **state 의 커버리지를 믿지 않고 감사 기록에서 다시 센다.** 낡은 값이 남을 수
+    # 있는 경로가 하나라도 있으면 "커버리지는 사실이다" 라는 전제가 무너지고, 운영
+    # 프롬프트가 "안 본 축 이름을 반드시 적어라" 로 지시하는 탓에 LLM 이 실제로 다
+    # 돌린 축을 안 봤다고 지어낸다. findings 가 유일한 진실이다.
+    coverage = _coverage(evidence.build_bundle(state.get("findings") or []))
     try:
         report = _llm_lazy().generate_report(
             target_wafers=state.get("target_wafers", []),
@@ -472,7 +500,7 @@ def report_node(state: dict) -> dict:
             confidence=state.get("final_confidence"),
             finalize_status=state.get("finalize_status"),
             claims=claims,
-            coverage=state.get("coverage"),
+            coverage=coverage,
         )
     except Exception as e:
         # 여기가 마지막 노드다 - 예외를 내보내면 분석을 다 해 놓고 결과를 전부 버린다.
@@ -498,11 +526,6 @@ def report_node(state: dict) -> dict:
                        f"(전체는 분석 과정 기록에 있다)")
     # [커버리지] 줄도 여기서 코드로 붙인다 - [근거] 와 같은 이유다. 클라이언트에
     # 맡기면 운영 경로에서만 조용히 사라진다.
-    # 게이트를 안 거치고 끝나는 경로가 있다(루프 한계 강제 종료, tool 없는 텍스트
-    # 응답). 거기서 state 에 coverage 가 없다고 줄을 빼면, 설명이 가장 필요한
-    # 보고서에서만 커버리지가 사라진다 - 감사 기록에서 다시 센다.
-    coverage = state.get("coverage") or _coverage(
-        evidence.build_bundle(state.get("findings") or []))
     # 하나도 안 돌렸으면 붙이지 않는다 - "4개 중 0개 대조" 는 사실이지만 셀 것이
     # 없는 보고서(이상 없음 등)에서는 소음일 뿐이다.
     if coverage.get("ran"):

@@ -66,9 +66,9 @@ _ALWAYS_WITH_CHAMBER = (
     "교락인지 확인해야 의뢰 대상을 정할 수 있다.")
 
 # 경로 축이 전부 조용할 때 순서대로 써 보는 나머지 등록 가설 (이름, 고른 이유).
-# **hypotheses.yaml 에 가설을 추가하면 여기(또는 위)에도 추가해야 한다** — 게이트는
-# 등록 가설을 전부 돌린 뒤에만 no_signal 을 선언하므로, 빠뜨리면 데모가 루프 한계까지
-# 가서 inconclusive 로 끝난다(사유가 틀린 보고가 된다).
+# **hypotheses.yaml 에 가설을 추가하면 여기(또는 위)에도 추가해야 한다** — 게이트가
+# 요구해서가 아니라(전축 실행은 no_signal 의 전제 조건이 아니다), 빠뜨리면 데모가
+# 그 축을 한 번도 안 보여 주기 때문이다.
 _FALLBACK_HYPOTHESES = [
     ("hyp_step_passage_commonality",
      "설비·PPID 로도 안 갈렸다. 스텝 통과 여부(비정규 스텝 포함)로 대조한다."),
@@ -127,8 +127,9 @@ class ScriptedMockLLMClient(LLMClient):
 
         for name, why in _FALLBACK_HYPOTHESES:
             # EQP_CH 로 안 갈렸다. 남은 등록 가설을 순서대로 써 본다 - 첫 no_signal 로
-            # 물러서면 안 써 본 가설을 남긴 채 포기하는 셈이고, 게이트도 no_signal 을
-            # 선언하지 않는다(등록 가설을 전부 돌린 뒤에만 판정한다).
+            # 물러서면 안 써 본 가설을 남긴 채 포기하는 셈이다. 게이트는 이제 부분
+            # 커버리지로도 no_signal 을 받아 주지만, 데모는 모든 축을 보여 주는 쪽을
+            # 고른다(커버리지 줄에 "안 돌린 축" 만 잔뜩 찍히면 무대가 안 보인다).
             if passing:
                 break
             if name not in done:
@@ -386,8 +387,10 @@ class OpenAILLMClient(LLMClient):
             "판정이 no_signal 이면 '신호 없음'으로 서술하라 - 원인 없음이 아니라 "
             "대조한 축에서는 보이지 않는다는 뜻이며 lot 밖 대조군이 필요하다는 "
             "후속 조치를 명시하고, 확정 결론을 쓰지 마라. "
-            "커버리지에 안 돌린 축이 있으면 결론은 **돌린 축에 한한 것**이니 그 사실과 "
-            "안 본 축 이름을 반드시 적어라 - 안 본 축까지 없다고 쓰면 사유가 틀린 보고다. "
+            "판정이 no_signal 이거나 inconclusive 인데 커버리지에 안 돌린 축이 있으면 "
+            "그 사실과 안 본 축 이름을 반드시 적어라 - 안 본 축까지 없다고 쓰면 사유가 "
+            "틀린 보고다. 판정이 confirmed 면 커버리지는 사실로만 참고하고, 확정된 "
+            "근거를 유보 톤으로 낮추지 마라. "
             "판정이 no_comparable_data 면 '분석 미수행 - 비교 가능한 데이터 없음'으로 "
             "서술하라 - 근거를 못 찾은 것이 아니라 대조에 쓸 짝이 없어 계산이 성립하지 "
             "않은 것이며, 적재 범위와 추출 조건 확인이 후속 조치다. 확정 결론을 쓰지 마라. "
@@ -408,11 +411,16 @@ class OpenAILLMClient(LLMClient):
             f"판정: {finalize_status or '미상'}"
         )
         if coverage:
+            # 유보 지시는 **물러선 판정에만** 붙인다. claim_id 조회·순위 1등·순열 p 를
+            # 통과한 결론에까지 "돌린 축에 한한다" 를 달면 엔지니어가 근거를 저평가한다 -
+            # 커버리지 사실 자체는 report_node 가 [커버리지] 줄로 따로 싣는다.
+            hedge = ("" if finalize_status == "confirmed" else
+                     " unrun 이 비어 있지 않으면 결론은 돌린 축에 한한 것이다. 그 사실과 "
+                     "안 본 축 이름을 적고, 안 본 축까지 없다고 쓰지 마라.")
             user += (f"\n커버리지(어디까지 봤는가): "
-                     f"{json.dumps(coverage, ensure_ascii=False)} - unrun 이 비어 "
-                     f"있지 않으면 결론은 돌린 축에 한한 것이다. 그 사실과 안 본 축 "
-                     f"이름을 적고, 안 본 축까지 없다고 쓰지 마라. no_data 는 돌았지만 "
-                     f"계산이 성립하지 않은 축이라 본 것으로 세면 안 된다.")
+                     f"{json.dumps(coverage, ensure_ascii=False)}.{hedge}"
+                     f" no_data 는 돌았지만 계산이 성립하지 않은 축이라 본 것으로 "
+                     f"세면 안 된다.")
         if claims:
             user += (f"\n게이트가 확인한 근거 {len(claims)}건 "
                      f"(순위는 코드가 매겼다. 수치를 그대로 인용하고, 하나만 고르지 말고 "

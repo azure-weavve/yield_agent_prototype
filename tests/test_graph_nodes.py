@@ -418,6 +418,35 @@ def test_gate_reports_uncomputable_axes_as_coverage_holes():
     assert out["coverage"]["no_data"] == ["hyp_metro_commonality"]
 
 
+def test_coverage_phrase_does_not_count_uncomputable_axes_as_compared():
+    """헤드라인 숫자가 커버리지를 과대하게 세면 안 된다.
+
+    `ran` 은 계산이 성립하지 않은 축도 포함한다. 그대로 세면 같은 줄이 "2개 대조"
+    라고 해 놓고 바로 뒤에서 그중 하나는 계산이 안 됐다고 말한다 - 운영 프롬프트에는
+    "no_data 는 본 것으로 세면 안 된다" 는 교정이 있는데 코드가 붙이는 줄에는 없어
+    두 렌더링이 엇갈렸다.
+    """
+    line = nodes._coverage_phrase({"ran": ["hyp_a", "hyp_b"],
+                                   "no_data": ["hyp_b"], "unrun": ["hyp_c"]})
+    assert "2개 대조" in line
+    assert "그중 1개는 계산 불가" in line
+    assert "hyp_b" in line          # 어느 축인지도 남긴다
+
+
+def test_gate_does_not_suggest_one_more_axis_when_none_have_run():
+    """아무 축도 안 돌린 loop 1 에서 "하나를 **더** 보거나" 는 사실과 안 맞는다.
+
+    2단 센서도 `step_seq` 를 요구하는데 그 값을 낼 근거가 아직 없다. 전축 강제를
+    걷어내면서 안내를 선택지로 바꿨는데, 그 문구가 축 0개 상태에까지 그대로 나갔다.
+    """
+    ai = _ai_finalize(0.6, hypothesis="아직 근거가 없다", claim_id="")
+    out = nodes.tools_node({"messages": [ai], "loop_count": 1, "findings": []})
+    msg = out["messages"][0].content
+    assert "하나를 더" not in msg
+    assert "2단" not in msg
+    assert "hyp_eqp_ch_commonality" in msg      # 무엇부터 부를지는 알려 준다
+
+
 def test_gate_offers_narrowing_instead_of_ordering_the_unrun_axes():
     """반려 안내가 '먼저 호출하라'(강제)에서 선택지로 바뀐다.
 
@@ -440,6 +469,10 @@ def test_gate_offers_narrowing_instead_of_ordering_the_unrun_axes():
     assert "먼저 호출하라" not in msg
     assert "hyp_metro_commonality" in msg        # 남은 축은 그대로 알려 준다
     assert "2단" in msg                          # 더 좁히는 길도 함께 준다
+    # **only 쪽 단언.** 이 상태(모든 축 status ok)에서는 claim_id 를 비우고 제출해도
+    # (2)번이 안 열려 같은 반려가 돌아온다 - 물러서기를 권하면 라이브락을 처방하는
+    # 것이다. 이 단언이 없으면 조건을 지우고 무조건 붙여도 스위트가 통과한다.
+    assert "claim_id 를 비우" not in msg
 
 
 def test_gate_declares_no_signal_after_all_hypotheses_are_silent():
@@ -541,23 +574,27 @@ def test_gate_does_not_declare_no_signal_when_candidates_only_missed_the_line():
     assert "finalize_accepted" not in out
 
 
-def test_gate_declares_no_comparable_data_on_the_first_uncomputable_hypothesis():
-    """가설이 **계산 자체를 못 한** 상태면 그 자리에서 사유를 밝히고 끝낸다.
+def test_gate_declares_no_comparable_data_when_every_axis_is_uncomputable():
+    """등록 가설을 다 돌렸는데 전부 계산 자체를 못 했으면 사유를 밝히고 끝낸다.
 
     `no_paired_stratum`(같은 root_lot 대조 짝 없음)·`insufficient_group`(타깃 부족)은
-    legend 와 무관한 **그룹 수준** 사실이라, 다른 가설을 돌려도 똑같은 답이 나온다.
-    그래서 `unrun` 이 남아 있어도 기다리지 않는다 - 기다리면 LLM 이 루프 한계까지
-    왕복하다 `inconclusive`("확정 근거 없음")로 끝나, 진짜 사유인 **데이터 결측**이
-    리포트에서 사라진다.
+    그룹 수준 사실이므로 여기서 끝내야 진짜 사유인 **데이터 결측**이 리포트에 남는다.
+    (4) 루프 한계로 밀리면 `inconclusive`("확정 근거 없음")가 돼 사유가 사라진다.
+
+    전축 실행을 요구하는 이유는 [[test_gate_does_not_declare_no_comparable_data_before_running_every_axis]]
+    에 적혀 있다 - (2)번과 달리 이 판정은 "볼 것이 없었다" 는 주장이라 부분 커버리지로는 참이 아니다.
     """
-    no_pair = {
-        "loop": 1, "tool": "hyp_eqp_ch_commonality", "args": {},
-        "result": {"hypothesis_id": "eqp_ch_commonality",
-                   "status": "no_paired_stratum", "candidates": []},
-        "thought": "1차 legend",
-    }
+    no_pair = [{
+        "loop": 1, "tool": t, "args": {},
+        "result": {"hypothesis_id": h, "status": "no_paired_stratum", "candidates": []},
+        "thought": "짝 없음",
+    } for t, h in [("hyp_eqp_ch_commonality", "eqp_ch_commonality"),
+                   ("hyp_ppid_commonality", "ppid_commonality"),
+                   ("hyp_step_passage_commonality", "step_passage_commonality"),
+                   ("hyp_metro_commonality", "metro_commonality")]]
+    _assert_covers_every_hypothesis(no_pair)
     ai = _ai_finalize(0.2, hypothesis="비교할 짝이 없다", claim_id="")
-    out = nodes.tools_node({"messages": [ai], "loop_count": 1, "findings": [no_pair]})
+    out = nodes.tools_node({"messages": [ai], "loop_count": 1, "findings": no_pair})
     assert out["finalize_accepted"] is True
     assert out["finalize_status"] == "no_comparable_data"
     assert "no_paired_stratum" in out["messages"][0].content   # 사유를 그대로 실어 보낸다
@@ -897,15 +934,122 @@ def test_report_node_appends_a_coverage_line():
     """
     out = nodes.report_node({
         "target_wafers": ["W1"], "target_source": "manual",
-        "target_group": ["W1"], "status_summary": "요약", "findings": [],
+        "target_group": ["W1"], "status_summary": "요약",
+        "findings": [EQP_CH_SILENT],
         "final_hypothesis": None, "final_confidence": 0.2,
         "finalize_status": "no_signal", "final_claims": [],
-        "coverage": {"ran": ["hyp_eqp_ch_commonality"],
-                     "unrun": ["hyp_metro_commonality", "hyp_ppid_commonality"],
-                     "no_data": []},
     })
     assert "[커버리지]" in out["report"]
     assert "hyp_metro_commonality" in out["report"]
+
+
+def test_gate_does_not_leave_a_stale_coverage_behind_when_it_rejects():
+    """반려는 상태에 커버리지를 남기지 않는다 - 남기면 그 값이 굳어 거짓말이 된다.
+
+    반려 시점의 커버리지를 state 에 쓰면, LLM 이 loop 1 에 종료를 제안했다가
+    반려당하는 흔한 경로에서 `ran: []` 가 박힌다. 그 뒤 축을 아무리 더 돌려도
+    갱신은 다음 finalize 때만 일어나므로, 마지막 finalize 없이 루프 한계로 끝나면
+    **다 돌린 축을 하나도 안 돌렸다고 보고**한다. 커버리지는 종료된 판정의 기록이다.
+    """
+    ai = _ai_finalize(0.9, claim_id="")
+    out = nodes.tools_node({"messages": [ai], "loop_count": 1,
+                            "findings": []})
+    assert "finalize_accepted" not in out       # 반려가 맞는지 먼저 확인
+    assert "coverage" not in out
+
+
+def test_report_node_recounts_coverage_from_the_audit_trail():
+    """리포트는 state 의 커버리지를 믿지 않고 감사 기록에서 다시 센다.
+
+    낡은 값이 상태에 남을 수 있는 경로가 있는 한(반려·게이트 미경유), 리포트가
+    그 값을 그대로 쓰면 "커버리지는 사실이다" 라는 전제가 무너진다. findings 가
+    유일한 진실이다.
+    """
+    stale = {"ran": [], "unrun": ["hyp_eqp_ch_commonality", "hyp_metro_commonality",
+                                  "hyp_ppid_commonality", "hyp_step_passage_commonality"],
+             "no_data": []}
+    out = nodes.report_node({
+        "target_wafers": ["W1"], "target_source": "manual",
+        "target_group": ["W1"], "status_summary": "요약",
+        "findings": [EQP_CH_SILENT], "coverage": stale,
+        "final_hypothesis": None, "final_confidence": 0.2,
+        "finalize_status": "no_signal", "final_claims": [],
+    })
+    assert "[커버리지]" in out["report"]
+    assert "hyp_eqp_ch_commonality" not in out["report"].split("[커버리지]")[1]
+
+
+def test_report_node_sends_the_recounted_coverage_to_the_client():
+    """다시 센 값이 **클라이언트에도** 가야 한다 - 리포트 줄만 고치면 산문이 거짓말한다.
+
+    운영 시스템 프롬프트는 "안 본 축 이름을 반드시 적어라" 로 지시하므로, 낡은
+    커버리지가 가면 LLM 이 실제로 다 돌린 축을 안 봤다고 지어낸다.
+    """
+    received = {}
+
+    class _RecordingClient:
+        def analyze_step(self, messages):
+            raise NotImplementedError
+
+        def generate_report(self, **kwargs):
+            received.update(kwargs)
+            return "고정된 산문 리포트"
+
+    original = nodes._llm
+    nodes._llm = _RecordingClient()
+    try:
+        nodes.report_node({
+            "target_wafers": ["W1"], "target_source": "manual",
+            "target_group": ["W1"], "status_summary": "요약",
+            "findings": [EQP_CH_SILENT], "final_claims": [],
+            "final_hypothesis": None, "final_confidence": 0.2,
+            "finalize_status": "no_signal",
+            # 낡은 값이 상태에 있어도 클라이언트에는 다시 센 값이 가야 한다
+            "coverage": {"ran": [], "no_data": [],
+                         "unrun": ["hyp_eqp_ch_commonality", "hyp_metro_commonality",
+                                   "hyp_ppid_commonality", "hyp_step_passage_commonality"]},
+        })
+    finally:
+        nodes._llm = original
+    assert received["coverage"]["ran"] == ["hyp_eqp_ch_commonality"]
+    assert "hyp_metro_commonality" in received["coverage"]["unrun"]
+
+
+def test_gate_does_not_declare_no_comparable_data_before_running_every_axis():
+    """'볼 것이 없었다' 는 전축을 봐야 참인 주장이다 - (2)번과 성격이 다르다.
+
+    (2) no_signal 은 "대조한 축에서는 못 찾았다" 라 부분 커버리지로도 정직하다.
+    (3) no_comparable_data 는 "적재 범위와 추출 조건을 확인하라" 는 조치를 내보내는데,
+    축 하나가 계산 불가라고 그렇게 말하면 **데이터가 있는 축을 한 번도 안 건드린 채**
+    엔지니어에게 틀린 조치를 준다. metro 는 계측 짝이 없어 상시 no_paired_stratum
+    이므로 이 경로는 흔하다.
+    """
+    metro_no_pair = {
+        "loop": 1, "tool": "hyp_metro_commonality", "args": {},
+        "result": {"hypothesis_id": "metro_commonality",
+                   "status": "no_paired_stratum", "candidates": []},
+        "thought": "계측 짝 없음",
+    }
+    ai = _ai_finalize(0.95, claim_id="")
+    out = nodes.tools_node({"messages": [ai], "loop_count": 2,
+                            "findings": [metro_no_pair]})
+    assert "finalize_accepted" not in out
+
+
+def test_gate_does_not_read_a_fabricated_claim_id_as_missing_data():
+    """(3)번도 지목을 물러섬으로 오독하면 안 된다 - (2)번에 붙인 하한과 대칭이다."""
+    no_pair = [{
+        "loop": 1, "tool": t, "args": {},
+        "result": {"hypothesis_id": h, "status": "no_paired_stratum", "candidates": []},
+        "thought": "짝 없음",
+    } for t, h in [("hyp_metro_commonality", "metro_commonality"),
+                   ("hyp_eqp_ch_commonality", "eqp_ch_commonality"),
+                   ("hyp_ppid_commonality", "ppid_commonality"),
+                   ("hyp_step_passage_commonality", "step_passage_commonality")]]
+    _assert_covers_every_hypothesis(no_pair)
+    ai = _ai_finalize(0.95, claim_id="eqp_ch_commonality:chamber:CC002000:NOPE")
+    out = nodes.tools_node({"messages": [ai], "loop_count": 2, "findings": no_pair})
+    assert "finalize_accepted" not in out
 
 
 def test_report_node_has_no_coverage_line_when_no_axis_ever_ran():
@@ -939,39 +1083,6 @@ def test_report_node_derives_coverage_when_the_gate_never_ran():
     })
     assert "[커버리지]" in out["report"]
     assert "hyp_metro_commonality" in out["report"]
-
-
-def test_report_node_passes_coverage_to_the_client():
-    """커버리지가 **클라이언트까지** 가야 산문이 부분 커버리지를 반영한다.
-
-    리포트 문자열만 확인하면 report_node 가 자기가 붙인 줄을 다시 읽는 셈이라,
-    generate_report(coverage=...) 인자를 지워도 통과한다. 산문 톤을 바꾸는 유일한
-    통로이므로 인자 자체를 잠근다.
-    """
-    received = {}
-
-    class _RecordingClient:
-        def analyze_step(self, messages):
-            raise NotImplementedError
-
-        def generate_report(self, **kwargs):
-            received.update(kwargs)
-            return "고정된 산문 리포트"
-
-    coverage = {"ran": ["hyp_eqp_ch_commonality"],
-                "unrun": ["hyp_metro_commonality"], "no_data": []}
-    original = nodes._llm
-    nodes._llm = _RecordingClient()
-    try:
-        nodes.report_node({
-            "target_wafers": ["W1"], "target_source": "manual",
-            "target_group": ["W1"], "status_summary": "요약", "findings": [],
-            "final_hypothesis": None, "final_confidence": 0.2,
-            "finalize_status": "no_signal", "final_claims": [], "coverage": coverage,
-        })
-    finally:
-        nodes._llm = original
-    assert received["coverage"] == coverage
 
 
 def test_report_node_has_no_evidence_line_without_claim():

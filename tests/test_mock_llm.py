@@ -317,9 +317,13 @@ class _CapturingLLM:
 
     def __init__(self):
         self.seen = None
+        self.seen_sys = None
 
     def invoke(self, messages):
         self.seen = messages[-1].content
+        # 시스템 메시지도 잡는다. 산문 톤을 실제로 바꾸는 지시는 여기 있는데
+        # user 쪽만 보던 탓에 sys 프롬프트가 통째로 커버리지 0 이었다.
+        self.seen_sys = messages[0].content
 
         class _Resp:
             content = "산문 리포트"
@@ -380,6 +384,57 @@ def test_operational_client_puts_coverage_in_the_prompt():
     prompt = client.llm.seen
     assert "hyp_metro_commonality" in prompt
     assert "커버리지" in prompt
+
+
+def test_operational_client_system_prompt_scopes_a_partial_coverage_conclusion():
+    """부분 커버리지 지시는 **시스템 프롬프트**에 있어야 산문 톤이 바뀐다.
+
+    user 쪽에 커버리지 JSON 만 넣고 sys 지시를 지워도 스위트가 통과하던 자리다 -
+    운영 클라이언트의 sys 프롬프트를 보는 테스트가 저장소에 한 건도 없었다.
+    """
+    client = _openai_client()
+    client.generate_report(
+        target_wafers=["W1"], target_source="manual", target_group=["W1"],
+        status_summary="s", findings=[], hypothesis=None, confidence=0.2,
+        finalize_status="no_signal", claims=[],
+        coverage={"ran": ["hyp_eqp_ch_commonality"],
+                  "unrun": ["hyp_metro_commonality"], "no_data": []})
+    assert "안 본 축" in client.llm.seen_sys
+
+
+def test_operational_client_does_not_hedge_a_confirmed_conclusion():
+    """확정 결론에까지 '돌린 축에 한한다' 는 유보를 달게 하면 안 된다.
+
+    claim_id 조회·순위 1등·순열 p 를 통과한 결론에 강한 유보를 달면 엔지니어가
+    근거를 저평가한다. 사실(커버리지 줄)은 코드가 따로 싣는다 - 유보 지시는
+    물러선 판정(no_signal·inconclusive)에만 붙는다.
+    """
+    client = _openai_client()
+    client.generate_report(
+        target_wafers=["W1"], target_source="manual", target_group=["W1"],
+        status_summary="s", findings=[], hypothesis="그 챔버다", confidence=0.9,
+        finalize_status="confirmed", claims=[{"claim_id": "a", "rank": 1}],
+        coverage={"ran": ["hyp_eqp_ch_commonality"],
+                  "unrun": ["hyp_metro_commonality"], "no_data": []})
+    assert "돌린 축에 한한" not in client.llm.seen
+    assert "돌린 축에 한한" not in client.llm.seen_sys
+
+
+def test_mock_no_signal_conclusion_does_not_claim_full_coverage():
+    """mock 의 '신호 없음' 결론이 안 본 축까지 없다고 단정하면 안 된다.
+
+    옛 문구("lot 내부 대조로는 타깃만 거친 설비/챔버/PPID 가 없다")는 전축을 돌린
+    전제에서만 참이다. 전축 실행이 전제 조건에서 빠졌으므로 부분 커버리지로 끝나는
+    분석이 정상이 됐고, 그 문구는 거짓 단정이 된다.
+    """
+    from llm.client import ScriptedMockLLMClient
+
+    report = ScriptedMockLLMClient().generate_report(
+        target_wafers=["W1"], target_source="manual", target_group=["W1"],
+        status_summary="s", findings=[], hypothesis=None, confidence=0.2,
+        finalize_status="no_signal", claims=[])
+    assert "설비/챔버/PPID 가 없다" not in report
+    assert "대조한 축에서는" in report
 
 
 def test_operational_client_works_without_claims():
