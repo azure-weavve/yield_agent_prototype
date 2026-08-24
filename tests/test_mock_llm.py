@@ -363,6 +363,25 @@ def test_operational_client_passes_every_claim_to_the_prompt():
     assert "전부 서술" in prompt
 
 
+def test_operational_client_puts_coverage_in_the_prompt():
+    """부분 커버리지 사실이 산문을 쓰는 LLM 에게 가야 한다.
+
+    안 가면 한 축만 보고 물러선 분석을 두고 "lot 내부 대조로는 원인이 없다" 는
+    확정 톤 문장을 쓴다 - 사유가 틀린 보고다. 운영 경로에서만 깨지는 자리라
+    여기서 잡지 않으면 사내에서만 조용히 어긋난다.
+    """
+    client = _openai_client()
+    client.generate_report(
+        target_wafers=["W1"], target_source="manual", target_group=["W1"],
+        status_summary="s", findings=[], hypothesis=None, confidence=0.2,
+        finalize_status="no_signal", claims=[],
+        coverage={"ran": ["hyp_eqp_ch_commonality"],
+                  "unrun": ["hyp_metro_commonality"], "no_data": []})
+    prompt = client.llm.seen
+    assert "hyp_metro_commonality" in prompt
+    assert "커버리지" in prompt
+
+
 def test_operational_client_works_without_claims():
     """근거가 없는 판정(no_signal 등)에서도 돌아야 한다."""
     client = _openai_client()

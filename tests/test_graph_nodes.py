@@ -85,9 +85,10 @@ EVIDENCE_FINDING_NEW = {
     "thought": "챔버 편중",
 }
 
-# no_signal 종료는 **등록 가설을 전부 돌린 뒤에만** 판정된다. 그래서 이 시험에는
-# hypotheses.yaml 의 가설 수만큼 침묵 finding 이 필요하다 — 가설을 추가하면 여기도
-# 늘려야 하고, 안 늘리면 게이트가 "아직 안 돌린 가설이 있다" 로 반려한다.
+# 전축 실행은 더 이상 no_signal 의 전제 조건이 아니다(부분 커버리지로도 물러설 수
+# 있고, 무엇을 안 봤는지는 coverage 로 나간다). 그래도 "전부 침묵" 을 겨눈 시험은
+# 가설 수만큼 침묵 finding 이 있어야 이름값을 한다 — 가설을 추가하면 여기도 늘려야
+# 하고, 안 늘리면 테스트 이름과 달리 부분 커버리지를 시험하게 된다.
 PPID_SILENT = {
     "loop": 3, "tool": "hyp_ppid_commonality", "args": {},
     "result": {"hypothesis_id": "ppid_commonality", "status": "no_signal",
@@ -118,11 +119,12 @@ ALL_SILENT = [EQP_CH_SILENT, PPID_SILENT, STEP_PASSAGE_SILENT, METRO_SILENT]
 def _assert_covers_every_hypothesis(findings):
     """이 findings 가 등록된 hyp_* 를 전부 채웠는지 못박는다.
 
-    no_signal 판정은 `unrun` 이 빈 뒤에야 도달한다. 가설이 하나 늘었는데 픽스처를
-    안 늘리면 게이트가 "아직 안 돌린 가설이 있다" 로 **먼저** 반려해서, no_signal
-    판정을 겨눈 테스트가 이름과 무관한 것을 재확인하는 공허한 테스트가 된다.
-    위 81-83행 주석이 경고한 그 일이 3번째 가설 추가(`292b5b8`) 때 실제로 일어났고
-    두 테스트가 조용히 무력화돼 있었다 - 주석 대신 이 단언으로 강제한다.
+    옛 계약에서는 `unrun` 이 비어야 no_signal 판정에 도달했고, 픽스처를 안 늘리면
+    게이트가 "아직 안 돌린 가설이 있다" 로 먼저 반려해 테스트가 무력화됐다(3번째
+    가설 추가 `292b5b8` 때 실제로 두 테스트가 조용히 죽어 있었다). 전축 강제를
+    걷어낸 지금은 반려 대신 **부분 커버리지 no_signal** 이 나온다 - 테스트는 통과하고
+    이름만 거짓이 되므로, 조용히 어긋나는 방식이 오히려 더 나빠졌다. 그래서 이
+    단언은 남는다.
     """
     registered = {n for n in nodes.TOOLS_BY_NAME if n.startswith("hyp_")}
     missing = registered - {f["tool"] for f in findings}
@@ -304,13 +306,140 @@ def test_gate_records_the_approved_claims():
     assert lead["picked_by_llm"] is True        # LLM 이 서술 축으로 지목한 묶음
 
 
-def test_gate_asks_for_the_unrun_hypothesis_before_declaring_no_signal():
-    """EQP_CH 하나가 조용하다고 신호가 없다고 선언하지 않는다."""
+def test_analyze_prompt_says_axes_do_not_have_to_be_exhausted():
+    """게이트만 풀면 LLM 은 관성으로 계속 전축을 돌린다.
+
+    전축 강제를 걷어낸 목적은 예산을 **깊이** 로 돌리는 것이다. 그런데 시스템
+    프롬프트는 그 자유를 한 번도 말하지 않는다 - 게이트 반려 문구는 반려당한
+    뒤에야 읽히므로, 애초에 반려되지 않는 경로에서는 아무 것도 안 바뀐다.
+    """
+    prompt = nodes.ANALYZE_SYSTEM_PROMPT
+    assert "전부 돌릴 의무는 없다" in prompt
+
+
+def test_gate_declares_no_signal_without_running_every_axis():
+    """축 하나만 돌리고 물러서도 게이트가 막지 않는다 - 전축 실행은 전제 조건이 아니다.
+
+    옛 계약은 등록된 hyp_* 를 **전부** 돌리기 전에는 no_signal 을 금지했다. 그러면
+    신호를 못 찾는 경로(= 이름 없는 이상을 찾는 경로)에서 루프 예산이 체크리스트
+    소화에 강제 배정돼 **깊이 탐색이 구조적으로 막힌다** - 3개 시나리오 전부에서
+    빈손인 metro 축이 매번 한 바퀴를 먹는 것이 그 증상이었다.
+    전축 실행은 이제 전제 조건이 아니라 **리포트에 적는 커버리지 사실**이다.
+    """
     ai = _ai_finalize(0.2, hypothesis="분리되는 후보가 없다", claim_id="")
     out = nodes.tools_node({"messages": [ai], "loop_count": 2,
                             "findings": [EQP_CH_SILENT]})
+    assert out["finalize_accepted"] is True
+    assert out["finalize_status"] == "no_signal"
+
+
+def test_gate_does_not_read_a_fabricated_claim_id_as_stepping_back():
+    """지목을 제출한 것은 물러선 것이 아니다 - 지어낸 claim_id 를 no_signal 로 승인하면 안 된다.
+
+    전축 강제가 사라지면서 (2)번 판정선이 훨씬 앞으로 당겨졌다. claim_id 를 보지
+    않으면 "확신도 0.9 로 없는 근거를 지목한" 제출이 곧바로 '신호 없음' 승인으로
+    빠져나가, 환각이 물러섬으로 둔갑하고 LLM 은 자기가 틀렸다는 것을 배우지 못한다.
+    no_signal 은 **claim_id 를 비우고 물러선** 제출에만 열린다.
+    """
+    ai = _ai_finalize(0.9, claim_id="eqp_ch_commonality:chamber:CC002000:NOPE")
+    out = nodes.tools_node({"messages": [ai], "loop_count": 2,
+                            "findings": [EQP_CH_SILENT]})
     assert "finalize_accepted" not in out
-    assert "hyp_ppid_commonality" in out["messages"][0].content
+
+
+def test_gate_tells_how_to_step_back_only_when_stepping_back_would_work():
+    """물러서는 길은 실제로 열려 있을 때만 알려 준다.
+
+    어떤 축이 no_signal 을 냈으면 claim_id 를 비우는 순간 (2)번으로 종료된다 -
+    이때는 그 길을 알려 줘야 LLM 이 루프 한계까지 왕복하지 않는다. 반대로 모든 축이
+    status ok 인데 판별선만 못 넘은 상태에서 같은 안내를 하면 **거짓말**이다:
+    비우고 제출해도 (2)번에 걸리지 않아 같은 반려가 돌아오고, 그대로 라이브락이 된다.
+    """
+    ai = _ai_finalize(0.9, claim_id="eqp_ch_commonality:chamber:CC002000:NOPE")
+    out = nodes.tools_node({"messages": [ai], "loop_count": 2,
+                            "findings": [EQP_CH_SILENT]})
+    assert "claim_id 를 비우" in out["messages"][0].content
+
+
+def test_gate_records_which_axes_it_did_not_run():
+    """부분 커버리지로 물러설 때 '무엇을 안 봤는지'가 결론과 함께 나간다.
+
+    사유가 틀린 보고를 막는 자리다 - 한 축만 보고 "lot 내부 대조로는 원인을 좁힐 수
+    없다" 고 쓰면 실제로는 안 본 축까지 없다고 말하는 것이 된다. 전축 강제를 걷어낸
+    대가로 이 사실이 반드시 따라 나가야 한다.
+    """
+    ai = _ai_finalize(0.2, claim_id="")
+    out = nodes.tools_node({"messages": [ai], "loop_count": 2,
+                            "findings": [EQP_CH_SILENT]})
+    coverage = out["coverage"]
+    assert coverage["ran"] == ["hyp_eqp_ch_commonality"]
+    assert "hyp_metro_commonality" in coverage["unrun"]
+    # 게이트가 LLM 에게 돌려주는 문장에도 남는다 - 리포트에만 있으면 LLM 은 자기가
+    # 부분만 봤다는 것을 모른 채 확정 톤으로 서술한다.
+    assert "hyp_metro_commonality" in out["messages"][0].content
+
+
+def test_gate_still_needs_one_hypothesis_result_before_no_signal():
+    """축을 하나도 안 돌리고 '신호 없음' 을 선언할 수는 없다.
+
+    전축 강제를 걷어내도 이 하한은 남는다 - 근거가 될 결과가 0건이면 no_signal 은
+    관측이 아니라 추측이다.
+    """
+    ai = _ai_finalize(0.2, claim_id="")
+    out = nodes.tools_node({"messages": [ai], "loop_count": 2, "findings": []})
+    assert "finalize_accepted" not in out
+
+
+def test_gate_records_coverage_on_an_approved_exit():
+    """커버리지는 no_signal 전용이 아니다 - 승인된 결론도 어디까지 봤는지 함께 나간다."""
+    ai = _ai_finalize(0.9, claim_id="eqp_ch_commonality:chamber:Etch:ETCH-9")
+    out = nodes.tools_node({"messages": [ai], "loop_count": 2,
+                            "findings": [EVIDENCE_FINDING]})
+    assert out["finalize_status"] == "confirmed"
+    assert out["coverage"]["ran"] == ["hyp_eqp_ch_commonality"]
+    assert "hyp_metro_commonality" in out["coverage"]["unrun"]
+
+
+def test_gate_reports_uncomputable_axes_as_coverage_holes():
+    """돌았지만 계산이 성립하지 않은 축은 '봤다' 로 세면 안 된다.
+
+    metro 축은 계측 짝이 없으면 no_paired_stratum 으로 끝난다 - 호출은 됐지만
+    대조한 것은 없다. 이것을 ran 으로만 세면 커버리지가 실제보다 넓어 보인다.
+    """
+    metro_no_pair = {
+        "loop": 3, "tool": "hyp_metro_commonality", "args": {},
+        "result": {"hypothesis_id": "metro_commonality",
+                   "status": "no_paired_stratum", "candidates": []},
+        "thought": "계측 짝 없음",
+    }
+    ai = _ai_finalize(0.2, claim_id="")
+    out = nodes.tools_node({"messages": [ai], "loop_count": 2,
+                            "findings": [EQP_CH_SILENT, metro_no_pair]})
+    assert out["coverage"]["no_data"] == ["hyp_metro_commonality"]
+
+
+def test_gate_offers_narrowing_instead_of_ordering_the_unrun_axes():
+    """반려 안내가 '먼저 호출하라'(강제)에서 선택지로 바뀐다.
+
+    규칙은 판정과 안내 **두 곳**에 쓰여 있었다. 판정만 풀어 놓고 안내에 명령문을
+    남겨 두면 LLM 은 여전히 체크리스트를 소화하러 간다.
+    """
+    weak = {
+        "loop": 2, "tool": "hyp_eqp_ch_commonality", "args": {},
+        "result": {"hypothesis_id": "eqp_ch_commonality", "status": "ok", "candidates": [
+            {"claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH9_B", "step_seq": "CC002000",
+             "key": "ETCH9_B", "level": "chamber", "passes": False,
+             "reject_reason": "분리 점수 0.4 < 0.5", "score": 0.4,
+             "target_pass": 4, "target_total": 4, "control_pass": 3, "control_total": 5},
+        ]},
+        "thought": "판별선을 못 넘은 후보",
+    }
+    ai = _ai_finalize(0.2, claim_id="")
+    out = nodes.tools_node({"messages": [ai], "loop_count": 2, "findings": [weak]})
+    msg = out["messages"][0].content
+    assert "먼저 호출하라" not in msg
+    assert "hyp_metro_commonality" in msg        # 남은 축은 그대로 알려 준다
+    assert "2단" in msg                          # 더 좁히는 길도 함께 준다
 
 
 def test_gate_declares_no_signal_after_all_hypotheses_are_silent():
@@ -339,8 +468,9 @@ def test_gate_no_signal_beats_max_loops():
 def test_gate_does_not_declare_no_signal_while_a_passing_claim_exists():
     """한 가설에 통과 후보가 있으면, 다른 가설이 no_signal 이어도 전체를 신호 없음으로 뭉개면 안 된다.
 
-    등록 가설을 **전부** 채워야 `unrun` 이 비어 no_signal 판정선까지 내려간다.
-    빠뜨리면 "안 돌린 가설이 있다" 로 먼저 반려돼 이 테스트가 공허해진다.
+    통과 후보가 하나라도 있으면 `not bundle.passing()` 이 거짓이라 (2)번에 닿지
+    않는다 - 커버리지와 무관하게 성립하는 명제다. 픽스처를 전부 채우는 것은 옛
+    계약의 잔재가 아니라, "다른 축이 조용해도" 라는 전제를 실제로 만들기 위해서다.
     """
     findings = [EVIDENCE_FINDING, PPID_SILENT, STEP_PASSAGE_SILENT, METRO_SILENT]
     _assert_covers_every_hypothesis(findings)
@@ -356,9 +486,8 @@ def test_gate_does_not_declare_no_signal_when_candidates_only_missed_the_line():
     후보는 있는데 판별선만 못 넘은 경우는 조치가 다르므로(더 좁힐 여지가 있다)
     같은 취급을 하면 안 된다.
 
-    등록 가설을 **전부 status ok 로** 채워야 이 명제를 겨눈다. 하나라도 빠지면
-    `unrun` 이 안 비어 판정선 앞에서 반려되고, 하나라도 no_signal 로 채우면
-    이번엔 statuses 에 no_signal 이 섞여 다른 케이스(혼합 상태)가 돼 버린다.
+    등록 가설을 **전부 status ok 로** 채운다. 하나라도 no_signal 로 채우면 statuses
+    에 no_signal 이 섞여 (2)번이 열려 버려 다른 케이스(혼합 상태)를 시험하게 된다.
     """
     weak_eqp_ch = {
         "loop": 2, "tool": "hyp_eqp_ch_commonality", "args": {},
@@ -758,6 +887,91 @@ def test_report_node_appends_evidence_line_for_approved_claim():
     assert "분리 점수 1.0" in out["report"]
     assert "타깃 3/3" in out["report"] and "대조군 0/6" in out["report"]
     assert out["report"].count("[근거 1]") == 1   # 클라이언트가 또 붙이면 중복된다
+
+
+def test_report_node_appends_a_coverage_line():
+    """커버리지 줄도 report_node 가 코드로 붙인다 - [근거] 와 같은 이유다.
+
+    클라이언트에 맡기면 운영 경로에서 조용히 사라진다(사내에서만 안 붙는 줄이
+    생긴다). 판정이 무엇이든, 어느 축까지 봤는지는 리포트에 남아야 한다.
+    """
+    out = nodes.report_node({
+        "target_wafers": ["W1"], "target_source": "manual",
+        "target_group": ["W1"], "status_summary": "요약", "findings": [],
+        "final_hypothesis": None, "final_confidence": 0.2,
+        "finalize_status": "no_signal", "final_claims": [],
+        "coverage": {"ran": ["hyp_eqp_ch_commonality"],
+                     "unrun": ["hyp_metro_commonality", "hyp_ppid_commonality"],
+                     "no_data": []},
+    })
+    assert "[커버리지]" in out["report"]
+    assert "hyp_metro_commonality" in out["report"]
+
+
+def test_report_node_has_no_coverage_line_when_no_axis_ever_ran():
+    """분석 루프에 들어가지도 않은 종료(이상 없음 등)에는 커버리지를 붙이지 않는다.
+
+    "등록 축 4개 중 0개 대조" 는 사실이지만 아무 것도 알려 주지 않는다 - 애초에
+    셀 것이 없는 보고서에 세는 줄을 붙이면 소음이다.
+    """
+    out = nodes.report_node({
+        "target_wafers": [], "target_source": "auto",
+        "target_group": [], "status_summary": "수율 임계 미만 lot 없음",
+        "findings": [], "finalize_status": "no_anomaly",
+    })
+    assert "[커버리지]" not in out["report"]
+
+
+def test_report_node_derives_coverage_when_the_gate_never_ran():
+    """루프 한계로 게이트를 안 거치고 끝나도 커버리지는 나간다.
+
+    `_after_tools` 는 finalize 승인 없이도 MAX_LOOPS 에서 리포트로 빠지고,
+    `_after_analyze` 는 LLM 이 tool 없이 텍스트만 내면 곧바로 리포트로 간다.
+    두 경로 모두 게이트를 안 타므로 state 에 coverage 가 없다 - 거기서 줄이
+    통째로 사라지면 "커버리지는 결론과 함께 나간다" 는 약속이 **가장 설명이
+    필요한 보고서**에서만 깨진다. 감사 기록에서 다시 세어 붙인다.
+    """
+    out = nodes.report_node({
+        "target_wafers": ["W1"], "target_source": "manual",
+        "target_group": ["W1"], "status_summary": "요약",
+        "findings": [EQP_CH_SILENT],
+        "final_hypothesis": None, "final_confidence": None,
+    })
+    assert "[커버리지]" in out["report"]
+    assert "hyp_metro_commonality" in out["report"]
+
+
+def test_report_node_passes_coverage_to_the_client():
+    """커버리지가 **클라이언트까지** 가야 산문이 부분 커버리지를 반영한다.
+
+    리포트 문자열만 확인하면 report_node 가 자기가 붙인 줄을 다시 읽는 셈이라,
+    generate_report(coverage=...) 인자를 지워도 통과한다. 산문 톤을 바꾸는 유일한
+    통로이므로 인자 자체를 잠근다.
+    """
+    received = {}
+
+    class _RecordingClient:
+        def analyze_step(self, messages):
+            raise NotImplementedError
+
+        def generate_report(self, **kwargs):
+            received.update(kwargs)
+            return "고정된 산문 리포트"
+
+    coverage = {"ran": ["hyp_eqp_ch_commonality"],
+                "unrun": ["hyp_metro_commonality"], "no_data": []}
+    original = nodes._llm
+    nodes._llm = _RecordingClient()
+    try:
+        nodes.report_node({
+            "target_wafers": ["W1"], "target_source": "manual",
+            "target_group": ["W1"], "status_summary": "요약", "findings": [],
+            "final_hypothesis": None, "final_confidence": 0.2,
+            "finalize_status": "no_signal", "final_claims": [], "coverage": coverage,
+        })
+    finally:
+        nodes._llm = original
+    assert received["coverage"] == coverage
 
 
 def test_report_node_has_no_evidence_line_without_claim():

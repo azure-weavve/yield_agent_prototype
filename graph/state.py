@@ -29,4 +29,8 @@ class AgentState(TypedDict, total=False):
     # 축이 여럿일 때 LLM 이 고른 것 말고는 리포트에 도달하지 못했다. 각 항목은 대표
     # claim + `confounded_with`(같은 wafer 를 가리키는 다른 이름들) + `picked_by_llm`.
     final_claims: list[dict]
+    # 어디까지 봤는가: {"ran": [...], "unrun": [...], "no_data": [...]}. 전축 실행이
+    # no_signal 의 **전제 조건**이던 것을 걷어낸 대가로, 부분 커버리지 사실이 결론과
+    # 함께 나가야 사유가 틀린 보고("안 본 축까지 없다")를 막는다.
+    coverage: dict
     report: str                                     # 최종 리포트

@@ -36,6 +36,7 @@ class LLMClient(ABC):
         confidence: float | None,
         finalize_status: str | None = None,
         claims: list[dict] | None = None,
+        coverage: dict | None = None,
     ) -> str:
         """감사 기록을 근거로 원인 리포트 생성.
 
@@ -46,6 +47,10 @@ class LLMClient(ABC):
         이 붙은 것은 서술의 축일 뿐 나머지가 덜 중요하다는 뜻이 아니다.
         `confounded_with` 가 있는 항목은 **같은 wafer 를 다른 이름으로도 설명할 수
         있다**는 뜻이니, 둘 중 하나로 단정하지 말고 구분이 안 된다는 사실을 적어라.
+        coverage 는 **어디까지 봤는가**다(ran/unrun/no_data). 전축 실행이 종료의
+        전제 조건에서 빠졌으므로 부분 커버리지로 끝나는 분석이 정상적으로 생긴다 -
+        안 돌린 축이 있으면 결론은 돌린 축에 한한 것이니 그 사실을 명시하고,
+        안 본 축까지 없다고 쓰지 마라.
         """
         ...
 
@@ -222,7 +227,7 @@ class ScriptedMockLLMClient(LLMClient):
     # -------------------------------------------------- report
     def generate_report(self, target_wafers, target_source, target_group, status_summary,
                         findings, hypothesis, confidence, finalize_status=None,
-                        claims=None) -> str:
+                        claims=None, coverage=None) -> str:
         lines = [
             f"[분석 대상 입력] ({target_source}) {', '.join(target_wafers) or '없음'}",
             f"[불량 그룹] {', '.join(target_group) or '없음'}",
@@ -239,7 +244,10 @@ class ScriptedMockLLMClient(LLMClient):
         if finalize_status == "inconclusive":
             conclusion = f"미확정 (루프 한계 도달) - 유력 가설: {hypothesis or '없음'}"
         elif finalize_status == "no_signal":
-            conclusion = ("신호 없음 - lot 내부 대조로는 타깃만 거친 설비/챔버/PPID 가 없다. "
+            # "설비/챔버/PPID 가 없다" 로 단정하지 않는다 - 전축 실행이 전제 조건이
+            # 아니게 되면서 부분 커버리지로 끝나는 분석이 정상이 됐다. 무엇을 봤고
+            # 무엇을 안 봤는지는 report_node 가 붙이는 [커버리지] 줄이 말한다.
+            conclusion = ("신호 없음 - 대조한 축에서는 타깃만 거친 항목이 없다. "
                           "원인 없음이 아니라 원인이 root_lot 전체에 걸렸을 수 있다는 뜻이며, "
                           "lot 밖 대조군이 필요하다.")
         elif finalize_status == "llm_call_failed":
@@ -368,7 +376,7 @@ class OpenAILLMClient(LLMClient):
 
     def generate_report(self, target_wafers, target_source, target_group, status_summary,
                         findings, hypothesis, confidence, finalize_status=None,
-                        claims=None) -> str:
+                        claims=None, coverage=None) -> str:
         sys = (
             "현장 반도체 엔지니어에게 한국어 높임말로 원인 분석 리포트를 쓴다. "
             "분석 과정(findings)의 수치는 절대 임의로 바꾸지 말고 그대로 인용하라. "
@@ -376,8 +384,10 @@ class OpenAILLMClient(LLMClient):
             "판정이 inconclusive 면 결론을 확정하지 말고 '미확정(루프 한계 도달)'과 "
             "유력 후보·추가 조사 필요 항목으로 서술하라. "
             "판정이 no_signal 이면 '신호 없음'으로 서술하라 - 원인 없음이 아니라 "
-            "lot 내부 대조로는 보이지 않는다는 뜻이며 lot 밖 대조군이 필요하다는 "
+            "대조한 축에서는 보이지 않는다는 뜻이며 lot 밖 대조군이 필요하다는 "
             "후속 조치를 명시하고, 확정 결론을 쓰지 마라. "
+            "커버리지에 안 돌린 축이 있으면 결론은 **돌린 축에 한한 것**이니 그 사실과 "
+            "안 본 축 이름을 반드시 적어라 - 안 본 축까지 없다고 쓰면 사유가 틀린 보고다. "
             "판정이 no_comparable_data 면 '분석 미수행 - 비교 가능한 데이터 없음'으로 "
             "서술하라 - 근거를 못 찾은 것이 아니라 대조에 쓸 짝이 없어 계산이 성립하지 "
             "않은 것이며, 적재 범위와 추출 조건 확인이 후속 조치다. 확정 결론을 쓰지 마라. "
@@ -397,6 +407,12 @@ class OpenAILLMClient(LLMClient):
             f"결론 가설: {hypothesis or '미확정'} / 확신도: {confidence} / "
             f"판정: {finalize_status or '미상'}"
         )
+        if coverage:
+            user += (f"\n커버리지(어디까지 봤는가): "
+                     f"{json.dumps(coverage, ensure_ascii=False)} - unrun 이 비어 "
+                     f"있지 않으면 결론은 돌린 축에 한한 것이다. 그 사실과 안 본 축 "
+                     f"이름을 적고, 안 본 축까지 없다고 쓰지 마라. no_data 는 돌았지만 "
+                     f"계산이 성립하지 않은 축이라 본 것으로 세면 안 된다.")
         if claims:
             user += (f"\n게이트가 확인한 근거 {len(claims)}건 "
                      f"(순위는 코드가 매겼다. 수치를 그대로 인용하고, 하나만 고르지 말고 "
