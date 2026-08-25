@@ -480,3 +480,22 @@ def test_sensor_no_signal_is_not_treated_like_a_missing_sensor():
 
     # 같은 상태를 다시 물어도 같은 답이다 - 반복이 아니라 종료다
     assert llm.analyze_step(msgs).tool_calls[0]["args"] == args
+
+
+def test_operational_client_system_prompt_disowns_superseded_runs():
+    """대체된 실행을 근거로 인용하지 말라는 지시는 **시스템 프롬프트**에 있어야 한다.
+
+    report_node 가 findings 에 표시를 붙여도 지시가 없으면 LLM 은 그 키를 모른다.
+    같은 프롬프트가 findings 의 수치를 "그대로 인용하라" 고 지시하고 있으므로,
+    표시는 무시되고 게이트가 버린 통과 후보(passes True)가 그대로 근거로 나간다 -
+    운영 경로에서만 깨지는 자리라 여기서 잡지 않으면 사내에서만 조용히 어긋난다.
+    """
+    client = _openai_client()
+    client.generate_report(
+        target_wafers=["W1"], target_source="manual", target_group=["W1"],
+        status_summary="s", hypothesis=None, confidence=0.2,
+        finalize_status="no_signal", claims=[],
+        findings=[{"loop": 2, "tool": "hyp_eqp_ch_commonality", "superseded": True,
+                   "result": {"hypothesis_id": "eqp_ch_commonality", "status": "ok",
+                              "candidates": [{"claim_id": "c", "passes": True}]}}])
+    assert "superseded" in client.llm.seen_sys

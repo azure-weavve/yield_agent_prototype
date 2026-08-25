@@ -517,13 +517,23 @@ def report_node(state: dict) -> dict:
         gateless = {}
         _record_evidence(gateless, bundle.ranked_groups(), None)
         claims = gateless["final_claims"]
+    # **대체된 실행에 표시를 붙여 넘긴다.** 같은 축을 다시 돌리면 build_bundle 이 앞
+    # 후보를 버리는데(그룹이 바뀌면 분모가 달라 거짓이므로 옳다), findings 는 그대로
+    # 넘어가고 운영 프롬프트는 그 수치를 "그대로 인용하라" 고 지시한다 - 표시가 없으면
+    # 게이트가 버린 통과 후보를 LLM 이 살아 있는 근거로 읽는다. 지우지 않고 표시만 하는
+    # 이유는 추적성이 이 기록의 존재 이유이기 때문이다. **사본에만 붙인다** - 상태의
+    # findings 를 건드리면 감사 기록 자체가 오염된다.
+    sent_findings = state["findings"]
+    if bundle.superseded:
+        sent_findings = [{**f, "superseded": True} if i in bundle.superseded else f
+                         for i, f in enumerate(sent_findings)]
     try:
         report = _llm_lazy().generate_report(
             target_wafers=state.get("target_wafers", []),
             target_source=state.get("target_source", "manual"),
             target_group=state["target_group"],
             status_summary=state["status_summary"],
-            findings=state["findings"],
+            findings=sent_findings,
             hypothesis=state.get("final_hypothesis"),
             confidence=state.get("final_confidence"),
             finalize_status=verdict,
@@ -560,4 +570,12 @@ def report_node(state: dict) -> dict:
     # 없는 보고서(이상 없음 등)에서는 소음일 뿐이다.
     if coverage.get("ran"):
         report += f"\n[커버리지] {_coverage_phrase(coverage)}"
+    # [대체됨] 줄도 코드가 붙인다. LLM 프롬프트에만 표시하면, main.py 가 찍는 감사
+    # 기록에서 통과 후보를 본 엔지니어는 결론이 왜 '신호 없음' 인지 읽을 방법이 없다 -
+    # 모순이 사라지는 것이 아니라 자리를 옮길 뿐이다.
+    for i in sorted(bundle.superseded):
+        dropped = state["findings"][i]
+        report += (f"\n[대체됨] loop {dropped.get('loop', '?')} 의 "
+                   f"{dropped.get('tool', '?')} 결과는 같은 축을 다시 돌린 뒤 실행으로 "
+                   f"대체되었다 - 그 실행의 후보는 근거가 아니다")
     return {"report": report, "finalize_status": verdict}

@@ -112,6 +112,11 @@ class Bundle:
     claims: dict[str, Claim]      # claim_id -> Claim (미통과 후보도 담는다)
     statuses: dict[str, str]      # tool 이름 -> 마지막 실행의 status
     ran: set[str]                 # 유효한 결과를 낸 hyp_* 도구 이름
+    # 뒤 실행에 밀려 claims 에서 빠진 findings 의 위치. **폐기 사실을 밖으로
+    # 내보내는 자리**다 - 폐기는 여기서만 일어나는데 findings 는 그대로 리포트
+    # LLM 에 넘어가고 운영 프롬프트가 그 수치를 "그대로 인용하라" 고 지시하므로,
+    # 말해 주지 않으면 게이트가 버린 후보를 리포트가 근거로 인용한다.
+    superseded: frozenset[int] = frozenset()
 
     def passing(self) -> list[Claim]:
         return [c for c in self.claims.values() if c.passes]
@@ -275,8 +280,10 @@ def build_bundle(findings: list[dict]) -> Bundle:
     claims: dict[str, Claim] = {}
     statuses: dict[str, str] = {}
     ran: set[str] = set()
+    superseded: set[int] = set()
+    latest_at: dict[str, int] = {}     # tool -> 지금까지 본 마지막 유효 실행의 위치
 
-    for f in findings:
+    for i, f in enumerate(findings):
         result = f.get("result")
         if not _is_hypothesis_result(result):
             continue
@@ -284,6 +291,11 @@ def build_bundle(findings: list[dict]) -> Bundle:
         ran.add(tool)
         statuses[tool] = result.get("status", "")
         # 재실행이면 앞 결과를 버린다 — 그룹이 바뀐 재실행에서 옛 후보는 거짓이다
+        # (group_ids/control_ids 중 하나만 바뀌어도 분모가 달라진다). 인자가 같으면
+        # 도구가 결정적이라 같은 후보가 다시 만들어져 손실이 없다.
+        if tool in latest_at:
+            superseded.add(latest_at[tool])
+        latest_at[tool] = i
         claims = {k: v for k, v in claims.items() if v.tool != tool}
         for c in result["candidates"]:
             claim_id = c.get("claim_id")
@@ -315,4 +327,5 @@ def build_bundle(findings: list[dict]) -> Bundle:
                 extra={k: v for k, v in c.items()
                        if k not in _FIRST_CLASS_FIELDS and k != "value"},
             )
-    return Bundle(claims=claims, statuses=statuses, ran=ran)
+    return Bundle(claims=claims, statuses=statuses, ran=ran,
+                  superseded=frozenset(superseded))

@@ -366,3 +366,47 @@ def test_the_picked_group_is_never_truncated_away(monkeypatch):
     assert sum(1 for c in claims if c["picked_by_llm"]) == 1
     assert claims[-1]["claim_id"] == last.lead.claim_id
     assert claims[-1]["more_below"] == 3
+
+
+def test_bundle_reports_which_findings_the_rerun_superseded():
+    """버린 사실을 밖으로 내보낸다 - 안 내보내면 감사 기록만 그 후보를 계속 들고 있다.
+
+    폐기 자체는 옳다: group_ids/control_ids 중 하나라도 바뀌면 앞 후보는 분모가
+    다른 값이라 거짓이고, 인자가 같으면 같은 후보가 다시 만들어져 손실이 없다.
+    문제는 **폐기가 한쪽에만 적용된다**는 것이다. findings 는 그대로 리포트 LLM 에
+    넘어가고 운영 프롬프트는 그 수치를 "그대로 인용하라" 고 지시하므로, 무엇이
+    대체됐는지 말하지 않으면 게이트가 버린 후보를 리포트가 근거로 인용한다.
+    """
+    stale = {**CAND_PASS, "claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH1_A",
+             "key": "ETCH1_A"}
+    b = evidence.build_bundle([
+        _finding("hyp_eqp_ch_commonality", "eqp_ch_commonality", "ok", [stale]),
+        _finding("hyp_ppid_commonality", "ppid_commonality", "no_signal", []),
+        _finding("hyp_eqp_ch_commonality", "eqp_ch_commonality", "no_signal", []),
+    ])
+    # 0번만 대체됐다. 1번은 다른 축이므로 대체가 아니다 - 축을 안 보고 세면
+    # 앞선 축의 근거가 통째로 "대체됨" 으로 지워진다.
+    assert b.superseded == frozenset({0})
+    assert b.claims == {}
+
+
+def test_a_failed_rerun_does_not_supersede_the_previous_run():
+    """인자 오류로 실패한 재실행은 앞 결과를 안 버린다 - 그러니 대체도 아니다.
+
+    폐기와 대체 표시는 같은 사건의 두 얼굴이라 한쪽만 움직이면 어긋난다. 실패한
+    재실행에서 표시만 붙으면 살아 있는 근거에 "대체됨" 이 찍힌다.
+    """
+    b = evidence.build_bundle([
+        _finding("hyp_eqp_ch_commonality", "eqp_ch_commonality", "ok", [CAND_PASS]),
+        _finding("hyp_eqp_ch_commonality", None, None, None,
+                 result="오류: 실행 실패 (KeyError: 'legend')"),
+    ])
+    assert b.superseded == frozenset()
+    assert set(b.claims) == {CAND_PASS["claim_id"]}
+
+
+def test_a_single_run_supersedes_nothing():
+    """한 번만 돈 축은 대체가 없다 - 기본값이 비어 있어야 한다."""
+    b = evidence.build_bundle([_finding("hyp_eqp_ch_commonality", "eqp_ch_commonality",
+                                        "ok", [CAND_PASS])])
+    assert b.superseded == frozenset()

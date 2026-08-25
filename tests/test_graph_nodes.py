@@ -1398,3 +1398,84 @@ def test_report_states_the_llm_failure_when_only_analyze_died():
     })
     assert "분석 미수행" in out["report"]
     assert "LLM" in out["report"]
+
+
+# ------------------------------------------------ M3: 대체된 재실행
+# 같은 축을 다시 돌리면 build_bundle 이 앞 후보를 버린다(그룹이 바뀌면 분모가 달라
+# 거짓이므로 옳다). 그런데 findings 는 그대로 리포트 LLM 에 넘어가고 운영 sys
+# 프롬프트는 그 수치를 "그대로 인용하라" 고 지시한다 - 대체 사실을 말하지 않으면
+# 게이트가 버린 후보(passes True · p 0.01)를 리포트가 근거로 인용하거나, "신호 없음"
+# 이라 써 놓고 바로 옆 감사 기록에 통과 후보가 보이는 모순이 나간다.
+EQP_CH_RERUN_SILENT = {
+    "loop": 5, "tool": "hyp_eqp_ch_commonality",
+    "args": {"group_ids": ["W2406_02", "W2406_04"],       # 타깃을 좁혀 다시 돌렸다
+             "control_ids": ["W2406_01", "W2406_03", "W2406_05"]},
+    "result": {"hypothesis_id": "eqp_ch_commonality", "status": "no_signal",
+               "candidates": []},
+    "thought": "타깃을 좁혀 재확인",
+}
+
+
+def _superseded_state():
+    return {"target_wafers": ["W2406_02"], "target_source": "manual",
+            "target_group": ["W2406_02"], "status_summary": "요약",
+            "findings": [EVIDENCE_FINDING_NEW, EQP_CH_RERUN_SILENT],
+            "final_hypothesis": None, "final_confidence": 0.2,
+            "finalize_status": "no_signal", "final_claims": []}
+
+
+def test_report_node_marks_the_superseded_run_for_the_client():
+    """대체된 실행에 표시를 붙여 LLM 에 넘긴다 - 안 붙이면 버린 후보를 인용한다.
+
+    운영 프롬프트가 findings 의 수치를 그대로 인용하라고 지시하므로, 게이트가
+    폐기한 후보가 표시 없이 그대로 가면 LLM 은 그것을 살아 있는 근거로 읽는다.
+    """
+    received = {}
+
+    class _RecordingClient:
+        def analyze_step(self, messages):
+            raise NotImplementedError
+
+        def generate_report(self, **kwargs):
+            received.update(kwargs)
+            return "고정된 산문 리포트"
+
+    original = nodes._llm
+    nodes._llm = _RecordingClient()
+    try:
+        nodes.report_node(_superseded_state())
+    finally:
+        nodes._llm = original
+
+    sent = received["findings"]
+    assert sent[0].get("superseded") is True     # 통과 후보를 낸 앞 실행
+    assert not sent[1].get("superseded")         # 살아 있는 뒤 실행
+    # 감사 기록 자체는 지우지 않는다 - 추적성이 이 기록의 존재 이유다
+    assert sent[0]["result"]["candidates"][0]["passes"] is True
+
+
+def test_report_node_does_not_mutate_the_audit_trail():
+    """표시는 사본에만 붙인다 - 상태의 findings 를 건드리면 감사 기록이 오염된다."""
+    state = _superseded_state()
+    original_finding = state["findings"][0]
+    nodes.report_node(state)
+    assert "superseded" not in original_finding
+
+
+def test_report_node_names_the_superseded_run_in_the_report():
+    """사람이 읽는 리포트에도 남긴다 - 감사 기록을 직접 보는 엔지니어를 위해서다.
+
+    LLM 프롬프트에만 표시하면, main.py 가 찍는 감사 기록에서 p 0.01 을 본
+    엔지니어는 결론이 왜 '신호 없음' 인지 읽을 방법이 없다.
+    """
+    out = nodes.report_node(_superseded_state())
+    assert "[대체됨]" in out["report"]
+    assert "hyp_eqp_ch_commonality" in out["report"].split("[대체됨]")[1]
+
+
+def test_report_node_has_no_superseded_line_without_a_rerun():
+    """재실행이 없으면 그 줄도 없다 - 늘 붙으면 소음이다."""
+    state = _superseded_state()
+    state["findings"] = [EVIDENCE_FINDING_NEW]
+    out = nodes.report_node(state)
+    assert "[대체됨]" not in out["report"]
