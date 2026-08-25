@@ -451,3 +451,20 @@ def test_bundle_names_the_claims_a_rerun_dropped():
         _finding("hyp_eqp_ch_commonality", "eqp_ch_commonality", "no_signal", []),
     ])
     assert b.dropped_claims == {"eqp_ch_commonality:chamber:S1:OLD": "hyp_eqp_ch_commonality"}
+
+
+def test_a_revived_claim_is_not_listed_as_dropped():
+    """되살아난 claim_id 는 '대체된 것' 목록에 없어야 한다.
+
+    게이트에서는 무해하다(claims 에 있으면 `claim is None` 분기를 안 탄다). 그래도
+    필드가 거짓을 담고 있으면 다음에 그것을 읽는 자리가 틀린 답을 받는다 -
+    `superseded` 를 살아남음 기준으로 좁혀 놓고 이쪽만 안 좁히면 두 필드가 서로
+    다른 이야기를 한다.
+    """
+    b = evidence.build_bundle([
+        _finding("hyp_eqp_ch_commonality", "eqp_ch_commonality", "ok", [CAND_PASS]),
+        _finding("hyp_eqp_ch_commonality", "eqp_ch_commonality", "ok", [CAND_PASS]),
+    ])
+    assert b.dropped_claims == {}
+    assert set(b.claims) == {CAND_PASS["claim_id"]}
+    assert b.superseded == frozenset()

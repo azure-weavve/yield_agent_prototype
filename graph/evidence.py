@@ -289,7 +289,12 @@ def build_bundle(findings: list[dict]) -> Bundle:
     claims: dict[str, Claim] = {}
     statuses: dict[str, str] = {}
     ran: set[str] = set()
-    superseded: set[int] = set()
+    # 위치 -> 그 실행이 내놨다가 재실행에 밀려 나간 claim_id 들. **끝까지 살아남지
+    # 못한 것이 있을 때만** 대체로 친다(아래에서 거른다). claim_id 는 그룹 인자와
+    # 무관하게 만들어지므로(`domain/engine.py`) 인자가 같은 재실행은 같은 claim_id 를
+    # 그대로 되살린다 - 잃은 것이 없는데 대체로 표시하면 리포트가 자기모순을 낸다:
+    # `[근거]` 로 실린 바로 그 claim 을 sys 프롬프트가 "인용하지 마라" 로 막는다.
+    lost_at: dict[int, set[str]] = {}
     dropped_claims: dict[str, str] = {}
     # tool -> 지금 claims 에 들어 있는 후보를 낸 실행의 위치. **후보를 낸 실행만**
     # 담는다(빈손 실행은 버릴 것이 없어 대체의 주체도 대상도 아니다).
@@ -306,8 +311,9 @@ def build_bundle(findings: list[dict]) -> Bundle:
         # (group_ids/control_ids 중 하나만 바뀌어도 분모가 달라진다). 인자가 같으면
         # 도구가 결정적이라 같은 후보가 다시 만들어져 손실이 없다.
         if tool in claims_from:
-            superseded.add(claims_from.pop(tool))
-            dropped_claims.update({k: tool for k, v in claims.items() if v.tool == tool})
+            gone = {k for k, v in claims.items() if v.tool == tool}
+            lost_at[claims_from.pop(tool)] = gone
+            dropped_claims.update({k: tool for k in gone})
         claims = {k: v for k, v in claims.items() if v.tool != tool}
         for c in result["candidates"]:
             claim_id = c.get("claim_id")
@@ -341,5 +347,12 @@ def build_bundle(findings: list[dict]) -> Bundle:
             )
             # 후보를 하나라도 실었을 때만 "이 실행이 지금 claims 의 주인" 이 된다.
             claims_from[tool] = i
+    # **끝까지 살아남지 못한 claim 이 있는 실행만** 대체로 친다. 되살아난 claim 은
+    # 잃은 것이 아니므로, 그 실행만 밀려났다고 표시하면 리포트가 [근거] 로 싣는
+    # claim 을 동시에 "인용하지 마라" 로 막는 상반된 지시가 나간다.
+    surviving = set(claims)
+    superseded = frozenset(i for i, lost in lost_at.items() if lost - surviving)
     return Bundle(claims=claims, statuses=statuses, ran=ran,
-                  superseded=frozenset(superseded), dropped_claims=dropped_claims)
+                  superseded=superseded,
+                  dropped_claims={k: v for k, v in dropped_claims.items()
+                                  if k not in surviving})

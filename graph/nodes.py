@@ -422,8 +422,12 @@ def _gate_rejection(claim_id, claim, bundle, unrun, conf, conf_note, groups) -> 
         # 거짓이고, 그 문구는 지어낸 claim_id 를 겨눈 것이라 LLM 은 자기가 환각을 낸
         # 줄 알고 같은 문맥을 다시 읽는다. 폐기 사실을 리포트에만 알리고 여기에는
         # 안 알린 것이 M3 수정에 남아 있던 비대칭이다.
+        # **사실만 적고 다음 행동은 아래 두 분기에 맡긴다.** 여기에 "최신 실행에서
+        # 골라라" 를 넣었더니 통과 후보가 0건일 때 바로 뒤에 "통과한 후보가 없다" 가
+        # 붙어 한 문장 안에서 모순이 났다 - 실행 불가능한 지시는 H1 이 막으려던
+        # "같은 문맥을 다시 읽는" 행동을 약한 형태로 되살린다.
         why = (f"claim_id '{claim_id}' 는 {bundle.dropped_claims[claim_id]} 를 다시 "
-               f"돌려 대체된 앞 실행의 후보다 - 최신 실행 결과에서 골라라."
+               f"돌려 대체된 앞 실행의 후보다."
                if claim_id in bundle.dropped_claims
                else f"claim_id '{claim_id}' 는 도구 결과에 없다.")
         # 안내 대상은 **통과 후보뿐**이다. 번들 전체를 안내하면 LLM 이 거기서

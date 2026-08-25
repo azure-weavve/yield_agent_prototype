@@ -1575,3 +1575,117 @@ def test_report_node_keeps_the_superseded_line_when_the_llm_fails():
         nodes._llm = original
     assert "[리포트 생성 실패]" in out["report"]
     assert "[대체됨]" in out["report"]
+
+
+# ------------------------------------------------ M3 재리뷰 지적
+EQP_CH_RERUN_SAME_ARGS = {
+    "loop": 5, "tool": "hyp_eqp_ch_commonality",
+    "args": dict(EVIDENCE_FINDING_NEW["args"]),        # 인자가 완전히 같은 재실행
+    "result": EVIDENCE_FINDING_NEW["result"],
+    "thought": "같은 조건으로 재확인",
+}
+PPID_EVIDENCE = {
+    "loop": 3, "tool": "hyp_ppid_commonality",
+    "args": {"group_ids": ["W2406_02"], "control_ids": ["W2406_01"]},
+    "result": {"hypothesis_id": "ppid_commonality", "status": "ok",
+               "candidates": [
+                   {"claim_id": "ppid_commonality:ppid:CE005000:PPID_X",
+                    "passes": True, "level": "ppid", "key": "PPID_X",
+                    "step_seq": "CE005000", "score": 1.0,
+                    "target_pass": 3, "target_total": 3,
+                    "control_pass": 0, "control_total": 3, "reject_reason": None},
+               ]},
+    "thought": "레시피",
+}
+
+
+def test_gate_does_not_tell_it_to_pick_when_nothing_is_left_to_pick():
+    """대체 안내가 실행 불가능한 지시로 끝나면 안 된다.
+
+    "최신 실행 결과에서 골라라" 뒤에 "통과한 후보가 없다" 가 붙으면 한 문장 안에서
+    자기모순이고, H1 이 막으려던 "LLM 이 같은 문맥을 다시 읽는" 행동이 약한 형태로
+    되살아난다. 사실(대체됐다)과 다음 행동(무엇을 하라)은 분리한다.
+    """
+    verdict = nodes._finalize_gate(
+        {"claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH9_B",
+         "hypothesis": "h", "confidence": 0.9},
+        loop=3, update={}, findings=[EVIDENCE_FINDING_NEW, EQP_CH_RERUN_SILENT])
+    assert "대체" in verdict
+    assert "골라라" not in verdict          # 고를 것이 없다
+    assert "통과한 후보가 없다" in verdict   # 다음 행동은 이쪽이 안내한다
+
+
+def test_gate_lists_surviving_candidates_when_a_superseded_claim_is_submitted():
+    """대체된 claim 을 냈는데 **다른 축에 통과 후보가 살아 있는** 경우.
+
+    새 테스트가 둘 다 valid 가 빈 상태만 넣어서, 실전에서 더 흔할 이 조합은
+    회귀 방어가 0이었다.
+    """
+    verdict = nodes._finalize_gate(
+        {"claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH9_B",
+         "hypothesis": "h", "confidence": 0.9},
+        loop=3, update={},
+        findings=[EVIDENCE_FINDING_NEW, PPID_EVIDENCE, EQP_CH_RERUN_SILENT])
+    assert "대체" in verdict
+    assert "도구 결과에 없다" not in verdict
+    # 살아 있는 통과 후보를 안내해야 다음 행동이 생긴다
+    assert "ppid_commonality:ppid:CE005000:PPID_X" in verdict
+
+
+def test_report_names_the_superseded_loop_not_the_superseding_one():
+    """[대체됨] 이 **대체된** 실행을 가리켜야 한다 - 재실행도 같은 도구라 이름으로는 안 갈린다.
+
+    loop 번호는 엔지니어가 감사 기록에서 그 항목을 찾는 유일한 열쇠다.
+    """
+    out = nodes.report_node(_superseded_state())
+    line = [l for l in out["report"].splitlines() if "[대체됨]" in l][0]
+    assert "loop 2" in line     # EVIDENCE_FINDING_NEW (대체된 쪽)
+    assert "loop 5" not in line  # EQP_CH_RERUN_SILENT (대체한 쪽)
+
+
+def test_report_carries_every_supersession_not_just_the_first():
+    """대체가 2건이면 리포트 줄도 클라이언트 표시도 2건이어야 한다.
+
+    build_bundle 레벨에만 2건짜리 시험이 있고 리포트·클라이언트 경계에는 없었다.
+    """
+    received = {}
+
+    class _RecordingClient:
+        def analyze_step(self, messages):
+            raise NotImplementedError
+
+        def generate_report(self, **kwargs):
+            received.update(kwargs)
+            return "고정된 산문 리포트"
+
+    ppid_rerun = {**PPID_EVIDENCE, "loop": 6,
+                  "result": {"hypothesis_id": "ppid_commonality",
+                             "status": "no_signal", "candidates": []}}
+    state = _superseded_state()
+    state["findings"] = [EVIDENCE_FINDING_NEW, PPID_EVIDENCE,
+                         EQP_CH_RERUN_SILENT, ppid_rerun]
+    original = nodes._llm
+    nodes._llm = _RecordingClient()
+    try:
+        out = nodes.report_node(state)
+    finally:
+        nodes._llm = original
+    assert out["report"].count("[대체됨]") == 2
+    marked = [f["loop"] for f in received["findings"] if f.get("superseded")]
+    assert sorted(marked) == [2, 3]
+
+
+def test_a_rerun_that_recreates_the_same_claims_supersedes_nothing():
+    """인자가 같은 재실행은 같은 claim_id 를 다시 만든다 - 잃은 것이 없다.
+
+    그런데도 대체로 표시하면 리포트가 자기모순을 낸다: [근거] 로 실린 바로 그
+    claim 을 sys 프롬프트가 "인용하지 마라" 고 막는다. claim_id 는 그룹 인자와
+    무관하게 만들어지므로(domain/engine.py) 실제로 도달하는 상태다.
+    """
+    out = nodes.report_node({
+        "target_wafers": ["W2406_02"], "target_source": "manual",
+        "target_group": ["W2406_02"], "status_summary": "요약",
+        "findings": [EVIDENCE_FINDING_NEW, EQP_CH_RERUN_SAME_ARGS],
+        "final_claims": [], "finalize_status": "no_signal",
+        "final_hypothesis": None, "final_confidence": 0.2})
+    assert "[대체됨]" not in out["report"]
