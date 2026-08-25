@@ -410,3 +410,44 @@ def test_a_single_run_supersedes_nothing():
     b = evidence.build_bundle([_finding("hyp_eqp_ch_commonality", "eqp_ch_commonality",
                                         "ok", [CAND_PASS])])
     assert b.superseded == frozenset()
+
+
+def test_an_empty_rerun_supersedes_nothing_it_did_not_drop():
+    """후보를 하나도 안 낸 실행은 버릴 것이 없으니 대체도 아니다.
+
+    `superseded` 는 "claims 에서 빠진 실행" 이다. 후보 0건인 실행까지 담으면
+    리포트에 "그 실행의 후보는 근거가 아니다" 라는 **없는 후보에 대한 문장**이
+    붙고, 아무 것도 안 버린 재실행마다 한 줄씩 쌓여 보고서를 못 읽게 만든다.
+    """
+    b = evidence.build_bundle([
+        _finding("hyp_eqp_ch_commonality", "eqp_ch_commonality", "no_signal", []),
+        _finding("hyp_eqp_ch_commonality", "eqp_ch_commonality", "no_signal", []),
+    ])
+    assert b.superseded == frozenset()
+
+
+def test_every_superseded_run_is_reported_not_just_the_first():
+    """대체가 2건 이상이면 2건 다 나와야 한다 - 1건짜리 입력만 넣으면 못 잡는다."""
+    first = {**CAND_PASS, "claim_id": "eqp_ch_commonality:chamber:S1:A", "key": "A"}
+    second = {**CAND_PASS, "claim_id": "eqp_ch_commonality:chamber:S1:B", "key": "B"}
+    b = evidence.build_bundle([
+        _finding("hyp_eqp_ch_commonality", "eqp_ch_commonality", "ok", [first]),
+        _finding("hyp_eqp_ch_commonality", "eqp_ch_commonality", "ok", [second]),
+        _finding("hyp_eqp_ch_commonality", "eqp_ch_commonality", "no_signal", []),
+    ])
+    assert b.superseded == frozenset({0, 1})
+
+
+def test_bundle_names_the_claims_a_rerun_dropped():
+    """어떤 claim_id 가 대체됐는지 이름으로 답할 수 있어야 한다.
+
+    LLM 은 재실행 뒤에도 앞 실행의 claim_id 를 대화 문맥에서 그대로 보고 있다
+    (tools_node 가 도구 결과를 ToolMessage 로 싣는다). 그것을 제출했을 때 게이트가
+    "도구 결과에 없다" 고 답하면 **거짓**이다 - 있었고, 뒤 실행이 대체했다.
+    """
+    stale = {**CAND_PASS, "claim_id": "eqp_ch_commonality:chamber:S1:OLD", "key": "OLD"}
+    b = evidence.build_bundle([
+        _finding("hyp_eqp_ch_commonality", "eqp_ch_commonality", "ok", [stale]),
+        _finding("hyp_eqp_ch_commonality", "eqp_ch_commonality", "no_signal", []),
+    ])
+    assert b.dropped_claims == {"eqp_ch_commonality:chamber:S1:OLD": "hyp_eqp_ch_commonality"}

@@ -499,3 +499,20 @@ def test_operational_client_system_prompt_disowns_superseded_runs():
                    "result": {"hypothesis_id": "eqp_ch_commonality", "status": "ok",
                               "candidates": [{"claim_id": "c", "passes": True}]}}])
     assert "superseded" in client.llm.seen_sys
+
+
+def test_operational_client_puts_the_superseded_flag_in_the_user_prompt():
+    """sys 가 읽으라고 지시하는 키가 user 쪽에 실제로 실려야 한다.
+
+    sys 프롬프트만 보는 테스트로는 "지시는 있는데 그 키가 안 간다" 는 엇갈림이
+    안 잡힌다 - 이 저장소에서 두 렌더링이 엇갈리는 결함이 반복해서 나왔다.
+    """
+    client = _openai_client()
+    client.generate_report(
+        target_wafers=["W1"], target_source="manual", target_group=["W1"],
+        status_summary="s", hypothesis=None, confidence=0.2,
+        finalize_status="no_signal", claims=[],
+        findings=[{"loop": 2, "tool": "hyp_eqp_ch_commonality", "superseded": True,
+                   "result": {"hypothesis_id": "eqp_ch_commonality", "status": "ok",
+                              "candidates": [{"claim_id": "c", "passes": True}]}}])
+    assert "superseded" in client.llm.seen

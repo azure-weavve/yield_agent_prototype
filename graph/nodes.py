@@ -416,17 +416,25 @@ def _confidence(raw) -> tuple[float, str]:
 def _gate_rejection(claim_id, claim, bundle, unrun, conf, conf_note, groups) -> str:
     """왜 승인하지 않았는지를 LLM 이 다음 행동으로 옮길 수 있게 돌려준다."""
     if claim_id and claim is None:
+        # **없는 것과 대체된 것을 가른다.** LLM 은 재실행 뒤에도 앞 실행의 claim_id 를
+        # 대화 문맥에서 그대로 보고 있다(tools_node 가 도구 결과를 ToolMessage 로
+        # 싣는다). 그것을 제출한 것은 환각이 아닌데 "도구 결과에 없다" 로 답하면
+        # 거짓이고, 그 문구는 지어낸 claim_id 를 겨눈 것이라 LLM 은 자기가 환각을 낸
+        # 줄 알고 같은 문맥을 다시 읽는다. 폐기 사실을 리포트에만 알리고 여기에는
+        # 안 알린 것이 M3 수정에 남아 있던 비대칭이다.
+        why = (f"claim_id '{claim_id}' 는 {bundle.dropped_claims[claim_id]} 를 다시 "
+               f"돌려 대체된 앞 실행의 후보다 - 최신 실행 결과에서 골라라."
+               if claim_id in bundle.dropped_claims
+               else f"claim_id '{claim_id}' 는 도구 결과에 없다.")
         # 안내 대상은 **통과 후보뿐**이다. 번들 전체를 안내하면 LLM 이 거기서
         # 미통과 후보를 골라 다시 제출하고 또 반려당하는 왕복이 생긴다 -
         # claim_id 미제출 분기(아래)와 같은 것을 안내해야 한다.
         valid = sorted(c.claim_id for c in bundle.passing())
         if valid:
-            return (f"반려: claim_id '{claim_id}' 는 도구 결과에 없다. "
-                    f"통과 후보: {', '.join(valid)}.")
+            return f"반려: {why} 통과 후보: {', '.join(valid)}."
         # 지목할 대상이 아예 없으면 목록 대신 다음 행동을 안내한다 - 여기서 멈추면
         # LLM 이 할 일을 못 찾아 루프 한계까지 왕복만 한다.
-        return (f"반려: claim_id '{claim_id}' 는 도구 결과에 없다. "
-                f"{_no_candidate_action(bundle, unrun)}")
+        return f"반려: {why} {_no_candidate_action(bundle, unrun)}"
 
     if claim is not None:
         if not claim.passes:
@@ -503,7 +511,10 @@ def report_node(state: dict) -> dict:
     # 있는 경로가 하나라도 있으면 "커버리지는 사실이다" 라는 전제가 무너지고, 운영
     # 프롬프트가 "안 본 축 이름을 반드시 적어라" 로 지시하는 탓에 LLM 이 실제로 다
     # 돌린 축을 안 봤다고 지어낸다. findings 가 유일한 진실이다.
-    bundle = evidence.build_bundle(state.get("findings") or [])
+    # **한 리스트로 통일한다.** bundle 이 낸 superseded 는 이 리스트의 위치이므로,
+    # 여기서 쓰는 것과 아래 표시·[대체됨] 줄이 쓰는 것이 다르면 인덱스가 어긋난다.
+    audit = state.get("findings") or []
+    bundle = evidence.build_bundle(audit)
     coverage = _coverage(bundle)
     # **게이트를 안 거치고 끝나는 종료를 여기서 메운다** (루프 한계 강제 종료, tool 없는
     # 텍스트 응답). 그 경로에는 판정도 근거도 안 실려서, 판정이 '미상' 이면 운영
@@ -523,10 +534,10 @@ def report_node(state: dict) -> dict:
     # 게이트가 버린 통과 후보를 LLM 이 살아 있는 근거로 읽는다. 지우지 않고 표시만 하는
     # 이유는 추적성이 이 기록의 존재 이유이기 때문이다. **사본에만 붙인다** - 상태의
     # findings 를 건드리면 감사 기록 자체가 오염된다.
-    sent_findings = state["findings"]
+    sent_findings = audit
     if bundle.superseded:
         sent_findings = [{**f, "superseded": True} if i in bundle.superseded else f
-                         for i, f in enumerate(sent_findings)]
+                         for i, f in enumerate(audit)]
     try:
         report = _llm_lazy().generate_report(
             target_wafers=state.get("target_wafers", []),
@@ -570,11 +581,14 @@ def report_node(state: dict) -> dict:
     # 없는 보고서(이상 없음 등)에서는 소음일 뿐이다.
     if coverage.get("ran"):
         report += f"\n[커버리지] {_coverage_phrase(coverage)}"
-    # [대체됨] 줄도 코드가 붙인다. LLM 프롬프트에만 표시하면, main.py 가 찍는 감사
-    # 기록에서 통과 후보를 본 엔지니어는 결론이 왜 '신호 없음' 인지 읽을 방법이 없다 -
-    # 모순이 사라지는 것이 아니라 자리를 옮길 뿐이다.
+    # [대체됨] 줄도 코드가 붙인다. LLM 프롬프트에만 표시하면 산문이 죽는 경로(운영
+    # 클라이언트 실패)에서 대체 사실이 통째로 사라지고, 리포트만 받아 보는 사람은
+    # "판정은 신호 없음인데 같은 축을 왜 두 번 돌렸나" 를 읽을 방법이 없다.
+    # (main.py 의 감사 기록 출력은 tool·args·thought 와 finalize 결과만 찍고 hyp_*
+    #  의 후보·p·passes 는 안 찍는다 - 콘솔 독자가 통과 후보를 본다는 뜻이 아니다.)
+    # 후보를 실제로 버린 실행만 담기므로(Bundle.superseded) 빈손 재실행에는 안 붙는다.
     for i in sorted(bundle.superseded):
-        dropped = state["findings"][i]
+        dropped = audit[i]
         report += (f"\n[대체됨] loop {dropped.get('loop', '?')} 의 "
                    f"{dropped.get('tool', '?')} 결과는 같은 축을 다시 돌린 뒤 실행으로 "
                    f"대체되었다 - 그 실행의 후보는 근거가 아니다")

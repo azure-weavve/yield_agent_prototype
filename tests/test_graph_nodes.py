@@ -1479,3 +1479,99 @@ def test_report_node_has_no_superseded_line_without_a_rerun():
     state["findings"] = [EVIDENCE_FINDING_NEW]
     out = nodes.report_node(state)
     assert "[대체됨]" not in out["report"]
+
+
+def test_gate_says_a_submitted_claim_was_superseded_not_invented():
+    """대체된 claim_id 를 제출하면 '없다' 가 아니라 '대체됐다' 고 답해야 한다.
+
+    tools_node 가 도구 결과를 ToolMessage 로 대화에 실으므로, LLM 은 재실행 뒤에도
+    앞 실행의 claim_id 를 자기 문맥에서 그대로 보고 제출한다. 거기에 "도구 결과에
+    없다" 고 답하면 거짓이고(있었고, 뒤 실행이 대체했다), 그 문구는 '지어낸
+    claim_id' 분기라 LLM 은 자기가 환각을 낸 줄 알고 같은 문맥을 다시 읽는다.
+    """
+    update = {}
+    verdict = nodes._finalize_gate(
+        {"claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH9_B",
+         "hypothesis": "h", "confidence": 0.9},
+        loop=3, update=update,
+        findings=[EVIDENCE_FINDING_NEW, EQP_CH_RERUN_SILENT])
+    assert update.get("finalize_accepted") is None      # 승인은 아니다
+    assert "대체" in verdict
+    assert "도구 결과에 없다" not in verdict
+    # 무엇이 대체했는지 이름이 나와야 다음 행동을 고를 수 있다
+    assert "hyp_eqp_ch_commonality" in verdict
+
+
+def test_gate_still_rejects_an_invented_claim_as_absent():
+    """지어낸 claim_id 는 여전히 '없다' 다 - 대체 안내를 아무 데나 붙이면 안 된다."""
+    update = {}
+    verdict = nodes._finalize_gate(
+        {"claim_id": "지어낸:claim:id", "hypothesis": "h", "confidence": 0.9},
+        loop=3, update=update,
+        findings=[EVIDENCE_FINDING_NEW, EQP_CH_RERUN_SILENT])
+    assert "도구 결과에 없다" in verdict
+    assert "대체" not in verdict
+
+
+def test_report_node_survives_a_state_without_findings():
+    """findings 키가 없어도 마지막 노드는 리포트를 낸다.
+
+    여기가 마지막 노드다 - 예외를 내보내면 분석을 다 해 놓고 결과를 전부 버린다.
+    바로 위 커버리지 재계산은 state.get(...) 로 방어하는데 findings 전달만
+    state["findings"] 를 쓰면 방어선이 한 칸 후퇴한다.
+    """
+    out = nodes.report_node({"target_wafers": ["W1"], "target_source": "manual",
+                             "target_group": ["W1"], "status_summary": "s",
+                             "final_claims": [], "finalize_status": "no_signal"})
+    assert out["report"]
+
+
+def test_report_node_marks_superseded_when_the_gate_never_judged():
+    """게이트를 안 거치고 끝난 종료에서도 대체 표시가 붙어야 한다.
+
+    새 테스트가 전부 finalize_status 가 채워진 상태만 넣으면, 루프 한계·tool 없는
+    텍스트 응답으로 끝나는 경로에 표시가 붙는지는 아무도 안 본다.
+
+    리포트 줄과 **클라이언트가 받는 findings** 를 둘 다 본다 - 한쪽만 보면 다른
+    쪽이 조용히 빠져도 통과한다(두 렌더링이 엇갈리는 이 저장소의 단골 결함).
+    """
+    received = {}
+
+    class _RecordingClient:
+        def analyze_step(self, messages):
+            raise NotImplementedError
+
+        def generate_report(self, **kwargs):
+            received.update(kwargs)
+            return "고정된 산문 리포트"
+
+    state = _superseded_state()
+    del state["finalize_status"]
+    original = nodes._llm
+    nodes._llm = _RecordingClient()
+    try:
+        out = nodes.report_node(state)
+    finally:
+        nodes._llm = original
+    assert out["finalize_status"] == "inconclusive"
+    assert "[대체됨]" in out["report"]
+    assert received["findings"][0].get("superseded") is True
+
+
+def test_report_node_keeps_the_superseded_line_when_the_llm_fails():
+    """산문이 죽어도 대체 표시는 남아야 한다 - [근거]·[커버리지] 와 같은 이유다."""
+    class _DeadClient:
+        def analyze_step(self, messages):
+            raise NotImplementedError
+
+        def generate_report(self, **kwargs):
+            raise RuntimeError("LLM down")
+
+    original = nodes._llm
+    nodes._llm = _DeadClient()
+    try:
+        out = nodes.report_node(_superseded_state())
+    finally:
+        nodes._llm = original
+    assert "[리포트 생성 실패]" in out["report"]
+    assert "[대체됨]" in out["report"]

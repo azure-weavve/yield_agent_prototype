@@ -112,11 +112,20 @@ class Bundle:
     claims: dict[str, Claim]      # claim_id -> Claim (미통과 후보도 담는다)
     statuses: dict[str, str]      # tool 이름 -> 마지막 실행의 status
     ran: set[str]                 # 유효한 결과를 낸 hyp_* 도구 이름
-    # 뒤 실행에 밀려 claims 에서 빠진 findings 의 위치. **폐기 사실을 밖으로
-    # 내보내는 자리**다 - 폐기는 여기서만 일어나는데 findings 는 그대로 리포트
+    # 뒤 실행에 밀려 claims 에서 **실제로 후보가 빠진** findings 의 위치. 폐기 사실을
+    # 밖으로 내보내는 자리다 - 폐기는 여기서만 일어나는데 findings 는 그대로 리포트
     # LLM 에 넘어가고 운영 프롬프트가 그 수치를 "그대로 인용하라" 고 지시하므로,
     # 말해 주지 않으면 게이트가 버린 후보를 리포트가 근거로 인용한다.
+    #
+    # **후보를 안 낸 실행은 안 담는다.** 버릴 것이 없으므로 대체가 아니고, 담으면
+    # 리포트에 "그 실행의 후보는 근거가 아니다" 라는 없는 후보에 대한 문장이 붙는다.
     superseded: frozenset[int] = frozenset()
+    # 대체된 claim_id -> 그것을 낸 도구. **위치가 아니라 이름으로 답하는 자리**다.
+    # LLM 은 재실행 뒤에도 앞 실행의 claim_id 를 대화 문맥에서 그대로 보고 있어
+    # (tools_node 가 도구 결과를 ToolMessage 로 싣는다) 그것을 제출한다. 게이트가
+    # "도구 결과에 없다" 고 답하면 거짓이고, 그 문구는 '지어낸 claim_id' 분기라
+    # LLM 은 자기가 환각을 낸 줄 알고 같은 문맥을 다시 읽는다.
+    dropped_claims: dict[str, str] = field(default_factory=dict)
 
     def passing(self) -> list[Claim]:
         return [c for c in self.claims.values() if c.passes]
@@ -281,7 +290,10 @@ def build_bundle(findings: list[dict]) -> Bundle:
     statuses: dict[str, str] = {}
     ran: set[str] = set()
     superseded: set[int] = set()
-    latest_at: dict[str, int] = {}     # tool -> 지금까지 본 마지막 유효 실행의 위치
+    dropped_claims: dict[str, str] = {}
+    # tool -> 지금 claims 에 들어 있는 후보를 낸 실행의 위치. **후보를 낸 실행만**
+    # 담는다(빈손 실행은 버릴 것이 없어 대체의 주체도 대상도 아니다).
+    claims_from: dict[str, int] = {}
 
     for i, f in enumerate(findings):
         result = f.get("result")
@@ -293,9 +305,9 @@ def build_bundle(findings: list[dict]) -> Bundle:
         # 재실행이면 앞 결과를 버린다 — 그룹이 바뀐 재실행에서 옛 후보는 거짓이다
         # (group_ids/control_ids 중 하나만 바뀌어도 분모가 달라진다). 인자가 같으면
         # 도구가 결정적이라 같은 후보가 다시 만들어져 손실이 없다.
-        if tool in latest_at:
-            superseded.add(latest_at[tool])
-        latest_at[tool] = i
+        if tool in claims_from:
+            superseded.add(claims_from.pop(tool))
+            dropped_claims.update({k: tool for k, v in claims.items() if v.tool == tool})
         claims = {k: v for k, v in claims.items() if v.tool != tool}
         for c in result["candidates"]:
             claim_id = c.get("claim_id")
@@ -327,5 +339,7 @@ def build_bundle(findings: list[dict]) -> Bundle:
                 extra={k: v for k, v in c.items()
                        if k not in _FIRST_CLASS_FIELDS and k != "value"},
             )
+            # 후보를 하나라도 실었을 때만 "이 실행이 지금 claims 의 주인" 이 된다.
+            claims_from[tool] = i
     return Bundle(claims=claims, statuses=statuses, ran=ran,
-                  superseded=frozenset(superseded))
+                  superseded=frozenset(superseded), dropped_claims=dropped_claims)
