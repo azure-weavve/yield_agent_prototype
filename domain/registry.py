@@ -4,9 +4,10 @@
 """
 
 from pathlib import Path
+from typing import Annotated
 
 import yaml
-from langchain_core.tools import StructuredTool
+from langchain_core.tools import InjectedToolArg, StructuredTool
 
 from domain import engine
 
@@ -58,7 +59,12 @@ def build_tools(specs):
         # 빼면 인자가 `{}` (타입 없음)로 나가고, LLM 이 문자열을 넘겨도 스키마 위반이
         # 아니게 되어 글자 단위로 쪼개진 채 "이력 결측" 결과가 나온다(에러 없이 오답).
         # tests/test_agent_tools.py 가 전 도구에 대해 이것을 잠근다.
-        def _run(group_ids: list[str], control_ids: list[str],
+        # group_ids/control_ids 는 **LLM 이 정하지 않는다** — 고정 골격이 확정한
+        # 대조 분모이고, 리포트 머리말·커버리지가 그 위에 서 있다. InjectedToolArg 로
+        # 표시하면 LLM 스키마에서는 빠지고 `tools_node` 가 state 에서 넣어 준다.
+        # 타입 힌트는 그대로 필요하다(위 주석) — 주입 값도 스키마 검증을 받는다.
+        def _run(group_ids: Annotated[list[str], InjectedToolArg],
+                 control_ids: Annotated[list[str], InjectedToolArg],
                  reason: str = "", _spec=spec):
             return engine.evaluate(_spec, group_ids, control_ids)
         tools.append(StructuredTool.from_function(

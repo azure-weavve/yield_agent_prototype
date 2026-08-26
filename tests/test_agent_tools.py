@@ -142,3 +142,37 @@ def test_turning_sensors_off_does_not_touch_the_hypothesis_budget():
         counts.append(p.stdout.decode().strip())
 
     assert counts[0] == counts[1]
+
+
+def test_group_arguments_are_never_llm_facing():
+    """대조 분모(group_ids/control_ids)는 LLM 스키마에 나가면 안 된다.
+
+    이 둘은 고정 골격(`status_node` 의 normalize_target + select_control)이 확정한
+    값이고, 리포트 머리말·커버리지·대조군 선정 근거가 전부 그 위에 서 있다. LLM 이
+    인자로 넘길 수 있으면 파이프라인이 확정한 그룹과 **다른 분모로 축을 돌린 결과**가
+    결론이 될 수 있는데, 게이트는 claim 만 조회하므로 그 어긋남을 볼 방법이 없다.
+
+    스키마에서 빼는 것과 tools 노드가 덮어쓰는 것은 다르다 - 스키마에 남겨 두면
+    LLM 이 계속 값을 만들어 내고(토큰·오형식 인자), 감사 기록의 args 가 실제 실행과
+    다른 값을 가리킬 여지가 남는다. 축이 늘 때마다 같은 구멍이 생기므로 전수로 잠근다.
+    """
+    leaked = []
+    for tool in at.ALL_TOOLS:
+        props = convert_to_openai_tool(tool)["function"]["parameters"]["properties"]
+        leaked += [f"{tool.name}.{arg}" for arg in ("group_ids", "control_ids")
+                   if arg in props]
+    assert not leaked, (
+        f"LLM 스키마에 노출된 대조 분모: {sorted(leaked)}. "
+        f"InjectedToolArg 로 표시하고 graph/nodes.py 의 tools 노드가 주입해야 한다."
+    )
+
+
+def test_group_arguments_are_still_required_at_invoke_time():
+    """스키마에서 뺐다고 도구가 그룹 없이 도는 것은 아니다.
+
+    주입을 빠뜨리면 빈 그룹으로 조용히 돌아 `no_paired_stratum`("이력 결측") 이
+    나가는 것이 최악이다 - LLM 인자 실수가 엔지니어에게 데이터 결측으로 보고되던
+    것과 같은 오류다. 인자 자체는 필수로 남아 누락이 예외로 드러나야 한다.
+    """
+    with pytest.raises(Exception):
+        at.TOOLS_BY_NAME["hyp_eqp_ch_commonality"].invoke({"reason": "그룹 없이"})

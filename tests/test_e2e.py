@@ -140,3 +140,21 @@ def test_sensorless_deployment_still_reaches_confirmed():
     assert "ETCH9_B" in out["hypothesis"]     # 1단 근거는 그대로 살아 있다
     # 무엇이 없어서 그렇게 판단했는지가 결론 문장에 남는다 (조용한 축소가 아니다)
     assert "센서가 연결되지 않은" in out["hypothesis"]
+
+
+def test_every_axis_runs_on_the_pipeline_groups():
+    """그래프 전체를 지나도 모든 축이 **같은 분모**로 돌아야 한다.
+
+    이게 어긋나면 리포트 머리말("분석 대상")과 결론의 근거가 다른 wafer 집합을
+    가리키는데, 게이트는 claim_id 조회만 하므로 그 어긋남을 볼 방법이 원리적으로
+    없다. 노드 단위 테스트는 주입 **메커니즘**을 잠그지만, 축이 늘거나 골격이
+    바뀌었을 때 실제로 그 분모가 끝까지 유지되는지는 여기서만 드러난다.
+    """
+    state = build_graph().invoke(
+        {"target_wafers": ["W2406_02"], "target_source": "manual"}
+    )
+    ran = [f for f in state["findings"] if "group_ids" in (f.get("args") or {})]
+    assert ran, "대조 분모를 쓰는 도구가 한 번도 안 돌았다 - 무대가 깨졌다"
+    for f in ran:
+        assert f["args"]["group_ids"] == state["target_group"], f["tool"]
+        assert f["args"]["control_ids"] == state["control_group"], f["tool"]

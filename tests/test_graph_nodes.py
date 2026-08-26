@@ -879,9 +879,9 @@ def test_finalize_gate_sees_evidence_from_same_message():
     ai = AIMessage(
         content="그룹 대조 후 바로 종료 제안",
         tool_calls=[
+            # 대조 분모는 LLM 스키마에 없다 - state 에서 주입된다.
             {"name": "hyp_eqp_ch_commonality",
-             "args": {"group_ids": ["W2406_02", "W2406_04", "W2406_06"],
-                      "control_ids": ["W2406_01", "W2406_03", "W2406_05"]},
+             "args": {"reason": "챔버 편중 가설"},
              "id": "call_c"},
             {"name": "finalize",
              "args": {"claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH9_B",
@@ -889,7 +889,9 @@ def test_finalize_gate_sees_evidence_from_same_message():
              "id": "call_f"},
         ],
     )
-    out = nodes.tools_node({"messages": [ai], "loop_count": 2, "findings": []})
+    out = nodes.tools_node({"messages": [ai], "loop_count": 2, "findings": [],
+                            "target_group": ["W2406_02", "W2406_04", "W2406_06"],
+                            "control_group": ["W2406_01", "W2406_03", "W2406_05"]})
     assert out["finalize_accepted"] is True
     assert out["finalize_status"] == "confirmed"
 
@@ -1689,3 +1691,112 @@ def test_a_rerun_that_recreates_the_same_claims_supersedes_nothing():
         "final_claims": [], "finalize_status": "no_signal",
         "final_hypothesis": None, "final_confidence": 0.2})
     assert "[대체됨]" not in out["report"]
+
+
+# ---------------------------------------------------------------- 대조 분모 주입
+# 파이프라인이 확정한 그룹으로만 축이 돌아야 한다. LLM 이 group_ids 를 정할 수 있던
+# 동안에는 리포트 머리말("분석 대상")과 다른 분모로 계산된 후보가 결론이 될 수 있었고,
+# 게이트는 claim_id 조회만 하므로 그 어긋남을 볼 방법이 없었다.
+_PIPELINE_TARGET = ["W2406_02", "W2406_04", "W2406_06"]
+_PIPELINE_CONTROL = ["W2406_01", "W2406_03", "W2406_05"]
+# 타깃과 대조군이 뒤바뀐 값. LLM 이 이런 것을 넘겨도 실행에는 닿으면 안 된다.
+_LLM_SUPPLIED_GROUPS = {"group_ids": ["W2406_01"], "control_ids": ["W2406_02"]}
+
+
+def _pipeline_state(ai, **extra):
+    return {"messages": [ai], "loop_count": 1, "findings": [],
+            "target_group": _PIPELINE_TARGET, "control_group": _PIPELINE_CONTROL,
+            **extra}
+
+
+def test_hypothesis_tool_runs_on_pipeline_groups_even_if_the_llm_supplies_others():
+    """LLM 이 넘긴 그룹은 무시되고 state 의 그룹으로 실행된다.
+
+    결과 전체를 파이프라인 그룹으로 직접 부른 것과 대조한다 - 후보 하나만 보면
+    "우연히 같은 후보가 나왔다" 와 구분되지 않는다. 도구는 같은 인자에 결정적이므로
+    (순열 시드 고정) 완전 일치가 성립한다.
+    """
+    from tools.agent_tools import TOOLS_BY_NAME
+
+    ai = AIMessage(content="챔버 대조",
+                   tool_calls=[{"name": "hyp_eqp_ch_commonality",
+                                "args": {**_LLM_SUPPLIED_GROUPS, "reason": "테스트"},
+                                "id": "call_1"}])
+    out = nodes.tools_node(_pipeline_state(ai))
+
+    expected = TOOLS_BY_NAME["hyp_eqp_ch_commonality"].invoke(
+        {"group_ids": _PIPELINE_TARGET, "control_ids": _PIPELINE_CONTROL})
+    assert out["findings"][0]["result"] == expected
+
+
+def test_hypothesis_tool_runs_when_the_llm_supplies_no_groups_at_all():
+    """운영의 실제 모양 - 스키마에 없으니 LLM 은 그룹을 아예 안 보낸다.
+
+    위 테스트(LLM 이 보낸 경우)만 있으면 '덮어쓰기' 는 잠기지만 '없을 때 채우기' 는
+    안 잠긴다. 분기 양쪽을 다 넣는다.
+    """
+    from tools.agent_tools import TOOLS_BY_NAME
+
+    ai = AIMessage(content="챔버 대조",
+                   tool_calls=[{"name": "hyp_eqp_ch_commonality",
+                                "args": {"reason": "테스트"}, "id": "call_1"}])
+    out = nodes.tools_node(_pipeline_state(ai))
+
+    expected = TOOLS_BY_NAME["hyp_eqp_ch_commonality"].invoke(
+        {"group_ids": _PIPELINE_TARGET, "control_ids": _PIPELINE_CONTROL})
+    assert out["findings"][0]["result"] == expected
+    assert "오류" not in str(out["messages"][0].content)
+
+
+def test_audit_records_the_groups_that_actually_ran():
+    """감사 기록의 args 는 **실행된** 분모여야 한다.
+
+    findings 는 리포트 LLM 에게 그대로 넘어가고 운영 프롬프트가 그 수치를 "그대로
+    인용하라" 고 지시한다. LLM 이 보낸 값을 그대로 적어 두면 감사 기록이 실행과
+    다른 분모를 가리키고, 그것이 리포트의 근거 문장이 된다.
+    """
+    ai = AIMessage(content="챔버 대조",
+                   tool_calls=[{"name": "hyp_eqp_ch_commonality",
+                                "args": {**_LLM_SUPPLIED_GROUPS, "reason": "테스트"},
+                                "id": "call_1"}])
+    args = nodes.tools_node(_pipeline_state(ai))["findings"][0]["args"]
+    assert args["group_ids"] == _PIPELINE_TARGET
+    assert args["control_ids"] == _PIPELINE_CONTROL
+    assert args["reason"] == "테스트"          # LLM 이 정하는 인자는 그대로 남는다
+
+
+def test_sensor_tool_also_runs_on_pipeline_groups():
+    """2단 센서 도구도 같은 분모를 쓴다.
+
+    한쪽만 고치면 1단(경로)과 2단(센서)이 다른 그룹을 보고 "왜" 를 답하게 된다.
+    step_seq 는 LLM 이 정하는 인자이므로 건드리지 않는다.
+    """
+    from data.generate_dummy import SENSOR_STEP
+    from tools.agent_tools import TOOLS_BY_NAME
+
+    ai = AIMessage(content="센서 분포",
+                   tool_calls=[{"name": "compare_sensor_distribution",
+                                "args": {"step_seq": SENSOR_STEP, **_LLM_SUPPLIED_GROUPS},
+                                "id": "call_1"}])
+    out = nodes.tools_node(_pipeline_state(ai))
+
+    expected = TOOLS_BY_NAME["compare_sensor_distribution"].invoke(
+        {"step_seq": SENSOR_STEP, "group_ids": _PIPELINE_TARGET,
+         "control_ids": _PIPELINE_CONTROL})
+    assert out["findings"][0]["result"] == expected
+    assert out["findings"][0]["args"]["step_seq"] == SENSOR_STEP
+
+
+def test_tools_that_do_not_take_groups_are_left_alone():
+    """그룹 인자가 없는 도구에 그룹을 밀어 넣으면 안 된다.
+
+    주입을 도구 이름이 아니라 **선언된 인자**로 판정하는지 잠근다. 무조건 넣으면
+    get_wafer 가 인자 스키마 위반으로 죽고, 그 실패는 "인자를 확인하고 다시 호출하라"
+    로 돌아와 루프만 태운다.
+    """
+    ai = AIMessage(content="wafer 조회",
+                   tool_calls=[{"name": "get_wafer",
+                                "args": {"wafer_id": "W2406_02"}, "id": "call_1"}])
+    out = nodes.tools_node(_pipeline_state(ai))
+    assert out["findings"][0]["args"] == {"wafer_id": "W2406_02"}
+    assert out["findings"][0]["result"]["wafer_id"] == "W2406_02"

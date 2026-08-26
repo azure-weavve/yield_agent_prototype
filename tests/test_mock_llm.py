@@ -18,7 +18,6 @@ HUMAN = HumanMessage(
     '"control": ["W2406_01", "W2406_03", "W2406_05"]}'
 )
 TARGET = ["W2406_02", "W2406_04", "W2406_06"]
-CONTROL = ["W2406_01", "W2406_03", "W2406_05"]
 
 
 def _tm(name, payload):
@@ -41,8 +40,9 @@ def test_scripted_sequence():
     # 2) 1단 — 챔버 편중 가설
     ai = llm.analyze_step(msgs)
     assert ai.tool_calls[0]["name"] == "hyp_eqp_ch_commonality"
-    assert ai.tool_calls[0]["args"]["group_ids"] == TARGET
-    assert ai.tool_calls[0]["args"]["control_ids"] == CONTROL
+    # 대조 분모는 인자가 아니다 - LLM 스키마에 없고 tools 노드가 state 에서 주입한다.
+    # 각본이 이것을 넘기면 운영에서는 못 일어나는 모양을 e2e 가 시험하게 된다.
+    assert not {"group_ids", "control_ids"} & set(ai.tool_calls[0]["args"])
     msgs += [ai, _tm("hyp_eqp_ch_commonality", {"hypothesis_id": "eqp_ch_commonality",
                                                 "status": "ok", "candidates": [
         {"level": "chamber", "key": "ETCH9_B", "value": ["Etch", "ETCH9_B"],
@@ -55,7 +55,7 @@ def test_scripted_sequence():
     #    게이트가 접을 것도 없고 리포트가 근거 하나만 든 채 확신에 찬 문장을 쓴다.
     ai = llm.analyze_step(msgs)
     assert ai.tool_calls[0]["name"] == "hyp_ppid_commonality"
-    assert ai.tool_calls[0]["args"]["group_ids"] == TARGET
+    assert not {"group_ids", "control_ids"} & set(ai.tool_calls[0]["args"])
     msgs += [ai, _tm("hyp_ppid_commonality", {"hypothesis_id": "ppid_commonality",
                                               "status": "no_signal", "candidates": []})]
 
@@ -128,12 +128,15 @@ def test_generate_report_distinguishes_early_exits():
 def test_groups_parsed_from_machine_line_not_prose():
     # 사람용 문구를 바꿔도 GROUPS_JSON 라인만 있으면 mock 이 안 깨진다 (문제 7)
     llm = ScriptedMockLLMClient()
-    msgs = [HumanMessage('아무 문구나 자유롭게.\nGROUPS_JSON={"target": ["A"], "control": ["B"]}')]
+    msgs = [HumanMessage('아무 문구나 자유롭게.\n'
+                         'GROUPS_JSON={"target": ["A", "B"], "control": ["C"]}')]
+    # GROUPS_JSON 은 이제 도구 인자가 아니라 **가설 서술**의 재료다 (분모는 주입된다).
+    # 파싱이 깨지면 여기서 장수가 틀리고, 그 문장이 감사 기록·리포트로 나간다.
     ai = llm.analyze_step(msgs)  # 1) 조기 finalize
+    assert "불량 그룹 2장" in ai.tool_calls[0]["args"]["hypothesis"]
     msgs += [ai, _tm("finalize", "반려")]
-    ai = llm.analyze_step(msgs)  # 2) 1단 — GROUPS_JSON 에서 이어받은 그룹으로 대조
-    assert ai.tool_calls[0]["args"]["group_ids"] == ["A"]
-    assert ai.tool_calls[0]["args"]["control_ids"] == ["B"]
+    ai = llm.analyze_step(msgs)  # 2) 1단 대조
+    assert ai.tool_calls[0]["name"] == "hyp_eqp_ch_commonality"
 
 
 def test_scripted_survives_tool_error_string():
@@ -198,8 +201,7 @@ def test_scripted_walks_every_registered_hypothesis_before_backing_off():
 
     ai = llm.analyze_step(msgs)                                        # 3) 폴백 PPID
     assert ai.tool_calls[0]["name"] == "hyp_ppid_commonality"
-    assert ai.tool_calls[0]["args"]["group_ids"] == TARGET
-    assert ai.tool_calls[0]["args"]["control_ids"] == CONTROL
+    assert not {"group_ids", "control_ids"} & set(ai.tool_calls[0]["args"])
     msgs += [ai, _tm("hyp_ppid_commonality", {"hypothesis_id": "ppid_commonality",
                                               "status": "no_signal", "candidates": []})]
 

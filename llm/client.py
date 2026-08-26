@@ -86,8 +86,9 @@ class ScriptedMockLLMClient(LLMClient):
     finalize(claim_id="", confidence=0.6, 게이트가 반려) → hyp_eqp_ch_commonality(1단: 어느 챔버)
     → (EQP_CH 에 통과 후보가 없으면 hyp_ppid_commonality 로 폴백, 2차 legend)
     → compare_sensor_distribution(2단: 왜) → finalize(claim_id=<통과 후보>, confidence=0.9, 승인)
-    순서로 진행하며, 각 단계 인자는 seed 메시지의 GROUPS_JSON 과 직전 ToolMessage(json) 를
-    파싱해 이어받는다. 등록 가설(EQP_CH → `_FALLBACK_HYPOTHESES` 순)을 다 돌렸는데도
+    순서로 진행하며, 각 단계 인자는 직전 ToolMessage(json) 를 파싱해 이어받는다
+    (대조 분모는 인자가 아니다 - `tools_node` 가 state 에서 주입한다. GROUPS_JSON 은
+    가설 서술에만 쓴다). 등록 가설(EQP_CH → `_FALLBACK_HYPOTHESES` 순)을 다 돌렸는데도
     분리되는 후보가 없으면 claim_id 를 비운 채 confidence=0.2 로 물러선다
     (게이트가 no_signal 로 판정).
 
@@ -99,7 +100,10 @@ class ScriptedMockLLMClient(LLMClient):
 
     # -------------------------------------------------- analyze
     def analyze_step(self, messages: list) -> AIMessage:
-        target, control = self._groups(messages)
+        # 대조 분모(group_ids/control_ids)는 도구 인자로 넘기지 않는다 - LLM 스키마에
+        # 없고 `tools_node` 가 state 에서 주입한다. 여기서 넘기면 각본만 운영과 다른
+        # 모양이 되어, e2e 가 실제로는 못 일어나는 경로를 시험하게 된다.
+        target, _ = self._groups(messages)
         tool_msgs = [m for m in messages if isinstance(m, ToolMessage)]
         done = [m.name for m in tool_msgs]
 
@@ -114,7 +118,7 @@ class ScriptedMockLLMClient(LLMClient):
 
         if "hyp_eqp_ch_commonality" not in done:
             return self._call(
-                "hyp_eqp_ch_commonality", {"group_ids": target, "control_ids": control},
+                "hyp_eqp_ch_commonality", {},
                 "종료 제안이 반려됐다. 챔버 편중 가설로 두 그룹을 대조한다.")
 
         res = self._result(tool_msgs, "hyp_eqp_ch_commonality")
@@ -123,8 +127,7 @@ class ScriptedMockLLMClient(LLMClient):
         # 통과 여부와 무관하게 레시피 축을 함께 돌린다 (교락 확인 - 위 상수 참조).
         ppid_name, ppid_why = _ALWAYS_WITH_CHAMBER
         if ppid_name not in done:
-            return self._call(ppid_name,
-                              {"group_ids": target, "control_ids": control}, ppid_why)
+            return self._call(ppid_name, {}, ppid_why)
         passing += [c for c in self._result(tool_msgs, ppid_name).get("candidates", [])
                     if c["passes"]]
 
@@ -136,7 +139,7 @@ class ScriptedMockLLMClient(LLMClient):
             if passing:
                 break
             if name not in done:
-                return self._call(name, {"group_ids": target, "control_ids": control}, why)
+                return self._call(name, {}, why)
             res = self._result(tool_msgs, name)
             passing = [c for c in res.get("candidates", []) if c["passes"]]
 
@@ -188,8 +191,7 @@ class ScriptedMockLLMClient(LLMClient):
         if "compare_sensor_distribution" not in done:
             return self._call(
                 "compare_sensor_distribution",
-                {"step_seq": top.step_seq,
-                 "group_ids": target, "control_ids": control},
+                {"step_seq": top.step_seq},
                 "챔버까지 좁혔다. 그 스텝의 센서 분포로 '왜' 를 본다.")
 
         sensor = self._result(tool_msgs, "compare_sensor_distribution")

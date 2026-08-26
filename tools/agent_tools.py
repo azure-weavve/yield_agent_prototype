@@ -8,7 +8,9 @@ graph/nodes.py 의 tools 노드(게이트)가 claim_id 로 EvidenceBundle 을 �
 승인/반려하므로(confidence 는 그 위에 얹는 보조 조건이다) TOOLS_BY_NAME 에는 넣지 않는다.
 """
 
-from langchain_core.tools import tool
+from typing import Annotated
+
+from langchain_core.tools import InjectedToolArg, tool
 
 import ya_config
 from domain import registry
@@ -34,8 +36,10 @@ def search_similar(wafer_id: str, k: int = 5, reason: str = "") -> list[dict]:
 
 
 @tool
-def compare_sensor_distribution(step_seq: str, group_ids: list[str],
-                                control_ids: list[str], reason: str = "") -> dict:
+def compare_sensor_distribution(step_seq: str,
+                                group_ids: Annotated[list[str], InjectedToolArg],
+                                control_ids: Annotated[list[str], InjectedToolArg],
+                                reason: str = "") -> dict:
     """가설 도구(hyp_*)가 지목한 공정 스텝에서 두 그룹의 센서 통계값 분포를 비교한다.
     효과크기가 큰 센서 top-K 를 낸다 — 어느 챔버인지까지 좁힌 뒤 '왜' 를 보는 2단이다.
     후보는 결론이 아니다: 표본 수(n_target/n_control)를 함께 보고 판단하라.

@@ -197,13 +197,15 @@ def tools_node(state: dict) -> dict:
             stopped = bool(update.get("finalize_accepted"))   # 반려는 종료가 아니다
         else:
             tool = TOOLS_BY_NAME.get(call["name"])
+            args = call["args"]
             if tool is None:
                 result = (f"오류: '{call['name']}' 는 존재하지 않는 tool 이다. "
                           f"사용 가능한 tool: {', '.join(TOOLS_BY_NAME)}. "
                           f"이 중에서 다시 선택해 호출하라.")
             else:
+                args = _with_pipeline_groups(tool, args, state)
                 try:
-                    result = tool.invoke(call["args"])
+                    result = tool.invoke(args)
                 except Exception as e:  # 인자 스키마 위반·조회 실패 등
                     result = (f"오류: {call['name']} 실행 실패 "
                               f"({type(e).__name__}: {e}). 인자를 확인하고 다시 호출하라.")
@@ -212,11 +214,35 @@ def tools_node(state: dict) -> dict:
                 tool_call_id=call["id"], name=call["name"],
             ))
             findings.append({
-                "loop": loop, "tool": call["name"], "args": call["args"],
-                "result": result, "thought": ai.content or call["args"].get("reason", ""),
+                # args 는 **실행된** 인자다. LLM 이 보낸 것을 적으면 감사 기록이
+                # 실행과 다른 분모를 가리키고, 그것이 리포트의 근거 문장이 된다.
+                "loop": loop, "tool": call["name"], "args": args,
+                "result": result, "thought": ai.content or args.get("reason", ""),
             })
 
     return {"messages": out_msgs, "findings": findings, **update}
+
+
+# 도구 인자 이름 -> 그 값을 확정한 state 키. **LLM 이 정하는 값이 아니다.**
+_PIPELINE_GROUP_ARGS = {"group_ids": "target_group", "control_ids": "control_group"}
+
+
+def _with_pipeline_groups(tool, args: dict, state: dict) -> dict:
+    """대조 분모를 코드가 채운다 (LLM 제안, 코드 결정).
+
+    타깃·대조군은 고정 골격(`status_node`)이 확정하고 리포트 머리말·커버리지·대조군
+    선정 근거가 전부 그 위에 서 있다. LLM 이 이 인자를 정할 수 있던 동안에는 **머리말과
+    다른 분모로 계산된 후보**가 결론이 될 수 있었고, 게이트는 claim_id 조회만 하므로
+    그 어긋남을 볼 방법이 원리적으로 없었다.
+
+    **어떤 도구에 넣을지는 이름이 아니라 도구가 선언한 인자로 판정한다.** 이름으로
+    고르면 축이 늘 때마다 여기를 같이 고쳐야 하고, 안 고치면 새 축만 조용히 옛
+    계약으로 돈다. `tool.args` 는 주입 인자를 이미 빼고 주므로 전체 스키마를 본다.
+    """
+    declared = tool.args_schema.model_json_schema().get("properties", {})
+    return {**args, **{arg: list(state.get(key) or [])
+                       for arg, key in _PIPELINE_GROUP_ARGS.items()
+                       if arg in declared}}
 
 
 def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) -> str:
