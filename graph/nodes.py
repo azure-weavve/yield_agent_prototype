@@ -264,6 +264,11 @@ def _with_pipeline_groups(tool, args: dict, state: dict) -> dict:
 # 값이 바뀌어도 계산이 달라지지 않는 인자. 재호출 안내의 근거에서 뺀다.
 _INERT_ARGS = {"reason"}
 
+# LLM 이 손댈 수 없는 실패일 때의 안내. 재호출을 시키지 않는다.
+_PIPELINE_ARG_ADVICE = ("이 도구의 대상·대조군은 파이프라인이 정한 값이라 네가 바꿀 수 "
+                        "없다. 같은 호출을 반복하지 말고 다른 축(hyp_*)을 시도하거나 "
+                        "finalize 하라.")
+
 
 def _tool_error_message(name: str, tool, e: Exception) -> str:
     """실패 안내는 **LLM 이 아직 바꿀 수 있는 인자가 있는지**로 갈린다.
@@ -279,18 +284,28 @@ def _tool_error_message(name: str, tool, e: Exception) -> str:
     만으로 가르면 "reason 은 문자열이어야 한다" 를 인용하면서 고칠 수 없다고 답하고,
     LLM 이 한 번 헛디디면 멀쩡한 축을 영구히 버린다. 원인 인자가 LLM 소관일 때만
     재호출을 시킨다(주입된 분모가 깨진 경우는 아래 규칙으로 내려간다).
+
+    이 판정은 **도구 스키마가 pydantic v2 라는 전제**에 서 있다. langchain 은 v1
+    스키마도 받아 `pydantic.v1.ValidationError` 를 그대로 올려 보내므로, v1 로 만든
+    도구가 섞이면 여기서 안 걸려 위 실패가 되살아난다. 지금 저장소의 도구는 전부
+    `@tool`/`StructuredTool.from_function` 이라 v2 다 — 그런 도구가 생기면 여기를 늘린다.
     """
     head = f"오류: {name} 실행 실패 ({type(e).__name__}: {e}). "
     if isinstance(e, ValidationError):
         bad = {str(err["loc"][0]) for err in e.errors() if err.get("loc")}
-        if bad & set(tool.args):
-            return (head + f"인자 {', '.join(sorted(bad & set(tool.args)))} 의 형식이 "
-                    f"잘못됐다. 고쳐서 다시 호출하라.")
+        # 원인에 주입 인자가 하나라도 섞이면 LLM 소관이 아니다. LLM 인자만 지목해
+        # 재호출시키면 그것을 고쳐도 같은 자리에서 또 죽는다. 아래 `changeable` 로
+        # 흘려보내도 안 된다 - 바꿀 인자가 남은 도구(센서)는 원인과 무관한
+        # step_seq 를 고치라고 답하게 된다.
+        if bad:
+            if bad <= set(tool.args):
+                return (head + f"인자 {', '.join(sorted(bad))} 의 형식이 잘못됐다. "
+                        f"고쳐서 다시 호출하라.")
+            return head + _PIPELINE_ARG_ADVICE
     changeable = sorted(set(tool.args) - _INERT_ARGS)
     if changeable:
         return head + f"인자를 확인하고({', '.join(changeable)}) 다시 호출하라."
-    return (head + "이 도구의 대상·대조군은 파이프라인이 정한 값이라 네가 바꿀 수 없다. "
-            "같은 호출을 반복하지 말고 다른 축(hyp_*)을 시도하거나 finalize 하라.")
+    return head + _PIPELINE_ARG_ADVICE
 
 
 def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) -> str:

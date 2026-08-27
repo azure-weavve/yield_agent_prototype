@@ -1924,16 +1924,28 @@ def test_a_bad_llm_argument_is_fixable_even_when_the_tool_has_nothing_else_to_ch
 def test_a_bad_injected_denominator_is_not_blamed_on_the_llm():
     """분기 반대쪽 - 같은 ValidationError 라도 주입 인자가 원인이면 LLM 소관이 아니다.
 
-    원인 인자를 안 보고 "스키마 위반이면 재호출" 로만 가르면, 파이프라인이 넣은
-    분모가 깨졌을 때 LLM 을 무한 재시도로 보낸다. 판정은 **LLM 이 보는 인자**
-    (`tool.args`)와 겹치는지로 한다.
+    **바꿀 인자가 남은 도구까지 봐야 한다.** hyp_* 만 잠그면 우연히 통과한다 -
+    tool.args 가 {reason} 뿐이라 원인을 안 봐도 마지막 안내로 떨어지기 때문이다.
+    센서 도구는 step_seq 가 남아 있어, 원인을 안 보면 "step_seq 를 고쳐 다시 부르라"
+    가 나가고 LLM 은 매번 같은 자리에서 죽는 재호출을 MAX_LOOPS 까지 한다.
     """
+    from data.generate_dummy import SENSOR_STEP
+
     ai = AIMessage(content="", tool_calls=[
-        {"name": "hyp_eqp_ch_commonality", "args": {"reason": "챔버"}, "id": "c1"}])
+        {"name": "hyp_eqp_ch_commonality", "args": {"reason": "챔버"}, "id": "c1"},
+        {"name": "compare_sensor_distribution",
+         "args": {"step_seq": SENSOR_STEP, "reason": "센서"}, "id": "c2"},
+        # 원인이 주입 인자와 LLM 인자에 걸쳐 있어도 LLM 소관이 아니다 - reason 만
+        # 고쳐 다시 불러도 group_ids 에서 또 죽는다.
+        {"name": "compare_sensor_distribution",
+         "args": {"step_seq": SENSOR_STEP, "reason": ["문장이 아님"]}, "id": "c3"},
+    ])
     out = nodes.tools_node({"messages": [ai], "loop_count": 1, "findings": [],
                             "target_group": [None], "control_group": _PIPELINE_CONTROL})
-    msg = str(out["messages"][0].content)
 
-    assert "ValidationError" in msg
-    assert "다른 축" in msg              # 네가 못 고치는 것을 고치라고 하지 않는다
-    assert "다시 호출하라" not in msg
+    for tm in out["messages"]:
+        msg = str(tm.content)
+        assert "ValidationError" in msg
+        assert "다른 축" in msg          # 네가 못 고치는 것을 고치라고 하지 않는다
+        assert "다시 호출하라" not in msg
+        assert "step_seq" not in msg.split(").")[-1]   # 안내에는 안 나온다
