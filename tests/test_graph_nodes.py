@@ -1800,3 +1800,105 @@ def test_tools_that_do_not_take_groups_are_left_alone():
     out = nodes.tools_node(_pipeline_state(ai))
     assert out["findings"][0]["args"] == {"wafer_id": "W2406_02"}
     assert out["findings"][0]["result"]["wafer_id"] == "W2406_02"
+
+
+# ------------------------------------------------- 도구 실패 안내 · 주입 누락
+def _boom(*_a, **_k):
+    raise RuntimeError("DB 연결 끊김")
+
+
+def test_tool_failure_does_not_tell_the_llm_to_fix_arguments_it_cannot_see():
+    """바꿀 인자가 없는 도구에 "인자를 확인하고 다시 호출하라" 고 하면 루프만 탄다.
+
+    분모(group_ids/control_ids)는 스키마에서 빠져 LLM 이 못 본다. hyp_* 에 남은
+    LLM 인자는 reason 뿐이고 reason 은 계산에 안 쓰인다 - 주입된 분모 쪽에서 실패가
+    나면 모델이 바꿀 수 있는 것이 없어 사실상 같은 호출을 MAX_LOOPS 까지 반복하고
+    inconclusive 로 떨어진다. `agent_tools` 가 쓸 수 없는 도구를 아예 등록하지 않는
+    이유와 같은 실패 유형이다.
+    """
+    from domain import engine
+
+    original = engine.evaluate
+    engine.evaluate = _boom
+    try:
+        ai = AIMessage(content="", tool_calls=[
+            {"name": "hyp_eqp_ch_commonality", "args": {"reason": "챔버"}, "id": "c1"}])
+        out = nodes.tools_node(_pipeline_state(ai))
+    finally:
+        engine.evaluate = original
+
+    msg = str(out["messages"][0].content)
+    assert "RuntimeError" in msg and "DB 연결 끊김" in msg   # 무엇이 터졌는지는 남긴다
+    assert "인자를 확인" not in msg                          # 못 바꾸는 것을 시키지 않는다
+    assert "다른 축" in msg                                  # 대신 할 수 있는 것을 준다
+
+
+def test_tool_failure_still_names_the_arguments_the_llm_can_change():
+    """분기 반대쪽 - 바꿀 인자가 남아 있으면 재호출 안내가 옳다.
+
+    한쪽만 넣으면 "재호출하지 마라" 를 전 도구에 발라도 테스트가 안 잡는다.
+    센서 도구는 step_seq 가 LLM 인자이므로 다른 스텝으로 다시 부르는 것이 유효하다.
+    """
+    from data.generate_dummy import SENSOR_STEP
+    from tools import sensor_compare as sc
+
+    original = sc.compare_sensor_distribution
+    sc.compare_sensor_distribution = _boom
+    try:
+        ai = AIMessage(content="", tool_calls=[
+            {"name": "compare_sensor_distribution",
+             "args": {"step_seq": SENSOR_STEP, "reason": "센서"}, "id": "c1"}])
+        out = nodes.tools_node(_pipeline_state(ai))
+    finally:
+        sc.compare_sensor_distribution = original
+
+    msg = str(out["messages"][0].content)
+    assert "RuntimeError" in msg
+    assert "step_seq" in msg          # 무엇을 바꿔 다시 부를지 지목한다
+    assert "다른 축" not in msg
+
+
+def test_missing_pipeline_group_in_state_is_not_an_empty_denominator():
+    """주입을 빠뜨리면 조용히 빈 분모로 도는 대신 터져야 한다.
+
+    `test_group_arguments_are_still_required_at_invoke_time` 이 지키려던 계약이
+    주입 단계에서는 안 지켜지고 있었다 - `state.get(key) or []` 가 키 누락을 빈
+    리스트로 바꿔 주므로 도구는 인자를 받은 셈이 되어 예외가 안 난다.
+
+    특히 대조군만 빠지면 결과가 `no_paired_stratum`("이력 결측")이다. 엔지니어는
+    적재·추출 범위를 뒤지러 가고, 진짜 원인(파이프라인이 분모를 안 넣었다)은
+    아무 데도 안 남는다. 조용한 오답보다 크게 죽는 편이 낫다.
+    """
+    import pytest
+
+    ai = AIMessage(content="", tool_calls=[
+        {"name": "hyp_eqp_ch_commonality", "args": {"reason": "챔버"}, "id": "c1"}])
+
+    with pytest.raises(KeyError):        # 둘 다 없음
+        nodes.tools_node({"messages": [ai], "loop_count": 1, "findings": []})
+
+    with pytest.raises(KeyError):        # 대조군만 없음 (이력 결측으로 위장되던 쪽)
+        nodes.tools_node({"messages": [ai], "loop_count": 1, "findings": [],
+                          "target_group": _PIPELINE_TARGET})
+
+    # 키는 있는데 값이 None (그래프 state 기본값). 위 두 경우는 `state[key]` 조회가
+    # 어차피 KeyError 를 내므로 **가드가 있는지 없는지를 구분하지 못한다** - 이쪽만이
+    # 구분한다(가드 없으면 list(None) 의 TypeError 가 나고 축별 비대칭도 안 잡힌다).
+    with pytest.raises(KeyError, match="control_group"):
+        nodes.tools_node({"messages": [ai], "loop_count": 1, "findings": [],
+                          "target_group": _PIPELINE_TARGET, "control_group": None})
+
+
+def test_a_pipeline_group_that_is_present_but_empty_is_still_injected():
+    """분기 반대쪽 - 빈 리스트는 '주입 누락' 이 아니라 파이프라인이 정한 값이다.
+
+    누락과 같이 취급해 터뜨리면 대조군 부족 경로(status_node 가 이미 판정해서
+    리포트로 보내는)와 겹쳐 진단이 두 곳으로 갈린다. 여기서는 그대로 넣는다.
+    """
+    ai = AIMessage(content="", tool_calls=[
+        {"name": "hyp_eqp_ch_commonality", "args": {"reason": "챔버"}, "id": "c1"}])
+    out = nodes.tools_node({"messages": [ai], "loop_count": 1, "findings": [],
+                            "target_group": _PIPELINE_TARGET, "control_group": []})
+
+    assert out["findings"][0]["args"]["control_ids"] == []
+    assert "오류" not in str(out["messages"][0].content)

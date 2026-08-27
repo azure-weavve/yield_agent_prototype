@@ -207,8 +207,7 @@ def tools_node(state: dict) -> dict:
                 try:
                     result = tool.invoke(args)
                 except Exception as e:  # 인자 스키마 위반·조회 실패 등
-                    result = (f"오류: {call['name']} 실행 실패 "
-                              f"({type(e).__name__}: {e}). 인자를 확인하고 다시 호출하라.")
+                    result = _tool_error_message(call["name"], tool, e)
             out_msgs.append(ToolMessage(
                 json.dumps(result, ensure_ascii=False),
                 tool_call_id=call["id"], name=call["name"],
@@ -238,11 +237,45 @@ def _with_pipeline_groups(tool, args: dict, state: dict) -> dict:
     **어떤 도구에 넣을지는 이름이 아니라 도구가 선언한 인자로 판정한다.** 이름으로
     고르면 축이 늘 때마다 여기를 같이 고쳐야 하고, 안 고치면 새 축만 조용히 옛
     계약으로 돈다. `tool.args` 는 주입 인자를 이미 빼고 주므로 전체 스키마를 본다.
+
+    **state 에 그 값이 없으면 빈 그룹으로 채우지 않고 터뜨린다.** 조용히 `[]` 를 넣으면
+    도구는 인자를 받은 셈이라 예외가 안 나고, 대조군만 빠진 경우 결과가
+    `no_paired_stratum`("이력 결측")이 된다 — 엔지니어는 적재·추출 범위를 뒤지러 가고
+    진짜 원인(파이프라인이 분모를 안 넣었다)은 아무 데도 안 남는다. 빈 리스트는 다르다:
+    그건 누락이 아니라 고정 골격이 정한 값이고, 대조군 부족은 이미 status_node 가
+    판정해 리포트로 보낸다.
     """
     declared = tool.args_schema.model_json_schema().get("properties", {})
-    return {**args, **{arg: list(state.get(key) or [])
-                       for arg, key in _PIPELINE_GROUP_ARGS.items()
-                       if arg in declared}}
+    injected = {}
+    for arg, key in _PIPELINE_GROUP_ARGS.items():
+        if arg not in declared:
+            continue
+        if state.get(key) is None:
+            raise KeyError(f"{key} 가 state 에 없다 - {arg} 를 주입할 수 없다 "
+                           f"(고정 골격 status_node 를 거치지 않은 경로다).")
+        injected[arg] = list(state[key])
+    return {**args, **injected}
+
+
+# 값이 바뀌어도 계산이 달라지지 않는 인자. 재호출 안내의 근거에서 뺀다.
+_INERT_ARGS = {"reason"}
+
+
+def _tool_error_message(name: str, tool, e: Exception) -> str:
+    """실패 안내는 **LLM 이 아직 바꿀 수 있는 인자가 있는지**로 갈린다.
+
+    대조 분모는 스키마에서 빠져 LLM 이 못 본다(`_with_pipeline_groups`). 그런데도
+    "인자를 확인하고 다시 호출하라" 고 하면, 바꿀 것이 reason 뿐인 hyp_* 는 같은
+    호출을 MAX_LOOPS 까지 반복하고 inconclusive 로 떨어진다 — 쓸 수 없는 도구를
+    아예 등록하지 않는 `tools/agent_tools.py` 와 같은 이유로 여기서 막는다.
+    `tool.args` 는 주입 인자를 이미 빼고 주므로 LLM 이 보는 것과 같다.
+    """
+    head = f"오류: {name} 실행 실패 ({type(e).__name__}: {e}). "
+    changeable = sorted(set(tool.args) - _INERT_ARGS)
+    if changeable:
+        return head + f"인자를 확인하고({', '.join(changeable)}) 다시 호출하라."
+    return (head + "이 도구의 대상·대조군은 파이프라인이 정한 값이라 네가 바꿀 수 없다. "
+            "같은 호출을 반복하지 말고 다른 축(hyp_*)을 시도하거나 finalize 하라.")
 
 
 def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) -> str:
