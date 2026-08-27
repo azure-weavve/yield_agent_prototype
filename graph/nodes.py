@@ -11,6 +11,7 @@
 import json
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from pydantic import ValidationError
 
 import ya_config
 from graph import evidence
@@ -251,8 +252,11 @@ def _with_pipeline_groups(tool, args: dict, state: dict) -> dict:
         if arg not in declared:
             continue
         if state.get(key) is None:
-            raise KeyError(f"{key} 가 state 에 없다 - {arg} 를 주입할 수 없다 "
-                           f"(고정 골격 status_node 를 거치지 않은 경로다).")
+            # KeyError 가 아니라 RuntimeError 인 이유: 진짜 키 누락 버그와 구분되고,
+            # 테스트가 "가드가 있다" 를 볼 수 있다 - KeyError 면 가드를 지워도 바로
+            # 아래 state[key] 가 같은 예외를 내서 훼손이 안 잡힌다.
+            raise RuntimeError(f"{key} 가 state 에 없다 - {arg} 를 주입할 수 없다 "
+                               f"(고정 골격 status_node 를 거치지 않은 경로다).")
         injected[arg] = list(state[key])
     return {**args, **injected}
 
@@ -269,8 +273,19 @@ def _tool_error_message(name: str, tool, e: Exception) -> str:
     호출을 MAX_LOOPS 까지 반복하고 inconclusive 로 떨어진다 — 쓸 수 없는 도구를
     아예 등록하지 않는 `tools/agent_tools.py` 와 같은 이유로 여기서 막는다.
     `tool.args` 는 주입 인자를 이미 빼고 주므로 LLM 이 보는 것과 같다.
+
+    **인자 스키마 위반은 먼저 가른다.** reason 은 계산에 안 쓰여 `_INERT_ARGS` 에
+    있지만 검증은 받으므로, 형식 오류의 **원인**일 수 있다 - "바꿀 인자가 남았는가"
+    만으로 가르면 "reason 은 문자열이어야 한다" 를 인용하면서 고칠 수 없다고 답하고,
+    LLM 이 한 번 헛디디면 멀쩡한 축을 영구히 버린다. 원인 인자가 LLM 소관일 때만
+    재호출을 시킨다(주입된 분모가 깨진 경우는 아래 규칙으로 내려간다).
     """
     head = f"오류: {name} 실행 실패 ({type(e).__name__}: {e}). "
+    if isinstance(e, ValidationError):
+        bad = {str(err["loc"][0]) for err in e.errors() if err.get("loc")}
+        if bad & set(tool.args):
+            return (head + f"인자 {', '.join(sorted(bad & set(tool.args)))} 의 형식이 "
+                    f"잘못됐다. 고쳐서 다시 호출하라.")
     changeable = sorted(set(tool.args) - _INERT_ARGS)
     if changeable:
         return head + f"인자를 확인하고({', '.join(changeable)}) 다시 호출하라."

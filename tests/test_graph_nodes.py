@@ -1874,17 +1874,17 @@ def test_missing_pipeline_group_in_state_is_not_an_empty_denominator():
     ai = AIMessage(content="", tool_calls=[
         {"name": "hyp_eqp_ch_commonality", "args": {"reason": "챔버"}, "id": "c1"}])
 
-    with pytest.raises(KeyError):        # 둘 다 없음
+    # 예외 타입을 RuntimeError 로 잡는 것이 이 테스트의 절반이다. KeyError 로 두면
+    # 가드를 지워도 `state[key]` 조회가 같은 KeyError 를 내므로 **가드 유무를 구분하지
+    # 못한다**(축별 비대칭 훼손이 실제로 안 잡혔다). 진짜 키 누락 버그와도 안 헷갈린다.
+    with pytest.raises(RuntimeError, match="target_group"):      # 둘 다 없음
         nodes.tools_node({"messages": [ai], "loop_count": 1, "findings": []})
 
-    with pytest.raises(KeyError):        # 대조군만 없음 (이력 결측으로 위장되던 쪽)
+    with pytest.raises(RuntimeError, match="control_group"):     # 대조군만 없음
         nodes.tools_node({"messages": [ai], "loop_count": 1, "findings": [],
-                          "target_group": _PIPELINE_TARGET})
+                          "target_group": _PIPELINE_TARGET})     # 이력 결측 위장 쪽
 
-    # 키는 있는데 값이 None (그래프 state 기본값). 위 두 경우는 `state[key]` 조회가
-    # 어차피 KeyError 를 내므로 **가드가 있는지 없는지를 구분하지 못한다** - 이쪽만이
-    # 구분한다(가드 없으면 list(None) 의 TypeError 가 나고 축별 비대칭도 안 잡힌다).
-    with pytest.raises(KeyError, match="control_group"):
+    with pytest.raises(RuntimeError, match="control_group"):     # 키는 있고 값이 None
         nodes.tools_node({"messages": [ai], "loop_count": 1, "findings": [],
                           "target_group": _PIPELINE_TARGET, "control_group": None})
 
@@ -1902,3 +1902,38 @@ def test_a_pipeline_group_that_is_present_but_empty_is_still_injected():
 
     assert out["findings"][0]["args"]["control_ids"] == []
     assert "오류" not in str(out["messages"][0].content)
+
+
+def test_a_bad_llm_argument_is_fixable_even_when_the_tool_has_nothing_else_to_change():
+    """인자 스키마 위반은 LLM 이 보낸 값이 원인이므로 재호출로 고칠 수 있다.
+
+    "바꿀 인자가 남았는가" 만으로 안내를 가르면, hyp_* 는 reason 이 계산에 안 쓰인다는
+    이유로 `_INERT_ARGS` 에 있어 **reason 형식 오류까지** "네가 바꿀 수 없다" 로 답한다.
+    메시지 본문이 "reason 은 문자열이어야 한다" 를 인용하면서 고칠 수 없다고 말하는
+    꼴이고, LLM 이 한 번 헛디디면 멀쩡한 축을 영구히 버린다. 원인 인자로 가른다.
+    """
+    ai = AIMessage(content="", tool_calls=[
+        {"name": "hyp_eqp_ch_commonality", "args": {"reason": ["문장이 아님"]},
+         "id": "c1"}])
+    msg = str(nodes.tools_node(_pipeline_state(ai))["messages"][0].content)
+
+    assert "reason" in msg and "다시 호출" in msg
+    assert "다른 축" not in msg          # 멀쩡한 축을 버리게 하지 않는다
+
+
+def test_a_bad_injected_denominator_is_not_blamed_on_the_llm():
+    """분기 반대쪽 - 같은 ValidationError 라도 주입 인자가 원인이면 LLM 소관이 아니다.
+
+    원인 인자를 안 보고 "스키마 위반이면 재호출" 로만 가르면, 파이프라인이 넣은
+    분모가 깨졌을 때 LLM 을 무한 재시도로 보낸다. 판정은 **LLM 이 보는 인자**
+    (`tool.args`)와 겹치는지로 한다.
+    """
+    ai = AIMessage(content="", tool_calls=[
+        {"name": "hyp_eqp_ch_commonality", "args": {"reason": "챔버"}, "id": "c1"}])
+    out = nodes.tools_node({"messages": [ai], "loop_count": 1, "findings": [],
+                            "target_group": [None], "control_group": _PIPELINE_CONTROL})
+    msg = str(out["messages"][0].content)
+
+    assert "ValidationError" in msg
+    assert "다른 축" in msg              # 네가 못 고치는 것을 고치라고 하지 않는다
+    assert "다시 호출하라" not in msg
