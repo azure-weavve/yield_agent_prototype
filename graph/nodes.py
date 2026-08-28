@@ -211,8 +211,12 @@ def tools_node(state: dict) -> dict:
                 try:
                     result = tool.invoke(args)
                 except Exception as e:  # 인자 스키마 위반·조회 실패 등
-                    result = _tool_error_message(call["name"], tool, e)
-                    crashed = True
+                    result, recoverable = _tool_error_message(call["name"], tool, e)
+                    # **LLM 이 제 인자를 고쳐 되살릴 수 있는 실패는 축의 실패가 아니다.**
+                    # 찍으면 그 축이 `failed` 에 끈적하게 남아, 안내는 "고쳐서 다시
+                    # 호출하라" 인데 게이트는 "부를 축이 없다" 로 끝내는 거울상 모순이
+                    # 된다 - reason 한 번 헛디딘 것으로 멀쩡한 축을 영구히 버린다.
+                    crashed = not recoverable
             out_msgs.append(ToolMessage(
                 json.dumps(result, ensure_ascii=False),
                 tool_call_id=call["id"], name=call["name"],
@@ -282,8 +286,13 @@ _PIPELINE_ARG_ADVICE = ("이 도구의 대상·대조군은 파이프라인이 �
                         "finalize 하라.")
 
 
-def _tool_error_message(name: str, tool, e: Exception) -> str:
+def _tool_error_message(name: str, tool, e: Exception) -> tuple[str, bool]:
     """실패 안내는 **LLM 이 아직 바꿀 수 있는 인자가 있는지**로 갈린다.
+
+    `(안내, 복구 가능한가)` 를 돌려준다. 두 번째 값은 **재호출로 되살아날 수 있는
+    실패인가** 이고, `tools_node` 가 그것으로 감사 기록의 실패 표시를 가른다 - 안내와
+    표시가 다른 기준을 쓰면 "고쳐서 다시 호출하라" 고 해 놓고 그 축을 실패로 세는
+    모순이 난다. 판정을 한 곳에서만 하려고 여기서 함께 돌려준다.
 
     대조 분모는 스키마에서 빠져 LLM 이 못 본다(`_with_pipeline_groups`). 그런데도
     "인자를 확인하고 다시 호출하라" 고 하면, 바꿀 것이 reason 뿐인 hyp_* 는 같은
@@ -312,12 +321,16 @@ def _tool_error_message(name: str, tool, e: Exception) -> str:
         if bad:
             if bad <= set(tool.args):
                 return (head + f"인자 {', '.join(sorted(bad))} 의 형식이 잘못됐다. "
-                        f"고쳐서 다시 호출하라.")
-            return head + _PIPELINE_ARG_ADVICE
+                        f"고쳐서 다시 호출하라.", True)
+            return head + _PIPELINE_ARG_ADVICE, False
+    # 아래 둘은 실행 자체가 터진 것이다(조회 실패 등). 인자를 바꾸면 다른 대상을 볼 수
+    # 있을 뿐 같은 대조가 되살아나지는 않으므로 축의 실패로 센다. hyp_* 는 `changeable`
+    # 이 항상 비어 있어(LLM 인자가 reason 뿐) 이 구분이 실제로 갈리는 곳은 센서뿐이고,
+    # 센서는 등록 축이 아니라 커버리지에 안 잡힌다.
     changeable = sorted(set(tool.args) - _INERT_ARGS)
     if changeable:
-        return head + f"인자를 확인하고({', '.join(changeable)}) 다시 호출하라."
-    return head + _PIPELINE_ARG_ADVICE
+        return head + f"인자를 확인하고({', '.join(changeable)}) 다시 호출하라.", False
+    return head + _PIPELINE_ARG_ADVICE, False
 
 
 def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) -> str:
@@ -404,7 +417,11 @@ def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) ->
         update["final_confidence"] = conf
         update["coverage"] = coverage
         _record_evidence(update, groups, picked)
-        if unrun:
+        # **실패 축도 '못 본 축' 이다.** `unrun` 만 보면, 실패 축을 그쪽에서 빼낸
+        # 순간 유보가 조용히 꺼져 4축 중 3축이 장애로 못 돈 분석이 전축을 본 것처럼
+        # 말한다. 이 문자열은 findings 로 리포트 LLM 에 넘어가고 프롬프트는 그것을
+        # "그대로 인용하라" 고 지시한다.
+        if unrun or failed:
             return (f"신호 없음 ({_coverage_phrase(coverage)}): 대조한 축에서는 원인을 "
                     f"좁힐 수 없다. 결론은 돌린 축에 한한 것이며 그 사실이 리포트에 "
                     f"함께 나간다. 리포팅으로 진행한다.")

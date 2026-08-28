@@ -112,7 +112,9 @@ class Bundle:
     claims: dict[str, Claim]      # claim_id -> Claim (미통과 후보도 담는다)
     statuses: dict[str, str]      # tool 이름 -> 마지막 실행의 status
     ran: set[str]                 # 유효한 결과를 낸 hyp_* 도구 이름
-    # **실행 중 터진 도구 이름** (`ran` 과 배타적이다 - 뒤에 성공한 축은 여기 없다).
+    # **실행 중 터진 도구 이름** (`ran` 과 배타적이다 - 어느 시점에든 유효한 결과를
+    # 낸 축은 여기 없다. 집합 연산이라 순서를 안 본다: 성공 뒤 재실행에서 터진 축도
+    # 빠지는데, 그 축의 결과는 실제로 손에 있으므로 옳다).
     # `ran` 에서 빼는 것만으로는 '안 돌린 축' 과 구분되지 않아, 게이트가 방금 터진
     # 도구를 다시 부르라고 이름을 대고 리포트는 시도조차 안 한 것처럼 적었다.
     # 조치가 다르다: 인프라 확인 vs 축을 더 보기. 판정은 여기서 안 한다.
@@ -367,7 +369,7 @@ def build_bundle(findings: list[dict]) -> Bundle:
     surviving = set(claims)
     superseded = frozenset(i for i, lost in lost_at.items() if lost - surviving)
     return Bundle(claims=claims, statuses=statuses, ran=ran,
-                  # 뒤에 성공한 축은 실패가 아니다 - 우리는 그 축을 봤다.
+                  # 어느 시점에든 결과를 낸 축은 실패가 아니다 - 그 축은 봤다.
                   failed=frozenset(crashed - ran),
                   superseded=superseded,
                   dropped_claims={k: v for k, v in dropped_claims.items()

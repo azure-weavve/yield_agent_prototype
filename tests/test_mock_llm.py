@@ -518,3 +518,27 @@ def test_operational_client_puts_the_superseded_flag_in_the_user_prompt():
                    "result": {"hypothesis_id": "eqp_ch_commonality", "status": "ok",
                               "candidates": [{"claim_id": "c", "passes": True}]}}])
     assert "superseded" in client.llm.seen
+
+
+def test_operational_client_hedges_a_conclusion_whose_axes_crashed():
+    """유보 지시가 `unrun` 하나에만 매달려 있으면 실패 축에서 조용히 꺼진다.
+
+    축이 `unrun` -> `failed` 로 옮겨진 것뿐인데 "결론은 돌린 축에 한한다" 가 사라져,
+    4축 중 3축이 DB 장애로 못 돈 분석에서 전축 결론이 유보 없이 나간다. 실패 축을
+    '실패한 축' 이라고 부르라는 표기 지시는 결론 범위를 제한하지 않는다.
+    """
+    coverage = {"ran": ["hyp_metro_commonality"],
+                "failed": ["hyp_eqp_ch_commonality", "hyp_ppid_commonality",
+                           "hyp_step_passage_commonality"],
+                "unrun": [], "no_data": []}
+    client = _openai_client()
+    client.generate_report(
+        target_wafers=["W1"], target_source="manual", target_group=["W1"],
+        status_summary="s", findings=[], hypothesis=None, confidence=0.2,
+        finalize_status="no_signal", claims=[], coverage=coverage)
+    # **문장이 붙었는지가 아니라 무엇을 조건으로 다는지를 본다.** 유보 문장은 판정이
+    # confirmed 가 아니면 언제나 붙고 조건은 그 안에 글로 적혀 있다 - "돌린 축에 한한"
+    # 이 있는지만 보면 unrun 전용으로 되돌려도 초록이다.
+    assert "unrun 이나 failed 가 비어 있지 않으면" in client.llm.seen
+    # sys 지시도 같이 열려야 산문 톤이 바뀐다 - user 쪽 JSON 만으로는 안 바뀐다.
+    assert "도구 실패로 못 돈 축(failed)이 있으면" in client.llm.seen_sys

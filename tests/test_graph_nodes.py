@@ -2136,3 +2136,102 @@ def test_gate_does_not_claim_every_axis_ran_when_some_of_them_crashed():
     assert "등록 가설을 다 돌렸으나" not in msg
     assert "도구 실패로 미수행" in msg
     assert "아직 안 돌린 가설 도구" not in msg    # 부를 수 있는 축은 없다
+
+
+# --------------------------------------- 재리뷰: 복구 가능한 인자 오류는 실패가 아니다
+def test_a_recoverable_argument_error_does_not_burn_the_axis():
+    """LLM 이 고칠 수 있는 인자 오류를 '도구 실패' 로 굳히면 멀쩡한 축을 영구히 버린다.
+
+    `_tool_error_message` 는 이미 "LLM 이 아직 바꿀 수 있는 인자가 있는가" 를 갈라
+    reason 형식 오류에는 "고쳐서 다시 호출하라" 고 답한다. 그런데 감사 기록에는
+    실패로 찍혀 축이 `failed` 에 끈적하게 남으면, 안내는 재호출을 시키고 게이트는
+    "부를 축이 없다" 로 끝내는 **거울상 모순**이 된다 - 이 커밋이 없애려던 바로 그것.
+    """
+    ai = AIMessage(content="", tool_calls=[
+        {"name": "hyp_eqp_ch_commonality", "args": {"reason": 123}, "id": "c1"}])
+    out = nodes.tools_node(_pipeline_state(ai))
+    assert "고쳐서 다시 호출하라" in str(out["messages"][0].content)
+    assert "failed" not in out["findings"][0]
+
+
+def test_an_argument_error_the_llm_cannot_fix_is_still_a_failure():
+    """분기 반대쪽 - 원인이 주입 인자면 LLM 이 고칠 수 없으니 실패가 맞다.
+
+    한쪽만 넣으면 "인자 오류는 실패가 아니다" 를 전 경로에 발라도 안 잡힌다.
+    """
+    ai = AIMessage(content="", tool_calls=[
+        {"name": "hyp_eqp_ch_commonality", "args": {"reason": "챔버"}, "id": "c1"}])
+    out = nodes.tools_node(_pipeline_state(ai, target_group=[123]))   # 분모가 깨졌다
+    assert "다른 축" in str(out["messages"][0].content)   # 재호출을 안 시킨다
+    assert out["findings"][0]["failed"] is True
+
+
+def test_a_recoverable_argument_error_does_not_end_the_analysis():
+    """같은 사실의 판정 쪽 - reason 한 번 헛디딘 것이 tool_failure 종료가 되면 안 된다."""
+    ai = AIMessage(content="", tool_calls=[
+        {"name": "hyp_eqp_ch_commonality", "args": {"reason": 123}, "id": "c1"}])
+    bad = nodes.tools_node(_pipeline_state(ai))["findings"][0]
+    fin = _ai_finalize(0.2, hypothesis="", claim_id="")
+    out = nodes.tools_node({"messages": [fin], "loop_count": 3,
+                            "findings": _ALL_NO_PAIR[1:] + [bad]})
+    assert out.get("finalize_status") != "tool_failure"
+
+
+# ------------------------------- 재리뷰: unrun 에 매달려 있던 유보가 꺼지면 안 된다
+def test_partial_coverage_hedge_survives_when_the_axes_crashed():
+    """실패 축을 unrun 에서 빼면서 '돌린 축에 한한다' 유보가 조용히 꺼졌다.
+
+    4축 중 3축이 DB 장애로 못 돈 상태인데 게이트가 전축을 본 것처럼
+    "lot 내부 대조로는 원인을 좁힐 수 없다" 는 확정 톤 문장을 냈다. 이 문자열은
+    findings 로 리포트 LLM 에 그대로 넘어가고 프롬프트는 "그대로 인용하라" 고 한다.
+    """
+    metro_silent = {"loop": 2, "tool": "hyp_metro_commonality", "args": {},
+                    "result": {"hypothesis_id": "metro_commonality",
+                               "status": "no_signal", "candidates": []},
+                    "thought": "신호 없음"}
+    findings = [_crashed("hyp_eqp_ch_commonality"), _crashed("hyp_ppid_commonality"),
+                _crashed("hyp_step_passage_commonality"), metro_silent]
+    _assert_covers_every_hypothesis(findings)
+    ai = _ai_finalize(0.2, hypothesis="", claim_id="")
+    out = nodes.tools_node({"messages": [ai], "loop_count": 3, "findings": findings})
+    assert out["finalize_status"] == "no_signal"
+    msg = out["messages"][0].content
+    assert "결론은 돌린 축에 한한" in msg
+    assert "lot 내부 대조로는" not in msg          # 전축을 본 것처럼 말하지 않는다
+
+
+def test_coverage_does_not_count_a_non_hypothesis_tool_as_a_failed_axis():
+    """센서 등 축이 아닌 도구의 실패가 커버리지·판정을 흔들면 안 된다.
+
+    `_coverage` 의 `registered &` 가드가 지키는 것이다 - 없으면 센서 하나가 터진 것이
+    (3)을 막고 (3b)를 열어 종료 사유가 뒤집히고 분모까지 5로 늘어난다.
+    """
+    findings = list(_ALL_NO_PAIR) + [_crashed("compare_sensor_distribution")]
+    ai = _ai_finalize(0.2, hypothesis="", claim_id="")
+    out = nodes.tools_node({"messages": [ai], "loop_count": 3, "findings": findings})
+    assert out["coverage"]["failed"] == []
+    assert out["finalize_status"] == "no_comparable_data"
+    assert "등록 축 4개" in nodes._coverage_phrase(out["coverage"])
+
+
+def test_full_coverage_no_signal_does_not_hedge_a_conclusion_it_earned():
+    """분기 반대쪽 - 정말로 전축을 봤으면 유보를 달지 않는다.
+
+    유보 조건을 넓히다가 항상 켜지게 만들면, 4축을 다 대조하고 얻은 결론까지
+    "돌린 축에 한한다" 로 낮춰 엔지니어가 근거를 저평가한다. 이 분기는 저장소에
+    테스트가 한 건도 없어 훼손이 그대로 살아남던 자리다.
+    """
+    silent = [{"loop": 2, "tool": t, "args": {},
+               "result": {"hypothesis_id": h, "status": "no_signal", "candidates": []},
+               "thought": "신호 없음"}
+              for t, h in [("hyp_eqp_ch_commonality", "eqp_ch_commonality"),
+                           ("hyp_ppid_commonality", "ppid_commonality"),
+                           ("hyp_step_passage_commonality", "step_passage_commonality"),
+                           ("hyp_metro_commonality", "metro_commonality")]]
+    _assert_covers_every_hypothesis(silent)
+    ai = _ai_finalize(0.2, hypothesis="", claim_id="")
+    out = nodes.tools_node({"messages": [ai], "loop_count": 3, "findings": silent})
+    assert out["finalize_status"] == "no_signal"
+    msg = out["messages"][0].content
+    assert "분리되는 후보 없음" in msg
+    assert "결론은 돌린 축에 한한" not in msg
