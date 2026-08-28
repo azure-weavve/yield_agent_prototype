@@ -158,3 +158,28 @@ def test_every_axis_runs_on_the_pipeline_groups():
     for f in ran:
         assert f["args"]["group_ids"] == state["target_group"], f["tool"]
         assert f["args"]["control_ids"] == state["control_group"], f["tool"]
+
+
+def test_every_axis_crashing_ends_as_tool_failure_not_a_burned_loop_budget(monkeypatch):
+    """전 축이 터지는 실장애 시나리오가 루프 예산을 태우지 않고 사유를 남기고 끝난다.
+
+    이 경로가 열려 있지 않던 동안에는 실패 축이 `unrun` 에 영원히 남아 (a) 게이트가
+    방금 터진 도구를 다시 부르라고 이름을 대고 (b) 어떤 종료 판정도 열리지 않아
+    루프 한계까지 왕복하다 `inconclusive`("확정 근거 없음")로 나갔다 - 진짜 사유인
+    **도구 실패**가 리포트 어디에도 안 남는다. 조치가 다르다(인프라 확인).
+    """
+    from domain import engine
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("DB 연결 끊김")
+
+    monkeypatch.setattr(engine, "evaluate", _boom)
+    state = build_graph().invoke(
+        {"target_wafers": ["W2406_02"], "target_source": "manual"}
+    )
+    assert state["finalize_status"] == "tool_failure"
+    assert state["loop_count"] < ya_config.MAX_LOOPS      # 예산을 태우고 끝나지 않았다
+    assert state["coverage"]["failed"]                    # 어느 축이 터졌는지 남는다
+    assert not state["coverage"]["unrun"]                 # 실패를 '안 돌린 축' 으로 세지 않는다
+    assert "분석 미수행" in state["report"]
+    assert "도구 실패" in state["report"]                  # [커버리지] 줄이 살아 있다

@@ -265,6 +265,13 @@ class ScriptedMockLLMClient(LLMClient):
                           "대조군이 없거나 그 wafer 들의 설비 이력이 없어 계산이 성립하지 "
                           "않았다. 근거를 못 찾은 것이 아니라 볼 것이 없었다는 뜻이며, "
                           "적재 범위와 추출 조건을 확인해야 한다.")
+        elif finalize_status == "tool_failure":
+            # no_comparable_data 와 문구를 나눈다 - 저쪽은 "적재/추출 범위 확인",
+            # 이쪽은 "DB/서비스 상태 확인" 이다. 뭉개면 엔지니어가 멀쩡한 적재를 뒤진다.
+            conclusion = ("분석 미수행 - 가설 도구가 실행에 실패해 대조를 돌리지 못했다. "
+                          "볼 데이터가 없는 것이 아니라 조회가 실패한 것이며, "
+                          "DB/서비스 상태를 확인하고 재실행해야 한다 "
+                          "- 어느 축이 실패했는지는 [커버리지] 참조.")
         elif finalize_status == "no_anomaly":
             conclusion = "이상 없음 - 수율 임계 미만 lot 이 없다."
         elif finalize_status == "unknown_target":
@@ -403,6 +410,10 @@ class OpenAILLMClient(LLMClient):
             "판정이 no_comparable_data 면 '분석 미수행 - 비교 가능한 데이터 없음'으로 "
             "서술하라 - 근거를 못 찾은 것이 아니라 대조에 쓸 짝이 없어 계산이 성립하지 "
             "않은 것이며, 적재 범위와 추출 조건 확인이 후속 조치다. 확정 결론을 쓰지 마라. "
+            "판정이 tool_failure 면 '분석 미수행 - 가설 도구 실행 실패'로 서술하라 - "
+            "볼 데이터가 없는 것(no_comparable_data)이 아니라 조회 자체가 실패한 것이니 "
+            "적재 범위가 아니라 DB/서비스 상태 확인과 재실행을 후속 조치로 적고, "
+            "확정 결론을 쓰지 마라. "
             "판정이 llm_call_failed 면 '분석 미수행 - LLM 분석 호출 실패'로 서술하라 - "
             "분석 루프가 아예 안 돌았으니 확정 결론을 쓰지 말고 재실행을 권하라. "
             "판정이 no_anomaly 면 '이상 없음'으로 서술하라. "
@@ -429,7 +440,8 @@ class OpenAILLMClient(LLMClient):
             user += (f"\n커버리지(어디까지 봤는가): "
                      f"{json.dumps(coverage, ensure_ascii=False)}.{hedge}"
                      f" no_data 는 돌았지만 계산이 성립하지 않은 축이라 본 것으로 "
-                     f"세면 안 된다.")
+                     f"세면 안 된다. failed 는 도구가 터져 아예 못 돈 축이다 - "
+                     f"'안 돌린 축' 이 아니라 '실패한 축' 으로 적어라.")
         if claims:
             user += (f"\n게이트가 확인한 근거 {len(claims)}건 "
                      f"(순위는 코드가 매겼다. 수치를 그대로 인용하고, 하나만 고르지 말고 "

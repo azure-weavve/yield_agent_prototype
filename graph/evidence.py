@@ -112,6 +112,15 @@ class Bundle:
     claims: dict[str, Claim]      # claim_id -> Claim (미통과 후보도 담는다)
     statuses: dict[str, str]      # tool 이름 -> 마지막 실행의 status
     ran: set[str]                 # 유효한 결과를 낸 hyp_* 도구 이름
+    # **실행 중 터진 도구 이름** (`ran` 과 배타적이다 - 뒤에 성공한 축은 여기 없다).
+    # `ran` 에서 빼는 것만으로는 '안 돌린 축' 과 구분되지 않아, 게이트가 방금 터진
+    # 도구를 다시 부르라고 이름을 대고 리포트는 시도조차 안 한 것처럼 적었다.
+    # 조치가 다르다: 인프라 확인 vs 축을 더 보기. 판정은 여기서 안 한다.
+    #
+    # 표시는 `tools_node` 가 붙인다(`failed: True`). 오류 문자열의 **모양으로 넘겨짚지
+    # 않는 이유**는 dict 가 아닌 결과가 실패만이 아니기 때문이다 - "분석 종료로 생략"
+    # 도 문자열이고, 그것을 실패로 세면 없는 장애를 보고한다.
+    failed: frozenset[str] = frozenset()
     # 뒤 실행에 밀려 claims 에서 **실제로 후보가 빠진** findings 의 위치. 폐기 사실을
     # 밖으로 내보내는 자리다 - 폐기는 여기서만 일어나는데 findings 는 그대로 리포트
     # LLM 에 넘어가고 운영 프롬프트가 그 수치를 "그대로 인용하라" 고 지시하므로,
@@ -283,12 +292,15 @@ def build_bundle(findings: list[dict]) -> Bundle:
     """감사 기록에서 가설 도구의 결과만 골라 Claim 사전으로 투영한다.
 
     `ran` 은 "호출됐다" 가 아니라 **"유효한 결과를 냈다"** 다. 인자 오류로 실패한
-    도구는 결과가 dict 가 아니라 오류 문자열이므로 들어오지 않는다 — 게이트는
-    그 도구를 계속 요구하고, 무한 재시도는 루프 한계가 잡는다.
+    도구는 결과가 dict 가 아니라 오류 문자열이므로 들어오지 않는다.
+
+    실패한 도구는 대신 `failed` 로 모은다. 예전에는 그냥 빠져서 '아직 안 돌린 축' 과
+    한 덩어리였고, 그 결과 게이트가 **방금 터진 도구를 다시 부르라고** 이름을 댔다.
     """
     claims: dict[str, Claim] = {}
     statuses: dict[str, str] = {}
     ran: set[str] = set()
+    crashed: set[str] = set()
     # 위치 -> 그 실행이 내놨다가 재실행에 밀려 나간 claim_id 들. **끝까지 살아남지
     # 못한 것이 있을 때만** 대체로 친다(아래에서 거른다). claim_id 는 그룹 인자와
     # 무관하게 만들어지므로(`domain/engine.py`) 인자가 같은 재실행은 같은 claim_id 를
@@ -303,6 +315,8 @@ def build_bundle(findings: list[dict]) -> Bundle:
     for i, f in enumerate(findings):
         result = f.get("result")
         if not _is_hypothesis_result(result):
+            if f.get("failed"):
+                crashed.add(f.get("tool", ""))
             continue
         tool = f.get("tool", "")
         ran.add(tool)
@@ -353,6 +367,8 @@ def build_bundle(findings: list[dict]) -> Bundle:
     surviving = set(claims)
     superseded = frozenset(i for i, lost in lost_at.items() if lost - surviving)
     return Bundle(claims=claims, statuses=statuses, ran=ran,
+                  # 뒤에 성공한 축은 실패가 아니다 - 우리는 그 축을 봤다.
+                  failed=frozenset(crashed - ran),
                   superseded=superseded,
                   dropped_claims={k: v for k, v in dropped_claims.items()
                                   if k not in surviving})

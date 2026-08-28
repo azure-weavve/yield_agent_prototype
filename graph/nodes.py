@@ -199,7 +199,10 @@ def tools_node(state: dict) -> dict:
         else:
             tool = TOOLS_BY_NAME.get(call["name"])
             args = call["args"]
+            crashed = False
             if tool is None:
+                # 등록되지 않은 이름이므로 **축의 실패가 아니다.** 실패로 세면
+                # 커버리지가 없는 축의 장애를 보고한다.
                 result = (f"오류: '{call['name']}' 는 존재하지 않는 tool 이다. "
                           f"사용 가능한 tool: {', '.join(TOOLS_BY_NAME)}. "
                           f"이 중에서 다시 선택해 호출하라.")
@@ -209,16 +212,25 @@ def tools_node(state: dict) -> dict:
                     result = tool.invoke(args)
                 except Exception as e:  # 인자 스키마 위반·조회 실패 등
                     result = _tool_error_message(call["name"], tool, e)
+                    crashed = True
             out_msgs.append(ToolMessage(
                 json.dumps(result, ensure_ascii=False),
                 tool_call_id=call["id"], name=call["name"],
             ))
-            findings.append({
+            finding = {
                 # args 는 **실행된** 인자다. LLM 이 보낸 것을 적으면 감사 기록이
                 # 실행과 다른 분모를 가리키고, 그것이 리포트의 근거 문장이 된다.
                 "loop": loop, "tool": call["name"], "args": args,
                 "result": result, "thought": ai.content or args.get("reason", ""),
-            })
+            }
+            if crashed:
+                # **실패를 여기서 표시한다.** `build_bundle` 은 findings 만 보는데,
+                # dict 가 아닌 결과가 실패만은 아니라(생략 메시지도 문자열이다)
+                # 오류 문자열의 모양으로는 가를 수 없다. 이 표시가 없으면 터진 축이
+                # '아직 안 돌린 축' 과 한 덩어리가 되고, 게이트는 방금 터진 도구를
+                # 다시 부르라고 이름을 댄다.
+                finding["failed"] = True
+            findings.append(finding)
 
     return {"messages": out_msgs, "findings": findings, **update}
 
@@ -327,6 +339,8 @@ def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) ->
           (전축 실행은 전제 조건이 아니다. 어디까지 봤는지는 coverage 로 나간다.)
       (3) 지목 없이 물러섰고 등록 가설을 다 돌렸는데 전부 '계산 불가' -> no_comparable_data
           ((2)와 달리 전축을 요구한다. "볼 것이 없었다" 는 부분 커버리지로는 참이 아니다.)
+      (3b) 같은 자리인데 못 본 이유가 **도구 실패** -> tool_failure
+          (사실은 (3)과 겹치지만 조치가 다르다: 적재 범위 확인이 아니라 인프라 확인.)
       (4) 루프 한계 -> inconclusive (승인이 아니라 '미확정')
       (5) 그 외 -> 반려. 무엇이 모자란지 그대로 돌려준다.
     """
@@ -341,6 +355,7 @@ def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) ->
     # 하나도 안 돌렸다고 보고한다. 커버리지는 **종료된 판정의 기록**이다.
     coverage = _coverage(bundle)
     unrun = coverage["unrun"]
+    failed = coverage["failed"]
     groups = bundle.ranked_groups()
     picked = evidence.find_group(groups, claim_id) if claim_id else None
 
@@ -407,9 +422,12 @@ def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) ->
     #     후자다. unrun 을 안 보면 metro 하나만 돌고도 (3)이 걸려, 데이터가 있는
     #     챔버·PPID·경로 축을 한 번도 안 건드린 채 엔지니어에게 틀린 조치가 나간다.
     #     `not claim_id` 는 (2)번과 같은 이유다 - 지목을 제출한 것은 물러선 것이 아니다.
+    #     `not failed` 도 같은 이유다 - 터진 축은 본 것이 아니므로 "볼 것이 없었다"
+    #     의 근거가 되지 못한다. 그 경우는 아래 (3b)가 다른 이름으로 받는다.
     ran_statuses = set(bundle.statuses.values())
-    if (ran_statuses and not unrun and not claim_id
-            and ran_statuses <= cm.NO_DATA_STATUSES):
+    uncomputable = ran_statuses <= cm.NO_DATA_STATUSES
+    if (ran_statuses and not unrun and not failed and not claim_id
+            and uncomputable):
         update["finalize_accepted"] = True
         update["finalize_status"] = "no_comparable_data"
         update["final_hypothesis"] = hypothesis
@@ -418,6 +436,25 @@ def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) ->
         _record_evidence(update, groups, picked)
         return (f"비교 가능한 데이터 없음 ({', '.join(sorted(ran_statuses))}): "
                 f"대조에 쓸 짝이 없어 계산이 성립하지 않는다. 리포팅으로 진행한다.")
+
+    # (3b) 도구 실패 - 남은 축이 없는데 본 것 중 계산된 것도 없고, 못 본 이유가
+    #      **실행 실패**다. (3)과 사실은 겹칠 수 있지만 **엔지니어의 조치가 다르다**:
+    #      (3)은 적재·추출 범위 확인이고 여기는 DB·서비스 상태 확인이다. 터진 축을
+    #      (3)으로 흘려 보내면 멀쩡한 적재를 뒤지게 만든다.
+    #
+    #      이 자리가 없으면 전 축이 터진 분석은 어떤 종료도 못 열고 루프 한계까지
+    #      왕복하다 `inconclusive`("확정 근거 없음")로 나가 진짜 사유가 사라진다.
+    #      `ran_statuses` 가 비어 있어도(전 축 실패) 성립한다 - 공집합은 부분집합이다.
+    #      `not unrun`·`not claim_id` 하한은 (3)과 같은 이유다.
+    if failed and not unrun and not claim_id and uncomputable:
+        update["finalize_accepted"] = True
+        update["finalize_status"] = "tool_failure"
+        update["final_hypothesis"] = hypothesis
+        update["final_confidence"] = conf
+        update["coverage"] = coverage
+        _record_evidence(update, groups, picked)
+        return (f"도구 실패로 미수행 ({', '.join(failed)}): 조회가 실패해 대조를 "
+                f"돌리지 못했다. 데이터가 없는 것이 아니다. 리포팅으로 진행한다.")
 
     # (4) 루프 한계 도달 강제 종료는 승인이 아니라 '미확정'
     if loop >= ya_config.MAX_LOOPS:
@@ -430,7 +467,7 @@ def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) ->
         return "미확정 (루프 한계 도달): 확정 근거 없이 리포팅으로 진행한다."
 
     # (5) 반려
-    return _gate_rejection(claim_id, claim, bundle, unrun, conf, conf_note, groups)
+    return _gate_rejection(claim_id, claim, bundle, coverage, conf, conf_note, groups)
 
 
 def _record_evidence(update: dict, groups, picked) -> None:
@@ -469,14 +506,30 @@ def _coverage(bundle) -> dict:
     `no_data` 를 따로 세는 이유: 계측(metro) 축은 계측 짝이 없으면
     `no_paired_stratum` 으로 끝난다. 호출은 됐지만 대조한 것은 없다는 뜻이라,
     `ran` 으로만 세면 커버리지가 실제보다 넓어 보인다.
+
+    `failed` 를 따로 세는 이유도 같은 종류다 - 실행 중 터진 축을 `unrun` 에 두면
+    커버리지가 "아직 안 봤다(더 볼 수 있다)" 로 읽히는데 사실은 "볼 수 없었다
+    (인프라를 확인하라)" 다. **등록 축으로 한정한다**: 번들의 `failed` 는 센서 등
+    가설이 아닌 도구의 실패도 담는다.
     """
     registered = {n for n in TOOLS_BY_NAME if n.startswith("hyp_")}
     return {
         "ran": sorted(bundle.ran),
-        "unrun": sorted(registered - bundle.ran),
+        "failed": sorted(registered & bundle.failed),
+        "unrun": sorted(registered - bundle.ran - bundle.failed),
         "no_data": sorted(t for t, st in bundle.statuses.items()
                           if st in cm.NO_DATA_STATUSES),
     }
+
+
+def _has_coverage_to_report(coverage: dict) -> bool:
+    """커버리지 줄을 붙일 만한 상태인가.
+
+    `ran` 만 보면 **전 축이 터진 장애 보고에서 커버리지가 통째로 사라진다** - 그때가
+    바로 "4개 축이 도구 실패로 미수행" 을 읽어야 할 자리다. 반대로 분석 루프에
+    들어가지도 않은 종료(이상 없음 등)에는 여전히 안 붙는다.
+    """
+    return bool(coverage.get("ran") or coverage.get("failed"))
 
 
 def _coverage_phrase(coverage: dict) -> str:
@@ -484,11 +537,16 @@ def _coverage_phrase(coverage: dict) -> str:
     ran = coverage.get("ran") or []
     unrun = coverage.get("unrun") or []
     no_data = coverage.get("no_data") or []
+    failed = coverage.get("failed") or []
     # `ran` 은 계산이 성립하지 않은 축도 포함한다. 그대로 세면 "2개 대조" 라고 해 놓고
     # 바로 뒤에서 그중 하나는 계산이 안 됐다고 말하는 엇갈린 줄이 된다 - 같은 줄 안에서
     # 바로 깎아 준다.
     hole = f"(그중 {len(no_data)}개는 계산 불가: {', '.join(no_data)})" if no_data else ""
-    parts = [f"등록 축 {len(ran) + len(unrun)}개 중 {len(ran)}개 대조{hole}"]
+    # 분모는 등록 축 전부다 - 실패 축을 빼면 "3개 중 3개 대조" 가 되어 장애가 사라진다.
+    parts = [f"등록 축 {len(ran) + len(unrun) + len(failed)}개 중 {len(ran)}개 대조{hole}"]
+    if failed:
+        # '안 돌린 축' 과 다른 문장으로 적는다. 조치가 다르다(인프라 확인 vs 더 보기).
+        parts.append(f"도구 실패로 미수행 {len(failed)}개: {', '.join(failed)}")
     if unrun:
         parts.append(f"안 돌린 축 {len(unrun)}개: {', '.join(unrun)}")
     return ". ".join(parts)
@@ -502,7 +560,7 @@ def _confidence(raw) -> tuple[float, str]:
                      f"0~1 사이 숫자로 다시 제출하라)")
 
 
-def _gate_rejection(claim_id, claim, bundle, unrun, conf, conf_note, groups) -> str:
+def _gate_rejection(claim_id, claim, bundle, coverage, conf, conf_note, groups) -> str:
     """왜 승인하지 않았는지를 LLM 이 다음 행동으로 옮길 수 있게 돌려준다."""
     if claim_id and claim is None:
         # **없는 것과 대체된 것을 가른다.** LLM 은 재실행 뒤에도 앞 실행의 claim_id 를
@@ -527,7 +585,7 @@ def _gate_rejection(claim_id, claim, bundle, unrun, conf, conf_note, groups) -> 
             return f"반려: {why} 통과 후보: {', '.join(valid)}."
         # 지목할 대상이 아예 없으면 목록 대신 다음 행동을 안내한다 - 여기서 멈추면
         # LLM 이 할 일을 못 찾아 루프 한계까지 왕복만 한다.
-        return f"반려: {why} {_no_candidate_action(bundle, unrun)}"
+        return f"반려: {why} {_no_candidate_action(bundle, coverage)}"
 
     if claim is not None:
         if not claim.passes:
@@ -537,7 +595,7 @@ def _gate_rejection(claim_id, claim, bundle, unrun, conf, conf_note, groups) -> 
             # 몰려 루프 한계까지 왕복하다 inconclusive 로 끝나던 자리다.
             if not bundle.passing():
                 return (f"반려: {claim.claim_id} 는 판별선을 넘지 못했다 "
-                        f"({claim.reject_reason}). {_no_candidate_action(bundle, unrun)}")
+                        f"({claim.reject_reason}). {_no_candidate_action(bundle, coverage)}")
             return (f"반려: {claim.claim_id} 는 판별선을 넘지 못했다 ({claim.reject_reason}). "
                     f"통과한 후보를 지목하라.")
         picked = evidence.find_group(groups, claim_id)
@@ -557,10 +615,10 @@ def _gate_rejection(claim_id, claim, bundle, unrun, conf, conf_note, groups) -> 
     if valid:
         return (f"반려: claim_id 를 제출하지 않았다. 결론은 도구가 발급한 claim_id 로 "
                 f"지목해야 한다. 통과 후보: {', '.join(valid)}.")
-    return f"반려: {_no_candidate_action(bundle, unrun)}"
+    return f"반려: {_no_candidate_action(bundle, coverage)}"
 
 
-def _no_candidate_action(bundle, unrun) -> str:
+def _no_candidate_action(bundle, coverage) -> str:
     """지목할 통과 후보가 하나도 없을 때 LLM 이 다음에 할 일.
 
     claim_id 를 지어낸 경로와 아예 안 낸 경로가 같은 막다른 상태에 도달하므로
@@ -575,15 +633,27 @@ def _no_candidate_action(bundle, unrun) -> str:
     # 없다 - 에는 한 번도 안 붙어, no_comparable_data(적재/추출 범위 확인)여야 할 것이
     # inconclusive(재시도)로 나간다.
     ran_statuses = set(bundle.statuses.values())
+    # **실패 축은 부를 대상이 아니다.** `unrun` 에 섞여 있던 동안에는, 방금 터진
+    # 도구를 다시 부르라고 이름을 대면서 동시에 실패 안내는 "다른 축이나 finalize"
+    # 라고 말하는 모순이 났다 - 안내와 게이트 중 어느 쪽을 따라도 막힌다.
+    unrun = coverage["unrun"]
+    failed = coverage["failed"]
+    uncomputable = ran_statuses <= cm.NO_DATA_STATUSES
     opens_no_signal = "no_signal" in ran_statuses                       # (2)
     opens_no_data = (bool(ran_statuses) and not unrun                    # (3)
-                     and ran_statuses <= cm.NO_DATA_STATUSES)
+                     and not failed and uncomputable)
+    opens_tool_failure = bool(failed) and not unrun and uncomputable     # (3b)
     step_back = (" 지목할 것이 없어 물러설 때는 claim_id 를 비우고 finalize 하라."
-                 if opens_no_signal or opens_no_data else "")
+                 if opens_no_signal or opens_no_data or opens_tool_failure else "")
     # 축이 0개 돌아간 상태를 **먼저** 가른다. 아래 "하나를 더 보거나" 는 사실과 안 맞고,
     # 2단 센서는 step_seq 를 요구하는데 그 값을 낼 근거가 아직 없다. (이 분기가 맨
     # 아래에 있을 때는 unrun 이 항상 비어 있지 않아 도달할 수 없는 죽은 코드였다.)
     if not bundle.ran:
+        # 전 축이 터졌으면 부를 이름이 하나도 없다. 그대로 두면 빈 목록을 내밀며
+        # "먼저 대조하라" 고 해, LLM 이 할 일을 못 찾고 루프 한계까지 왕복한다.
+        if not unrun:
+            return (f"등록 가설이 전부 도구 실패로 끝났다 ({', '.join(failed)}). "
+                    f"부를 수 있는 축이 남아 있지 않다.{step_back}")
         return (f"그룹 대조 근거가 없다. 가설 도구로 두 그룹을 먼저 대조하라: "
                 f"{', '.join(unrun)}.")
     if unrun:
@@ -593,6 +663,11 @@ def _no_candidate_action(bundle, unrun) -> str:
         return (f"통과한 후보가 없다. 아직 안 돌린 가설 도구: {', '.join(unrun)}. "
                 f"이 중 하나를 더 보거나, 2단 센서로 근거를 좁혀라 - 전부 돌릴 "
                 f"의무는 없다.{step_back}")
+    if failed:
+        # "다 돌렸다" 가 거짓인 자리다 - 못 돈 축이 있고 그 이유가 실패다.
+        return (f"판별선을 넘은 후보가 없다. 축 {len(failed)}개는 도구 실패로 미수행이다 "
+                f"({', '.join(failed)}). 2단 센서로 근거를 더 좁히거나 대조군을 "
+                f"다시 보라.{step_back}")
     return ("등록 가설을 다 돌렸으나 판별선을 넘은 후보가 없다. "
             "2단 센서로 근거를 더 좁히거나 대조군을 다시 보라." + step_back)
 
@@ -644,7 +719,7 @@ def report_node(state: dict) -> dict:
             claims=claims,
             # 커버리지 줄을 소음이라 지운 보고서에는 프롬프트에도 넘기지 않는다 -
             # 두 렌더링이 엇갈리면 "이상 없음" 보고서에서 LLM 이 안 본 축을 나열한다.
-            coverage=coverage if coverage.get("ran") else None,
+            coverage=coverage if _has_coverage_to_report(coverage) else None,
         )
     except Exception as e:
         # 여기가 마지막 노드다 - 예외를 내보내면 분석을 다 해 놓고 결과를 전부 버린다.
@@ -672,7 +747,7 @@ def report_node(state: dict) -> dict:
     # 맡기면 운영 경로에서만 조용히 사라진다.
     # 하나도 안 돌렸으면 붙이지 않는다 - "4개 중 0개 대조" 는 사실이지만 셀 것이
     # 없는 보고서(이상 없음 등)에서는 소음일 뿐이다.
-    if coverage.get("ran"):
+    if _has_coverage_to_report(coverage):
         report += f"\n[커버리지] {_coverage_phrase(coverage)}"
     # [대체됨] 줄도 코드가 붙인다. LLM 프롬프트에만 표시하면 산문이 죽는 경로(운영
     # 클라이언트 실패)에서 대체 사실이 통째로 사라지고, 리포트만 받아 보는 사람은

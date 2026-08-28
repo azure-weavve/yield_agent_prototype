@@ -468,3 +468,44 @@ def test_a_revived_claim_is_not_listed_as_dropped():
     assert b.dropped_claims == {}
     assert set(b.claims) == {CAND_PASS["claim_id"]}
     assert b.superseded == frozenset()
+
+
+# ---------------------------------------------- 크래시한 축은 '안 돌린' 축이 아니다
+def _crash(tool):
+    """tools_node 가 도구 실패를 적는 모양 - result 는 오류 문자열이고 failed 가 붙는다."""
+    return {"loop": 1, "tool": tool, "args": {},
+            "result": f"오류: {tool} 실행 실패 (RuntimeError: DB 연결 끊김). ",
+            "failed": True, "thought": "t"}
+
+
+def test_a_crashed_tool_is_separated_from_the_ones_never_tried():
+    """실패한 도구를 ran 에서 빼는 것만으로는 부족하다 - 따로 셀 수 있어야 한다.
+
+    실패 축이 '안 돌린 축' 과 구분되지 않으면 게이트는 방금 터진 도구를 다시
+    부르라고 이름을 대고, 리포트는 시도조차 안 한 것처럼 적는다. 조치가 다르다
+    (인프라 확인 vs 축을 더 보기).
+    """
+    b = evidence.build_bundle([_crash("hyp_ppid_commonality")])
+    assert b.ran == set()
+    assert b.failed == {"hyp_ppid_commonality"}
+
+
+def test_a_crashed_tool_that_later_succeeded_is_not_failed():
+    """분기 반대쪽 - 재실행이 결과를 냈으면 그 축은 봤다. 실패로 남기면 거짓이다."""
+    b = evidence.build_bundle([
+        _crash("hyp_eqp_ch_commonality"),
+        _finding("hyp_eqp_ch_commonality", "eqp_ch_commonality", "ok", [CAND_PASS]),
+    ])
+    assert b.ran == {"hyp_eqp_ch_commonality"}
+    assert b.failed == frozenset()
+
+
+def test_an_error_string_without_the_failed_mark_is_not_counted_as_a_crash():
+    """실패 표시는 tools_node 가 붙인다 - 문자열 모양으로 넘겨짚지 않는다.
+
+    'finalize 판정 뒤의 잔여 호출 생략' 같은 문자열 결과도 dict 가 아니다.
+    그것까지 실패로 세면 커버리지가 없는 장애를 보고한다.
+    """
+    b = evidence.build_bundle([_finding("hyp_ppid_commonality", None, None, None,
+                                        result="분석 종료로 생략")])
+    assert b.failed == frozenset()

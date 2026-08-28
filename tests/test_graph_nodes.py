@@ -1949,3 +1949,190 @@ def test_a_bad_injected_denominator_is_not_blamed_on_the_llm():
         assert "다른 축" in msg          # 네가 못 고치는 것을 고치라고 하지 않는다
         assert "다시 호출하라" not in msg
         assert "step_seq" not in msg.split(").")[-1]   # 안내에는 안 나온다
+
+
+# ------------------------------------------- 실패 축: '안 돌린 축' 과 구분한다
+def _crashed(tool):
+    """도구가 실행 중 터졌을 때 tools_node 가 남기는 감사 기록."""
+    return {"loop": 1, "tool": tool, "args": {"reason": "r"},
+            "result": f"오류: {tool} 실행 실패 (RuntimeError: DB 연결 끊김). ",
+            "failed": True, "thought": "r"}
+
+
+_ALL_CRASHED = [_crashed(t) for t in
+                ["hyp_eqp_ch_commonality", "hyp_ppid_commonality",
+                 "hyp_step_passage_commonality", "hyp_metro_commonality"]]
+
+
+def test_tools_node_marks_a_crashed_tool_in_the_audit_record():
+    """실패 표시는 실행 자리에서 붙어야 한다 - 오류 문자열 모양으로 넘겨짚지 않는다.
+
+    `build_bundle` 은 findings 만 본다. 표시가 없으면 실패와 "분석 종료로 생략"
+    같은 다른 문자열 결과를 가를 방법이 없다.
+    """
+    from domain import engine
+
+    original = engine.evaluate
+    engine.evaluate = _boom
+    try:
+        ai = AIMessage(content="", tool_calls=[
+            {"name": "hyp_eqp_ch_commonality", "args": {"reason": "챔버"}, "id": "c1"}])
+        out = nodes.tools_node(_pipeline_state(ai))
+    finally:
+        engine.evaluate = original
+
+    assert out["findings"][0]["failed"] is True
+
+
+def test_a_successful_tool_carries_no_failure_mark():
+    """분기 반대쪽 - 성공한 실행에 표시가 붙으면 멀쩡한 축이 장애로 보고된다."""
+    ai = AIMessage(content="", tool_calls=[
+        {"name": "hyp_eqp_ch_commonality", "args": {"reason": "챔버"}, "id": "c1"}])
+    out = nodes.tools_node(_pipeline_state(ai))
+    assert "failed" not in out["findings"][0]
+
+
+def test_coverage_counts_crashed_axes_apart_from_the_ones_never_tried():
+    """실패 축이 unrun 에 섞이면 커버리지가 '아직 안 봤다' 로 거짓말한다.
+
+    조치가 다르다: unrun 은 "더 볼 수 있다", 실패는 "인프라를 확인하라".
+    """
+    bundle = nodes.evidence.build_bundle(
+        [_crashed("hyp_metro_commonality"), _ALL_NO_PAIR[0]])
+    coverage = nodes._coverage(bundle)
+    assert coverage["failed"] == ["hyp_metro_commonality"]
+    assert "hyp_metro_commonality" not in coverage["unrun"]
+    assert "hyp_ppid_commonality" in coverage["unrun"]      # 진짜 안 돌린 축은 남는다
+    phrase = nodes._coverage_phrase(coverage)
+    assert "도구 실패" in phrase
+    # 분모는 등록 축 전부다 - 실패 축을 빼면 "3개 중 1개" 가 되어 장애가 사라진다.
+    assert "등록 축 4개 중 1개 대조" in phrase
+
+
+def test_gate_does_not_order_the_llm_to_call_back_the_tools_that_just_crashed():
+    """안내와 게이트가 모순되면 안 된다 - 방금 터진 도구 이름을 다시 대면 라이브락이다.
+
+    도구 실패 안내(`_tool_error_message`)는 "다른 축이나 finalize" 라고 하는데,
+    그것을 따른 LLM 이 게이트에서 반려되면서 **같은 도구를 부르라**는 목록을 받았다.
+    실패 축이 `unrun` 에 남아 있던 것이 원인이다.
+    """
+    ai = _ai_finalize(0.9, claim_id="지어낸_ID")
+    out = nodes.tools_node({"messages": [ai], "loop_count": 3,
+                            "findings": list(_ALL_CRASHED)})
+    msg = out["messages"][0].content
+    assert "finalize_accepted" not in out
+    assert "가설 도구로 두 그룹을 먼저 대조하라" not in msg   # 부를 것이 없다
+    assert "claim_id 를 비우" in msg                          # 물러설 길은 열려 있다
+
+
+def test_gate_declares_tool_failure_when_every_axis_crashed():
+    """전 축이 터지면 종료 사유는 '도구 실패' 다 - 루프 한계까지 왕복시키지 않는다.
+
+    `no_comparable_data`("적재 범위를 확인하라")로 내보내면 **틀린 조치**다.
+    진실은 조회가 실패한 것(인프라)이지 볼 데이터가 없는 것이 아니다.
+    """
+    ai = _ai_finalize(0.2, hypothesis="", claim_id="")
+    out = nodes.tools_node({"messages": [ai], "loop_count": 1,
+                            "findings": list(_ALL_CRASHED)})
+    assert out["finalize_accepted"] is True
+    assert out["finalize_status"] == "tool_failure"
+    assert out["coverage"]["failed"] == sorted(f["tool"] for f in _ALL_CRASHED)
+
+
+def test_gate_calls_a_partial_crash_a_crash_not_missing_data():
+    """일부만 터지고 나머지가 계산 불가여도 사유는 '도구 실패' 다.
+
+    두 사실이 다 참이지만 조치가 갈린다 - 축을 다 보지 못한 채 "적재 범위를
+    확인하라" 를 내보내면 엔지니어는 멀쩡한 적재를 뒤진다. 막고 있는 것이 먼저다.
+    """
+    findings = [_crashed("hyp_eqp_ch_commonality"), _crashed("hyp_ppid_commonality"),
+                _ALL_NO_PAIR[2], _ALL_NO_PAIR[3]]
+    _assert_covers_every_hypothesis(findings)
+    ai = _ai_finalize(0.2, hypothesis="", claim_id="")
+    out = nodes.tools_node({"messages": [ai], "loop_count": 1, "findings": findings})
+    assert out["finalize_status"] == "tool_failure"
+
+
+def test_gate_does_not_declare_tool_failure_while_axes_remain_unrun():
+    """반대쪽 경계 - 아직 안 돌린 축이 있으면 도구 실패로 끝내지 않는다.
+
+    한 축이 터졌다고 물러서면 데이터가 있는 축을 한 번도 안 건드린 채 인프라
+    점검을 시킨다. (3)번이 전축을 요구하는 것과 같은 이유다.
+    """
+    ai = _ai_finalize(0.2, hypothesis="", claim_id="")
+    out = nodes.tools_node({"messages": [ai], "loop_count": 1,
+                            "findings": [_crashed("hyp_metro_commonality")]})
+    assert "finalize_accepted" not in out
+
+
+def test_gate_does_not_read_a_named_claim_as_stepping_back_on_tool_failure():
+    """(2)·(3)에 붙인 하한과 대칭 - 지목을 제출한 것은 물러선 것이 아니다."""
+    ai = _ai_finalize(0.95, claim_id="eqp_ch_commonality:chamber:CC002000:NOPE")
+    out = nodes.tools_node({"messages": [ai], "loop_count": 1,
+                            "findings": list(_ALL_CRASHED)})
+    assert "finalize_accepted" not in out
+
+
+def test_gate_still_declares_no_comparable_data_when_nothing_crashed():
+    """실패 축이 하나도 없으면 (3)은 그대로 열린다 - 새 분기가 옛 판정을 먹으면 안 된다."""
+    _assert_covers_every_hypothesis(_ALL_NO_PAIR)
+    ai = _ai_finalize(0.2, hypothesis="", claim_id="")
+    out = nodes.tools_node({"messages": [ai], "loop_count": 1,
+                            "findings": list(_ALL_NO_PAIR)})
+    assert out["finalize_status"] == "no_comparable_data"
+
+
+def test_report_node_reports_the_crashed_axes_even_though_nothing_ran():
+    """전 축이 터지면 `ran` 이 비지만, 그때야말로 커버리지 줄이 필요하다.
+
+    "셀 것이 없는 보고서에는 붙이지 않는다" 는 규칙을 `ran` 만으로 판정하면
+    장애 보고에서 커버리지가 통째로 사라진다.
+    """
+    out = nodes.report_node({
+        "target_wafers": ["W2406_02"], "target_source": "auto",
+        "target_group": ["W2406_02"], "status_summary": "불량 3장",
+        "findings": list(_ALL_CRASHED), "finalize_status": "tool_failure",
+    })
+    assert "[커버리지]" in out["report"]
+    assert "도구 실패" in out["report"]
+
+
+def test_report_node_marks_tool_failure_conclusion():
+    """도구 실패 종료의 결론은 '적재 범위' 가 아니라 '인프라' 를 가리켜야 한다.
+
+    `no_comparable_data`("볼 데이터가 없다 -> 적재/추출 범위 확인")와 조치가 다르다.
+    문구가 같으면 엔지니어가 멀쩡한 적재를 뒤진다.
+    """
+    out = nodes.report_node({
+        "target_wafers": ["W2406_02"], "target_source": "manual",
+        "target_group": ["W2406_02"], "status_summary": "요약",
+        "findings": list(_ALL_CRASHED), "final_hypothesis": "", "final_confidence": 0.2,
+        "finalize_status": "tool_failure",
+    })
+    assert "분석 미수행" in out["report"]
+    assert "적재 범위" not in out["report"]
+    assert "미확정" not in out["report"]
+
+
+def test_gate_does_not_claim_every_axis_ran_when_some_of_them_crashed():
+    """반려 안내의 "등록 가설을 다 돌렸다" 는 실패 축이 있으면 거짓이다.
+
+    돌아간 축이 계산은 됐지만 약한 후보만 냈고 나머지가 터진 상태 - (3b)는 안
+    열린다(계산이 성립한 축이 있다). 그래도 안내는 사실이어야 하고, 방금 터진
+    도구를 다시 부르라고 이름을 대서도 안 된다.
+    """
+    # status 는 no_signal 이 아니라 ok 다 - no_signal 이면 (2)가 열려 승인으로 빠져
+    # 나가고, 이 테스트는 반려 안내를 한 글자도 못 본 채 초록이 된다.
+    weak_ok = {**_WEAK_IN_SILENCE,
+               "result": {**_WEAK_IN_SILENCE["result"], "status": "ok"}}
+    findings = [weak_ok, _crashed("hyp_ppid_commonality"),
+                _crashed("hyp_step_passage_commonality"),
+                _crashed("hyp_metro_commonality")]
+    _assert_covers_every_hypothesis(findings)
+    ai = _ai_finalize(0.9, claim_id="")
+    out = nodes.tools_node({"messages": [ai], "loop_count": 3, "findings": findings})
+    assert "finalize_accepted" not in out          # 반려 경로를 실제로 탔는지 못박는다
+    msg = out["messages"][0].content
+    assert "등록 가설을 다 돌렸으나" not in msg
+    assert "도구 실패로 미수행" in msg
+    assert "아직 안 돌린 가설 도구" not in msg    # 부를 수 있는 축은 없다
