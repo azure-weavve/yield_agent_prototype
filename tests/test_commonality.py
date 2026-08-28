@@ -874,3 +874,97 @@ def test_early_returns_still_carry_the_top_level_keys(build_db, tmp_path, monkey
     assert res["fdr_table"] == []
     assert res["p_family_wise"] is None
     assert res["p_family_wise_min_possible"] is None
+
+
+# ------------------------------- 귀무 참조집합은 표본 크기가 같은 회차로 제한한다
+# 계측 샘플링이 걸리면 회차마다 **계측된 타깃 장수(nt)** 가 달라진다. 관측 후보는 큰
+# nt 로 만들어진 것인데 귀무 회차 대부분은 nt 가 작아 후보가 아예 안 생기고, 그것이
+# "안 넘었다" 로 세어져 p 가 작아진다. 무신호 합성 데이터에서 p<=0.50 이 명목 50% 대신
+# 93.3% 로 나오던 것이 이 증상이다 (2026-08-28 실측).
+
+_K = ("metro", "S001", "TH", "ge")
+
+
+def _fixed_null(sizes_by_t, scores_by_t):
+    """라벨의 타깃 마스크로 회차를 구분하는 score_fn. 회차별 값을 직접 박는다."""
+    def _fn(labels):
+        t = labels[0][1]
+        scores = {_K: scores_by_t[t]} if t in scores_by_t else {}
+        sizes = {_K: sizes_by_t[t]} if t in sizes_by_t else {}
+        return scores, sizes
+    return _fn
+
+
+def test_null_reference_set_drops_rounds_the_candidate_could_not_arise_in():
+    """후보가 생길 수 없었던 회차는 '안 넘었다' 가 아니라 **참조 표본이 아니다.**
+
+    1 stratum · 타깃 2 · 대조군 2 -> 섞을 수 있는 배치 6개 중 관측을 뺀 5회차.
+    그중 표본 크기가 관측과 같은 회차는 2개뿐이고 그 안에서 1번 넘는다.
+      옛 계산: (1+1)/(5+1) = 0.333   <- 못 만들어진 회차 3개를 미달로 셌다
+      새 계산: (1+1)/(2+1) = 0.667
+    """
+    masks = [("L1", 0b0011, 0b1100)]
+    fn = _fixed_null(sizes_by_t={0b0101: 2, 0b1001: 2},          # 나머지 3회차는 nt 부족
+                     scores_by_t={0b0101: 0.9, 0b1001: 0.1})
+    out = cm._null_distribution(masks, 0b1111, {_K: 0.5}, {_K: 2}, 100, 1, fn)
+    assert out["n_used"] == 5
+    assert out["n_reference"][_K] == 2
+    assert abs(out["p"][_K] - 2 / 3) < 1e-9
+
+
+def test_a_candidate_with_no_comparable_round_is_not_evidence():
+    """참조 회차가 0개면 판단 근거가 없다 - p 도 바닥값도 1.0 이어야 한다.
+
+    "비교할 것이 없었다" 를 작은 p 로 내보내면 근거가 없는 후보가 순위 1등이 된다.
+    """
+    masks = [("L1", 0b0011, 0b1100)]
+    out = cm._null_distribution(masks, 0b1111, {_K: 0.5}, {_K: 7},
+                                100, 1, _fixed_null({}, {}))
+    assert out["n_reference"][_K] == 0
+    assert out["p"][_K] == 1.0
+    assert out["p_min_possible"][_K] == 1.0
+
+
+def test_conditioning_is_inert_when_the_sample_size_never_moves():
+    """분기 반대쪽 - 회차마다 nt 가 같으면 옛 계산과 **완전히 같아야** 한다.
+
+    계측이 전수이거나 고정 슬롯이면 nt 가 안 움직인다. 그 조건에서 값이 바뀌면
+    결함이 없는 자리까지 건드린 것이다 (실측에서도 전수/고정 슬롯은 불변이었다).
+    """
+    masks = [("L1", 0b0011, 0b1100)]
+    all_t = [0b0101, 0b1001, 0b0110, 0b1010, 0b1100]
+    fn = _fixed_null(sizes_by_t={t: 2 for t in all_t},
+                     scores_by_t={t: (0.9 if t == 0b0101 else 0.1) for t in all_t})
+    out = cm._null_distribution(masks, 0b1111, {_K: 0.5}, {_K: 2}, 100, 1, fn)
+    assert out["n_reference"][_K] == 5
+    assert out["p"][_K] == 2 / 6                     # (1+1)/(5+1) - 옛 값 그대로
+    assert out["p_min_possible"][_K] == 1 / 6
+
+
+def test_size_map_counts_every_computable_key_not_just_the_scoring_ones():
+    """참조 여부는 **계산이 성립했는가**로 가른다 - MIN_SCORE 절단과 섞으면 안 된다.
+
+    절단에 걸린 회차는 '진짜로 못 넘은' 회차라 분모에 남아야 한다. 그것까지 빼면
+    과보정이다(실측: p<=0.05 가 명목 5.0% 대신 0.6% 로 주저앉는다).
+    """
+    agg = {
+        ("a",): {"a": 2, "b": 1, "c": 3, "d": 1},    # score = 2/3 - 3/4 < 0 -> 절단
+        ("b",): {"a": 3, "b": 0, "c": 0, "d": 4},    # score = 1.0 -> 살아남는다
+        ("c",): {"a": 0, "b": 0, "c": 2, "d": 2},    # 타깃이 없다 -> 계산 불가
+    }
+    assert set(cm._score_map(agg)) == {("b",)}
+    assert cm._size_map(agg) == {("a",): 3, ("b",): 3}
+
+
+def test_family_wise_floor_does_not_inherit_the_narrowed_reference_set():
+    """family-wise 바닥은 **회차 전부**에서 나온다 - 후보별 바닥과 다른 값이다.
+
+    후보별 바닥은 좁혀진 참조집합에서 나오므로 항상 이보다 크거나 같다. 둘을 같은
+    값으로 두면 family-wise p 가 바닥에 닿지 않았는데 닿은 것처럼 보고된다.
+    """
+    masks = [("L1", 0b0011, 0b1100)]
+    fn = _fixed_null(sizes_by_t={0b0101: 2, 0b1001: 2},
+                     scores_by_t={0b0101: 0.9, 0b1001: 0.1})
+    out = cm._null_distribution(masks, 0b1111, {_K: 0.5}, {_K: 2}, 100, 1, fn)
+    assert out["p_family_wise_min_possible"] == 1 / 6      # 5 회차 전부
+    assert out["p_min_possible"][_K] == 1 / 3              # 참조 2 회차

@@ -307,6 +307,24 @@ def _score_map(agg) -> dict[tuple, float]:
     return out
 
 
+def _size_map(agg) -> dict[tuple, int]:
+    """후보키 -> 그 회차의 타깃 표본 크기(nt). **점수와 달리 절단을 걸지 않는다.**
+
+    `_null_distribution` 이 귀무 참조집합을 "관측과 같은 표본 크기의 회차" 로 제한할
+    때 쓰는 값이다. 여기서 MIN_SCORE 절단까지 같이 걸면 **'진짜로 못 넘은 회차'** 가
+    분모에서도 빠져 과보정이 된다(무신호 데이터에서 p<=0.05 가 명목 5.0% 대신 0.6%
+    로 주저앉는다 - 2026-08-28 실측). 여기서 거르는 것은 **계산 자체가 성립하지 않는
+    회차**(타깃이나 대조군이 통째로 빈 회차)뿐이다.
+    """
+    out: dict[tuple, int] = {}
+    for key, e in agg.items():
+        nt, nc = e["a"] + e["b"], e["c"] + e["d"]
+        if nt == 0 or nc == 0:
+            continue
+        out[key] = nt
+    return out
+
+
 def _bits_of(mask: int) -> list[int]:
     """마스크를 개별 비트 목록으로. 순열이 이 목록에서 뽑는다."""
     out = []
@@ -383,10 +401,12 @@ def _iter_label_sets(strata_masks, n_total: int, n_iter: int, rng, seen: int):
 
 
 def _null_distribution(strata_masks, seen, observed: dict[tuple, float],
+                       observed_sizes: dict[tuple, int],
                        n_iter: int, seed: int, score_fn):
     """라벨을 섞어 귀무 분포를 재고 후보별 p 를 낸다. **후보의 생김새는 모른다.**
 
-    `score_fn(labels) -> {후보키: score}` 만 받으므로, 후보가 (스텝, 설비) 든
+    `score_fn(labels) -> ({후보키: score}, {후보키: 타깃 표본 크기})` 를 받으므로,
+    후보가 (스텝, 설비) 든
     (스텝, item, 분할점, 방향) 이든 이 루프는 그대로다. metro 도구가 이 함수를
     같이 쓴다 (`tools/metro_commonality.py`) — 통계 루프를 두 벌로 두면 한쪽만
     고쳐졌을 때 두 도구의 p 가 조용히 다른 뜻이 된다.
@@ -396,8 +416,33 @@ def _null_distribution(strata_masks, seen, observed: dict[tuple, float],
     귀무에도 남아, 상관 때문에 가짜가 무더기로 나오는 현상이 기준선에 자동
     반영된다 (설계 §2-5).
 
-    p = (귀무가 관측 이상인 횟수 + 1) / (섞은 횟수 + 1). 1을 더하는 이유는 0번
+    p = (귀무가 관측 이상인 횟수 + 1) / (**참조 회차** + 1). 1을 더하는 이유는 0번
     넘었다고 p = 0 이 될 수는 없기 때문이다.
+
+    **참조 회차 = 표본 크기가 관측과 같은 회차.** 예전에는 섞은 회차 전부였는데,
+    계측 샘플링이 걸리면 회차마다 계측된 타깃 장수(nt)가 달라진다 - 관측 후보는 큰
+    nt 로 만들어진 것인데 귀무 회차 대부분은 nt 가 작아 후보가 **아예 안 생기고**,
+    없는 것을 `-inf` 로 읽어 "안 넘었다" 로 셌다. 정의되지 않은 것과 넘지 못한 것이
+    같은 취급을 받아 귀무가 약해 보이고 p 가 작아진다.
+
+    실측(무신호 합성 데이터, 4 lot x 타깃 5 x 대조군 20, lot 당 3장 계측):
+
+        추정량                p<=0.05   p<=0.10   p<=0.50
+        명목                    5.0%     10.0%     50.0%
+        섞은 회차 전부(옛)      6.2%     15.4%     93.3%   <- 순위가 못 쓰게 된다
+        표본 크기 일치(현재)    1.4%      6.4%     55.5%   <- 보수적 쪽으로 치우친다
+
+    **꼬리(p<=0.05)보다 몸통이 심하게 망가지는 것이 핵심이다.** `graph/evidence.py`
+    의 `_rank_key` 는 순열 p 를 **축을 가로지르는 유일한 자**로 쓰는데, 계측 축의 p
+    만 0 쪽으로 압축되면 metro 가 구조적으로 다른 축을 이긴다 - 그 순위 규칙이
+    막으려던 현상이 통계 쪽에서 되살아난다.
+
+    대가는 검정력이다. 참조 회차가 줄어 `p_min_possible` 이 올라간다(위 실측에서
+    300회 -> 평균 68회). 그래서 **바닥값을 후보마다 따로 싣는다** - 스칼라 하나로는
+    후보마다 다른 바닥을 말할 수 없다. 참조 회차가 0이면 판단 근거가 없다는 뜻이라
+    p 도 바닥도 1.0 이다("비교할 것이 없었다" 를 작은 p 로 내보내면 안 된다).
+
+    전수 계측이나 고정 슬롯처럼 **nt 가 안 움직이는 조건에서는 옛 값과 완전히 같다.**
     """
     n_total = _n_permutations_total(strata_masks, seen)
     exhaustive = n_total <= PERM_EXHAUSTIVE_MAX
@@ -407,22 +452,36 @@ def _null_distribution(strata_masks, seen, observed: dict[tuple, float],
 
     rng = random.Random(seed)
     exceed = {k: 0 for k in observed}
+    reference = {k: 0 for k in observed}
     null_counts = {t: 0 for t in FDR_THRESHOLDS}
     null_max: list[float] = []
 
     for labels in _iter_label_sets(strata_masks, n_total, n_iter, rng, seen):
-        null_scores = score_fn(labels)
+        null_scores, null_sizes = score_fn(labels)
         for key, obs in observed.items():
+            # 표본 크기가 다른 회차는 그 후보의 귀무 표본이 아니다. 관측을 못 넘은
+            # 것이 아니라 **같은 것을 재지 않았다.**
+            if null_sizes.get(key) != observed_sizes.get(key):
+                continue
+            reference[key] += 1
             if null_scores.get(key, float("-inf")) >= obs:
                 exceed[key] += 1
+        # FDR·family-wise 는 후보 하나가 아니라 **목록 전체**를 재는 값이라 회차를
+        # 안 거른다 - "이 회차에 임계를 넘은 후보가 몇이었나" 가 물음이기 때문이다.
         vals = list(null_scores.values())
         for t in FDR_THRESHOLDS:
             null_counts[t] += sum(1 for v in vals if v >= t)
         null_max.append(max(vals) if vals else 0.0)
 
     return {
-        "p": {k: (n + 1) / (n_used + 1) for k, n in exceed.items()},
-        "p_min_possible": 1 / (n_used + 1),
+        "p": {k: (n + 1) / (reference[k] + 1) for k, n in exceed.items()},
+        "p_min_possible": {k: 1 / (r + 1) for k, r in reference.items()},
+        # family-wise 는 회차별 **최댓값**을 재므로 참조집합을 안 좁힌다 - 바닥도
+        # 회차 전부에서 나온다. 후보별 바닥의 최솟값과 **다른 값**이다(그쪽은 좁혀진
+        # 참조집합에서 나오므로 항상 이보다 크거나 같다). 두 도구가 같은 식을 각자
+        # 쓰면 한쪽만 고쳐졌을 때 조용히 갈리므로 여기서 한 번만 낸다.
+        "p_family_wise_min_possible": 1 / (n_used + 1),
+        "n_reference": reference,
         "n_permutations_total": n_total,
         "n_used": n_used,
         "null_counts": null_counts,
@@ -431,7 +490,8 @@ def _null_distribution(strata_masks, seen, observed: dict[tuple, float],
 
 
 def _permutation_stats(strata_masks, passed, answer, seen, universal,
-                       observed: dict[tuple, float], n_iter: int, seed: int):
+                       observed: dict[tuple, float],
+                       observed_sizes: dict[tuple, int], n_iter: int, seed: int):
     """EQP_CH·PPID·step_passage 축의 귀무 분포. 집계를 `_null_distribution` 에 넘긴다.
 
     **귀무가 실제와 같은 함수(`_aggregate` + `_score_map`)를 탄다.** 귀무를 다른
@@ -439,9 +499,10 @@ def _permutation_stats(strata_masks, passed, answer, seen, universal,
     """
     def _scores(labels):
         null_agg, _ = _aggregate(labels, passed, answer, seen, universal)
-        return _score_map(null_agg)
+        return _score_map(null_agg), _size_map(null_agg)
 
-    return _null_distribution(strata_masks, seen, observed, n_iter, seed, _scores)
+    return _null_distribution(strata_masks, seen, observed, observed_sizes,
+                              n_iter, seed, _scores)
 
 
 def _fdr_table(scores: dict, null_counts: dict, n_used: int) -> list[dict]:
@@ -598,7 +659,8 @@ def find_commonality(target_wafers: list[str], control_wafers: list[str],
     perm = None
     if n_permutations and scores:
         perm = _permutation_stats(strata_masks, passed, answer, seen_bits,
-                                  universal, scores, n_permutations, PERM_SEED)
+                                  universal, scores, _size_map(agg),
+                                  n_permutations, PERM_SEED)
 
     candidates = []
     for key, score in scores.items():
@@ -628,7 +690,9 @@ def find_commonality(target_wafers: list[str], control_wafers: list[str],
         }
         if perm:
             cand["p_permutation"] = round(perm["p"][key], 4)
-            cand["p_min_possible"] = round(perm["p_min_possible"], 4)
+            # **후보마다 다르다.** 참조집합이 표본 크기가 같은 회차로 좁혀지므로
+            # 바닥값도 후보마다 갈린다 - 스칼라 하나로는 말할 수 없다.
+            cand["p_min_possible"] = round(perm["p_min_possible"][key], 4)
             cand["n_permutations_total"] = perm["n_permutations_total"]
         for col in all_cols:               # legend 컬럼값을 이름별로 (미해당은 None)
             cand[col] = colvals.get(col)
@@ -672,7 +736,8 @@ def find_commonality(target_wafers: list[str], control_wafers: list[str],
         # 1등의 p 도 후보별 p 와 같은 식이라 같은 바닥값에 걸린다. 근거 줄이
         # 교정해 주는 후보별 p 와 달리 이건 최상위 값이라, 숫자를 함께 보내지
         # 않으면 소표본의 바닥값이 "우연일 확률" 로 오독된다.
-        "p_family_wise_min_possible": round(perm["p_min_possible"], 4) if perm else None,
+        "p_family_wise_min_possible": (round(perm["p_family_wise_min_possible"], 4)
+                                       if perm else None),
         "meta": {
             # 시간 교락 진단용 — 두 그룹의 처리 시기가 어긋나면 '공통 설비'가 허상일 수 있다
             "target_time_range": _ts(rows, t_seen_all),

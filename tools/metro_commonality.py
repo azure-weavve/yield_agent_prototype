@@ -76,39 +76,48 @@ lot 마다 달라진다 — 어떤 lot 이 전 스텝을 같은 슬롯으로만 
 4행처럼 주저앉는다. 그래서 `p_min_possible` 을 후보마다 싣는 것이 metro 에서는 특히
 중요하다(작은 표본의 바닥값을 "약한 신호" 로 오독하는 것을 막는다).
 
-⚠️ 열린 결함: 샘플링 조건에서 p_permutation 이 작게 나온다 (2026-08-12)
-------------------------------------------------------------------------
+✅ 고침: 샘플링 조건에서 p_permutation 이 작게 나오던 것 (2026-08-12 발견 -> 2026-08-28 교정)
+------------------------------------------------------------------------------
 
-**신호가 전혀 없는 합성 데이터**에서 무신호 조합의 p 분포를 재 보면, 계측 샘플링이
-걸린 조건에서 작은 p 가 명목보다 약 2배 나온다.
-
-```
-  조건                          후보 수     p<=0.05     p<=0.10     p<=0.50
-  ---------------------------------------------------------------------------
-  전수 계측                       98%       4.2%        8.5%        53.4%   <- 명목대로
-  lot 당 3장, 스텝마다 다름       61%       6.8%       20.5%        94.5%   <- 부푼다
-  lot 당 3장, MIN_SCORE 끔        78%       5.4%       16.1%        74.2%   <- 절단 꺼도 남는다
-```
-
-**원인은 귀무 회차에서 후보 키가 "정의되지 않는" 것을 "안 넘었다" 로 세는 것이다.**
+**원인은 귀무 회차에서 후보 키가 "정의되지 않는" 것을 "안 넘었다" 로 센 것이었다.**
 라벨을 섞으면 그 조합의 타깃이나 대조군이 통째로 비어(`_aggregate_metro` 의
-`if not t_i or not c_i` / `nt == 0`) 키가 아예 사라지는 회차가 생긴다. 그런데
-`commonality._null_distribution` 은 없는 키를 `-inf` 로 읽어 미달로 센다. **정의되지
-않은 것과 넘지 못한 것이 같은 취급을 받아** 귀무가 실제보다 약해 보이고 p 가 작아진다.
+`if not t_i or not c_i` / `nt == 0`) 키가 아예 사라지는 회차가 생기는데,
+`commonality._null_distribution` 이 없는 키를 `-inf` 로 읽어 미달로 셌다. 정의되지
+않은 것과 넘지 못한 것이 같은 취급을 받아 귀무가 약해 보이고 p 가 작아진다.
 
-측정: 키-회차 중 키가 아예 정의되지 않는 비율이 **전수 계측 0.0% vs lot 당 3장 6.6%**
-이고, 참조집합을 "그 키가 정의된 회차" 로 제한하면 `p<=0.05` 가 7.0%→0.6%,
-`p<=0.50` 이 95.5%→47.1% 로 균등에 붙는다(다만 작은 p 쪽은 과보정 기미가 있어
-추정량 교체는 설계 판단이 필요하다 — 그래서 지금은 **고치지 않고 결함으로 적어 둔다**).
+교정: **귀무 참조집합을 "관측과 표본 크기(nt)가 같은 회차" 로 제한한다**
+(`commonality._null_distribution`, `_size_map`). 미정의 회차를 빼는 것만으로는
+절반밖에 안 잡힌다 — 나머지 절반은 **회차마다 nt 가 달라지는 것**이다. 관측 후보는
+큰 nt 로 만들어진 것인데 귀무 회차 대부분은 nt 가 작아 스윕이 후보를 아예 못 낸다.
 
-**기존 3개 축(eqp_ch·ppid·step_passage)은 이 경로를 거의 안 탄다.** 그쪽은 `passed`
-마스크가 라벨과 무관해 키가 회차마다 사라지지 않고, 소실은 `MIN_SCORE` 절단(=진짜로
-안 넘었다)에서만 온다. 원리적으로는 같은 자리지만 metro 의 계측 샘플링이 그것을
-심각하게 만든다.
+실측 (무신호 합성 데이터, 4 lot x 타깃 5 x 대조군 20, lot 당 3장 계측, n=849)
 
-**따라서 metro 의 `p_permutation` 은 사내 조건에서 낙관적이다. `fdr_table` 과
-`p_family_wise` 를 함께 읽어야 한다** — 이 둘은 같이 재 봤을 때 건전했다(무신호
-데이터에서 fdr 0.59~0.99, family-wise 0.988~0.995). 목록 수준 보정은 제 역할을 한다.
+```
+  추정량                              p<=0.05   p<=0.10   p<=0.50
+  ------------------------------------------------------------------
+  명목                                  5.0%     10.0%     50.0%
+  섞은 회차 전부 (옛)                   6.2%     15.4%     93.3%
+  키가 보인 회차만                      0.6%      6.6%     42.6%   <- 과보정
+  정의된 회차만                         5.1%     13.5%     85.7%   <- 절반만 잡힌다
+  표본 크기 일치 (현재)                 1.4%      6.4%     55.5%   <- 보수적
+```
+
+**꼬리(p<=0.05)보다 몸통이 심하게 망가지는 것이 핵심이었다.** 문서 초판이 "p 가 약
+2배 작다" 고 적은 것은 꼬리만 본 것이고, 실제 손상은 p<=0.50 이 51%에서 93% 로
+가는 쪽이다. `graph/evidence.py` 의 `_rank_key` 가 순열 p 를 **축을 가로지르는 유일한
+자**로 쓰므로, 계측 축의 p 만 0 쪽으로 압축되면 metro 가 구조적으로 다른 축을 이긴다.
+
+대가는 검정력이다. 참조 회차가 줄어(위 실측에서 300 -> 평균 68) `p_min_possible` 이
+올라간다. 그래서 바닥값을 **후보마다** 싣는다 — 스칼라 하나로는 후보마다 다른 바닥을
+말할 수 없다. 참조 회차가 0이면 p 도 바닥도 1.0 이다("비교할 것이 없었다" 를 작은 p
+로 내보내면 근거 없는 후보가 순위 1등이 된다).
+
+**전수 계측·고정 슬롯처럼 nt 가 안 움직이는 조건에서는 옛 값과 완전히 같다.** 기존
+3개 축(eqp_ch·ppid·step_passage)도 `passed` 마스크가 라벨과 무관해 nt 가 거의 안
+움직이므로 사실상 영향이 없다 — 다만 같은 함수를 타므로 흔들리는 경우에는 같이 교정된다.
+
+`tests/test_no_signal_data_does_not_produce_a_flood_of_small_p` 가 이 교정을 잠근다
+(샘플링/전수 비 0.88, 옛 값 1.5+).
 
 ⚠️ 게이트 판별선은 metro 에서 거의 안 걸린다 (2026-08-12)
 -----------------------------------------------------------
@@ -315,7 +324,8 @@ def _sweep(rows, t_valid: int, c_valid: int, nt: int, nc: int):
 
 
 def _aggregate_metro(strata_masks, combos, answer, seen,
-                     collect_bits: bool = False) -> tuple[dict, list]:
+                     collect_bits: bool = False,
+                     sizes: dict | None = None) -> tuple[dict, list]:
     """라벨에서 조합별 최적 후보를 낸다 — 순수 함수. 실제와 귀무가 이 함수를 같이 탄다.
 
     strata_masks = [(root_lot_id, t_mask, c_mask), ...]
@@ -352,6 +362,15 @@ def _aggregate_metro(strata_masks, combos, answer, seen,
         nt, nc = t_valid.bit_count(), c_valid.bit_count()
         if nt == 0 or nc == 0:
             continue
+        if sizes is not None:
+            # **후보가 안 나와도 적는다.** `_null_distribution` 은 이 값으로 귀무
+            # 참조집합을 "관측과 표본 크기가 같은 회차" 로 좁히는데, 스윕이 후보를
+            # 못 내는 것(nt 가 MIN_TARGET 미만 등)은 '계산 불가' 가 아니라 '못 넘음'
+            # 이라 분모에 남아야 한다. agg 로만 알면 그 둘을 못 가른다.
+            # (반환 arity 대신 out 파라미터인 이유: 이 값을 안 쓰는 호출부가 여럿이고,
+            #  정의 판정을 여기 한 곳에만 두어야 실제와 귀무가 갈리지 않는다.)
+            sizes[(*key, "ge")] = nt
+            sizes[(*key, "le")] = nt
         best = _sweep(rows, t_valid, c_valid, nt, nc)
         for direction, (score, split, a, c) in best.items():
             if score <= MIN_SCORE:
@@ -388,7 +407,9 @@ def _split_masks(rows, split, direction, t_valid, c_valid) -> tuple[int, int]:
 
 
 def _permutation_stats_metro(strata_masks, combos, answer, seen,
-                             observed: dict[tuple, float], n_iter: int, seed: int):
+                             observed: dict[tuple, float],
+                             observed_sizes: dict[tuple, int],
+                             n_iter: int, seed: int):
     """metro 축의 귀무 분포. 회차마다 **분할점 탐색을 다시 돌린다.**
 
     이것이 다른 축과 다른 유일한 지점이다. 다른 축은 키가 라벨과 무관해 미리 만든
@@ -398,10 +419,13 @@ def _permutation_stats_metro(strata_masks, combos, answer, seen,
     p 가 실제보다 작게 나온다.
     """
     def _scores(labels):
-        null_agg, _ = _aggregate_metro(labels, combos, answer, seen)
-        return {k: v["score"] for k, v in null_agg.items()}
+        null_sizes: dict = {}
+        null_agg, _ = _aggregate_metro(labels, combos, answer, seen,
+                                       sizes=null_sizes)
+        return {k: v["score"] for k, v in null_agg.items()}, null_sizes
 
-    return _null_distribution(strata_masks, seen, observed, n_iter, seed, _scores)
+    return _null_distribution(strata_masks, seen, observed, observed_sizes,
+                              n_iter, seed, _scores)
 
 
 def find_metro_commonality(target_wafers: list[str], control_wafers: list[str],
@@ -466,8 +490,10 @@ def find_metro_commonality(target_wafers: list[str], control_wafers: list[str],
             c_mask |= bits[w]
         strata_masks.append((rl, t_mask, c_mask))
 
+    obs_sizes: dict = {}
     agg, strata_report = _aggregate_metro(strata_masks, combos, answer, seen_bits,
-                                          collect_bits=True)  # 관측만
+                                          collect_bits=True,  # 관측만
+                                          sizes=obs_sizes)
 
     # 계측 행이 아예 없는 wafer 는 신호가 아니라 보고 대상이다. stratum 이 스킵돼도
     # 집계와 무관하게 세야 하므로 _aggregate_metro 밖에 둔다.
@@ -490,7 +516,7 @@ def find_metro_commonality(target_wafers: list[str], control_wafers: list[str],
     perm = None
     if n_permutations and scores:
         perm = _permutation_stats_metro(strata_masks, combos, answer, seen_bits,
-                                        scores, n_permutations, PERM_SEED)
+                                        scores, obs_sizes, n_permutations, PERM_SEED)
 
     candidates = []
     for key, e in agg.items():
@@ -515,7 +541,7 @@ def find_metro_commonality(target_wafers: list[str], control_wafers: list[str],
         }
         if perm:
             cand["p_permutation"] = round(perm["p"][key], 4)
-            cand["p_min_possible"] = round(perm["p_min_possible"], 4)
+            cand["p_min_possible"] = round(perm["p_min_possible"][key], 4)
             cand["n_permutations_total"] = perm["n_permutations_total"]
         candidates.append(cand)
 
@@ -549,7 +575,9 @@ def find_metro_commonality(target_wafers: list[str], control_wafers: list[str],
             "lot 당 몇 장만 재므로 이 둘이 크게 다르다.")
     if perm:
         note += (" p_min_possible 이 크면(예: 0.1 이상) 표본이 작아 p 를 그 아래로 "
-                 "내릴 수 없다는 뜻이지 신호가 약하다는 뜻이 아니다.")
+                 "내릴 수 없다는 뜻이지 신호가 약하다는 뜻이 아니다. 이 값은 "
+                 "**후보마다 다르다** - 계측 표본 크기가 그 후보와 같은 귀무 회차만 "
+                 "세기 때문이다.")
 
     result = {
         "status": "ok" if candidates else "no_signal",
@@ -559,7 +587,8 @@ def find_metro_commonality(target_wafers: list[str], control_wafers: list[str],
         "truncated": truncated,
         "fdr_table": _fdr_table(scores, perm["null_counts"], perm["n_used"]) if perm else [],
         "p_family_wise": _family_wise_p(scores, perm["null_max"], perm["n_used"]) if perm else None,
-        "p_family_wise_min_possible": round(perm["p_min_possible"], 4) if perm else None,
+        "p_family_wise_min_possible": (round(perm["p_family_wise_min_possible"], 4)
+                                       if perm else None),
         "meta": {
             "target_lot_types": _lt(t_seen),
             "control_lot_types": _lt(c_seen),

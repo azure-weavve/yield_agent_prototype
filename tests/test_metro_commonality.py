@@ -312,8 +312,10 @@ def test_aggregate_depends_only_on_the_labels():
 # ---------------------------------------------------------------- 순열검정 (설계 §9)
 
 def _observed(masks, combos, answer, seen):
-    agg, _ = mc._aggregate_metro(masks, combos, answer, seen)
-    return {k: v["score"] for k, v in agg.items()}
+    """관측 점수와 **관측 표본 크기**. 순열은 표본 크기가 같은 회차만 참조집합에 넣는다."""
+    sizes: dict = {}
+    agg, _ = mc._aggregate_metro(masks, combos, answer, seen, sizes=sizes)
+    return {k: v["score"] for k, v in agg.items()}, sizes
 
 
 def test_stratified_shuffle_rejects_a_pure_lot_effect():
@@ -326,8 +328,8 @@ def test_stratified_shuffle_rejects_a_pure_lot_effect():
 
     targets, controls = _metro_groups()
     combos, answer, seen, _u, masks, _b = _prepare(targets, controls)
-    obs = _observed(masks, combos, answer, seen)
-    perm = mc._permutation_stats_metro(masks, combos, answer, seen, obs,
+    obs, sizes = _observed(masks, combos, answer, seen)
+    perm = mc._permutation_stats_metro(masks, combos, answer, seen, obs, sizes,
                                        1000, mc.PERM_SEED)
 
     key = ("metro", METRO_LOT_EFFECT[0], METRO_LOT_EFFECT[1], "ge")
@@ -349,16 +351,16 @@ def test_unstratified_shuffle_makes_that_lot_effect_look_like_a_finding():
 
     targets, controls = _metro_groups()
     combos, answer, seen, _u, masks, _b = _prepare(targets, controls)
-    obs = _observed(masks, combos, answer, seen)
+    obs, sizes = _observed(masks, combos, answer, seen)
 
     merged_t = merged_c = 0
     for _rl, t, c in masks:
         merged_t |= t
         merged_c |= c
     merged = [("ALL", merged_t, merged_c)]
-    strat = mc._permutation_stats_metro(masks, combos, answer, seen, obs,
+    strat = mc._permutation_stats_metro(masks, combos, answer, seen, obs, sizes,
                                         1000, mc.PERM_SEED)
-    flat = mc._permutation_stats_metro(merged, combos, answer, seen, obs,
+    flat = mc._permutation_stats_metro(merged, combos, answer, seen, obs, sizes,
                                        1000, mc.PERM_SEED)
 
     key = ("metro", METRO_LOT_EFFECT[0], METRO_LOT_EFFECT[1], "ge")
@@ -372,14 +374,14 @@ def test_planted_signals_survive_the_permutation_test():
 
     targets, controls = _metro_groups()
     combos, answer, seen, _u, masks, _b = _prepare(targets, controls)
-    obs = _observed(masks, combos, answer, seen)
-    perm = mc._permutation_stats_metro(masks, combos, answer, seen, obs,
+    obs, sizes = _observed(masks, combos, answer, seen)
+    perm = mc._permutation_stats_metro(masks, combos, answer, seen, obs, sizes,
                                        1000, mc.PERM_SEED)
 
     for step_item, direction in ((METRO_TRUE_GE, "ge"), (METRO_TRUE_LE, "le")):
         key = ("metro", step_item[0], step_item[1], direction)
         assert perm["p"][key] < 0.05
-        assert perm["p"][key] > perm["p_min_possible"]   # 바닥에 닿진 않았다
+        assert perm["p"][key] > perm["p_min_possible"][key]   # 바닥에 닿진 않았다
 
 
 def test_permutation_reports_its_own_floor_and_space():
@@ -391,13 +393,18 @@ def test_permutation_reports_its_own_floor_and_space():
     """
     targets, controls = _metro_groups()
     combos, answer, seen, _u, masks, _b = _prepare(targets, controls)
-    obs = _observed(masks, combos, answer, seen)
-    perm = mc._permutation_stats_metro(masks, combos, answer, seen, obs,
+    obs, sizes = _observed(masks, combos, answer, seen)
+    perm = mc._permutation_stats_metro(masks, combos, answer, seen, obs, sizes,
                                        1000, mc.PERM_SEED)
 
     assert perm["n_permutations_total"] == 350        # C(7,4) x C(10,1)
     assert perm["n_used"] == 349                      # 관측 라벨은 뺀다
-    assert perm["p_min_possible"] == 1 / 350
+    # **바닥은 이제 후보마다 다르다.** 참조집합이 "관측과 표본 크기가 같은 회차" 로
+    # 좁혀지므로, 계측이 성겨 회차마다 nt 가 흔들리는 후보는 바닥이 더 높다.
+    # 349 회를 다 쓴 후보가 최저이고, 그 아래로는 원리적으로 못 내려간다.
+    floors = perm["p_min_possible"]
+    assert min(floors.values()) == 1 / 350
+    assert all(f >= 1 / 350 for f in floors.values())
 
 
 def test_every_round_scores_all_combinations_with_one_label_set():
@@ -409,18 +416,18 @@ def test_every_round_scores_all_combinations_with_one_label_set():
     """
     targets, controls = _metro_groups()
     combos, answer, seen, _u, masks, _b = _prepare(targets, controls)
-    obs = _observed(masks, combos, answer, seen)
+    obs, sizes = _observed(masks, combos, answer, seen)
 
     calls = []
     real = mc._aggregate_metro
 
-    def _spy(label_masks, cb, an, sn):
+    def _spy(label_masks, cb, an, sn, **kw):
         calls.append(len(cb))
         return real(label_masks, cb, an, sn)
 
     mc._aggregate_metro = _spy
     try:
-        perm = mc._permutation_stats_metro(masks, combos, answer, seen, obs,
+        perm = mc._permutation_stats_metro(masks, combos, answer, seen, obs, sizes,
                                            1000, mc.PERM_SEED)
     finally:
         mc._aggregate_metro = real
@@ -614,21 +621,19 @@ def test_no_signal_data_does_not_produce_a_flood_of_small_p():
 
     **전수 계측과 나란히 잰다.** 샘플링 조건 하나만 보면 상한을 아무리 잡아도
     "지금 값이 옳은지" 를 못 말한다. 전수 계측은 명목대로 나오는 것이 확인돼 있으므로
-    (모듈 docstring 참조) 두 조건의 **차이**가 곧 열린 결함의 크기다.
+    (모듈 docstring 참조) 두 조건의 **차이**가 곧 편향의 크기다.
 
-    ⚠️ 이 테스트는 **결함이 있는 상태를 고정한다.** 샘플링 조건의 p 는 명목보다 약
-    2배 작게 나오고, 원인은 귀무 회차에서 후보 키가 정의되지 않는 것을 "안 넘었다" 로
-    세는 것이다(모듈 docstring "열린 결함" 절). 여기 상한 15% 는 그 편향을 잡지
-    **못하고**, 잡는 것은 아래 `_ratio` 대비다. 결함을 고치면 그 대비가 1.0 에
-    가까워지면서 이 테스트가 빨간불이 되어 **개선을 확인해 준다.**
+    **2026-08-28: 그 결함은 고쳤다.** 귀무 참조집합을 "관측과 표본 크기가 같은 회차"
+    로 좁히자 대비가 1.5+ 에서 0.88 로 내려왔다 — 이 테스트의 옛 단언(`> 1.5`)이
+    예고한 대로 빨간불이 되어 개선을 알렸다. 지금 이 단언들은 **교정된 상태를**
+    고정한다: 두 조건 모두 명목(10%) 근처여야 하고 서로 크게 벌어지면 안 된다.
     """
     def _small_p_rate(measured_per_lot):
         combos, answer, seen, masks = _synthetic(
             n_lots=4, per_lot=25, targets_per_lot=5, n_combos=60,
             measured_per_lot=measured_per_lot, seed=11)
-        agg, _rep = mc._aggregate_metro(masks, combos, answer, seen)
-        obs = {k: v["score"] for k, v in agg.items()}
-        perm = mc._permutation_stats_metro(masks, combos, answer, seen, obs,
+        obs, sizes = _observed(masks, combos, answer, seen)
+        perm = mc._permutation_stats_metro(masks, combos, answer, seen, obs, sizes,
                                            1000, mc.PERM_SEED)
         ps = list(perm["p"].values())
         assert len(ps) > 20, "후보가 너무 적어 분포를 못 본다"
@@ -637,14 +642,14 @@ def test_no_signal_data_does_not_produce_a_flood_of_small_p():
     full = _small_p_rate(25)              # 전수 계측
     sampled = _small_p_rate(3)            # lot 당 3장
 
-    # 탐색 이득이 귀무에 아예 안 잡히면 이 값이 50% 를 훌쩍 넘는다 — 그건 다른 사고다
-    assert sampled < 0.35, f"무신호 데이터인데 p<=0.10 이 {sampled:.1%} — 탐색 이득이 귀무에 안 잡힌다"
-    # 전수 계측은 명목(10%)대로다. 이쪽이 무너지면 스윕·순열 자체가 틀린 것이다
+    # 두 조건 모두 명목(10%) 근처다. 무너지면 스윕·순열 자체가 틀린 것이다
+    assert sampled < 0.15, f"샘플링 조건인데 p<=0.10 이 {sampled:.1%}"
     assert full < 0.15, f"전수 계측인데 p<=0.10 이 {full:.1%}"
-    # 알려진 편향의 크기. 고치면 1.0 에 가까워지고 이 단언이 빨간불이 된다
-    assert sampled / full > 1.5, (
-        f"샘플링/전수 비 {sampled / full:.2f} — 편향이 줄었다면 좋은 일이니 "
-        f"모듈 docstring 의 '열린 결함' 절과 함께 이 단언을 갱신하라")
+    # **핵심 단언.** 계측 샘플링이 걸렸다는 이유만으로 p 분포가 달라지면 안 된다 -
+    # 순열 p 는 축을 가로지르는 유일한 자라(`graph/evidence.py` 의 `_rank_key`),
+    # metro 만 압축되면 계측 축이 구조적으로 다른 축을 이긴다.
+    assert 0.7 < sampled / full < 1.3, (
+        f"샘플링/전수 비 {sampled / full:.2f} — 계측 샘플링이 p 분포를 흔들고 있다")
 
 
 def test_sampling_raises_the_p_floor_even_when_the_split_is_perfect():
@@ -682,13 +687,13 @@ def test_sampling_raises_the_p_floor_even_when_the_split_is_perfect():
     combos[key], answer[key] = rows, seen
 
     agg, _rep = mc._aggregate_metro(masks, combos, answer, seen)
-    obs = {k: v["score"] for k, v in agg.items()}
-    perm = mc._permutation_stats_metro(masks, combos, answer, seen, obs,
+    obs, sizes = _observed(masks, combos, answer, seen)
+    perm = mc._permutation_stats_metro(masks, combos, answer, seen, obs, sizes,
                                        1000, mc.PERM_SEED)
 
     assert agg[(*key, "ge")]["score"] == 1.0          # 완전 분리다
     assert perm["n_permutations_total"] == 9          # 3 x 3
-    assert perm["p_min_possible"] == 1 / 9            # 그래도 바닥이 0.111
+    assert perm["p_min_possible"][(*key, "ge")] == 1 / 9   # 그래도 바닥이 0.111
     assert perm["p"][(*key, "ge")] == 1 / 9           # 완전 분리가 바닥에 닿을 뿐이다
 
 
@@ -748,3 +753,28 @@ def test_split_masks_follows_the_same_inequality_as_the_sweep():
     # 두 방향의 합집합이 전체보다 크다 = 경계값이 양쪽에 다 든다. 이는 정상이다 -
     # ge 후보와 le 후보는 서로 여집합이 아니라 각자 최적 분할점을 따로 고른다.
     assert t_ge | t_le == 0b1111
+
+
+def test_size_map_covers_both_directions_even_when_the_sweep_produced_one():
+    """표본 크기는 **계산이 성립한 조합 전부**에 대해, 양쪽 방향 다 적어야 한다.
+
+    한쪽 방향을 안 적으면 그 후보는 귀무 회차에서도 관측에서도 크기가 `None` 이 되어
+    `None != None` 이 거짓이 되고, **조건화가 조용히 꺼져 옛(편향된) 계산으로
+    되돌아간다.** 아무 것도 안 터지므로 다른 테스트로는 안 잡힌다.
+
+    스윕이 한 방향만 후보로 내는 조합이 실제로 있다 - 그런 조합에서도 반대 방향의
+    크기가 있어야 "못 넘었다" 와 "계산 불가" 가 갈린다.
+    """
+    targets, controls = _metro_groups()
+    combos, answer, seen, _u, masks, _b = _prepare(targets, controls)
+    sizes: dict = {}
+    agg, _rep = mc._aggregate_metro(masks, combos, answer, seen, sizes=sizes)
+
+    one_way = {k[:3] for k in agg} - {k[:3] for k in agg if k[3] == "le"} \
+        | {k[:3] for k in agg} - {k[:3] for k in agg if k[3] == "ge"}
+    assert one_way, "한 방향만 후보를 낸 조합이 없어 이 성질을 못 잰다"
+
+    combos_in_sizes = {k[:3] for k in sizes}
+    for combo in combos_in_sizes:
+        assert (*combo, "ge") in sizes and (*combo, "le") in sizes
+    assert {k[:3] for k in agg} <= combos_in_sizes      # 후보를 낸 조합은 전부 포함
