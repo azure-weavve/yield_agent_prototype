@@ -681,7 +681,11 @@ def test_permutation_can_be_turned_off(tmp_path, monkeypatch):
     assert "p_permutation" not in off["note"]
     assert "p_min_possible" not in off["note"]
     assert "p_permutation" in on["note"]
-    strip = lambda r: [{k: v for k, v in x.items() if not k.startswith(("p_", "n_perm"))}
+    # 순열이 얹는 필드 전부. 새 필드를 여기 안 넣으면 아래 단언이 그 필드 때문에
+    # 깨지는데, 그건 "후보가 바뀌었다" 가 아니라 목록이 낡은 것이다.
+    perm_fields = ("p_permutation", "p_min_possible", "n_permutations_total",
+                   "n_reference")
+    strip = lambda r: [{k: v for k, v in x.items() if k not in perm_fields}
                        for x in r["candidates"]]
     assert strip(off) == strip(on)          # 순열은 후보 자체를 바꾸지 않는다
 
@@ -812,20 +816,65 @@ def test_family_wise_p_is_carried(tmp_path, monkeypatch):
 
 
 def test_family_wise_p_carries_its_own_floor(tmp_path, monkeypatch):
-    """1등의 p 도 후보별 p 와 똑같은 바닥값을 갖는다.
+    """1등의 p 도 바닥에 붙으므로 그 바닥값을 함께 보낸다.
 
     `p_family_wise` 도 (넘은 횟수+1)/(회차+1) 이라 소표본에서 바닥에 붙는다.
     바닥값 없이 0.05 만 보내면 "1등이 우연일 확률 5%" 로 읽히는데 실제로는 이
     표본이 낼 수 있는 최소값일 수 있다 - 후보별 p 에서 고친 것과 같은 오독이,
     최상위에서 그대로 반복된다. 근거 줄이 교정해 주지도 못한다(최상위 값이라
     Claim 에 안 실린다). 그래서 숫자 자체를 함께 보낸다.
+
+    **이 바닥은 후보별 바닥과 같은 값이 아니다.** family-wise 는 회차별 최댓값을
+    재므로 참조집합을 안 좁히고, 후보별 바닥은 좁혀진 참조집합에서 나와 항상 이보다
+    크거나 같다. 전수 커버리지 픽스처에서는 우연히 일치하므로
+    [[test_the_family_wise_floor_and_the_candidate_floor_part_ways]] 가 갈라 놓는다.
     """
     t, c = _noise_db(tmp_path, monkeypatch)
     res = cm.find_commonality(t, c)
     assert res["p_family_wise_min_possible"] == 0.05      # 3대3 = 1/20
     assert res["p_family_wise"] >= res["p_family_wise_min_possible"]
-    # 후보별 바닥값과 같은 회차에서 나오므로 값이 일치해야 한다
-    assert res["p_family_wise_min_possible"] == res["candidates"][0]["p_min_possible"]
+    # 후보별 바닥은 좁혀진 참조집합에서 나오므로 이보다 낮아질 수 없다
+    assert all(cand["p_min_possible"] >= res["p_family_wise_min_possible"]
+               for cand in res["candidates"])
+
+
+def _partial_noise_db(tmp_path, monkeypatch, n_steps=10):
+    """`_noise_db` 와 같지만 **일부 wafer 가 일부 스텝의 이력이 없다.**
+
+    전수 커버리지 픽스처에서는 라벨을 섞어도 `nt`(그 스텝에 이력이 있는 타깃 수)가
+    안 움직여 조건화가 아무 것도 안 한다 - 그래서 레전드 축이 "영향 없다" 로 보인다.
+    사내 데이터에는 결측이 있으므로 그쪽을 재현한다.
+    """
+    wafers = ["T1", "T2", "T3", "C1", "C2", "C3"]
+    subsets = list(itertools.combinations(wafers, 3))[:n_steps]
+    ys = [_y(w, "A45Z5") for w in wafers]
+    hs = []
+    for i, sub in enumerate(subsets):
+        for j, w in enumerate(wafers):
+            if i % 3 == 0 and j % 2 == 0:
+                continue                  # 이 스텝에는 이 wafer 이력이 없다
+            hs.append(_h(w, f"S{i:02d}", "ETCH9" if w in sub else "ETCH8", "1"))
+    _make_db(tmp_path, monkeypatch, ys, hs)
+    return ["T1", "T2", "T3"], ["C1", "C2", "C3"]
+
+
+def test_the_family_wise_floor_and_the_candidate_floor_part_ways(tmp_path, monkeypatch):
+    """이력 결측이 있으면 두 바닥이 갈린다 - 레전드 축도 조건화를 받는다.
+
+    "레전드 3축은 nt 가 안 움직이니 사실상 영향이 없다" 는 서술은 **더미 DB 가 전수
+    커버리지라서** 나온 것이었다. 스텝마다 이력이 있는 wafer 가 달라지면 라벨을
+    섞을 때 nt 가 움직이고, 참조집합이 좁혀져 후보별 바닥이 올라간다.
+    """
+    t, c = _partial_noise_db(tmp_path, monkeypatch)
+    res = cm.find_commonality(t, c)
+    floors = {cand["p_min_possible"] for cand in res["candidates"]}
+    assert len(floors) > 1, "후보마다 바닥이 갈리지 않는다 - 픽스처가 퇴화했다"
+    assert max(floors) > res["p_family_wise_min_possible"]
+    # 왜 바닥이 다른지 읽을 숫자가 함께 나가야 한다
+    narrowed = [cand for cand in res["candidates"]
+                if cand["p_min_possible"] > res["p_family_wise_min_possible"]]
+    assert narrowed and all(cand["n_reference"] < res["candidates"][0]
+                            ["n_permutations_total"] - 1 for cand in narrowed)
 
 
 def test_no_fdr_table_when_permutation_is_off(tmp_path, monkeypatch):
@@ -968,3 +1017,31 @@ def test_family_wise_floor_does_not_inherit_the_narrowed_reference_set():
     out = cm._null_distribution(masks, 0b1111, {_K: 0.5}, {_K: 2}, 100, 1, fn)
     assert out["p_family_wise_min_possible"] == 1 / 6      # 5 회차 전부
     assert out["p_min_possible"][_K] == 1 / 3              # 참조 2 회차
+
+
+def test_a_missing_size_is_not_a_match():
+    """크기를 못 받은 후보를 '크기가 같다' 로 읽으면 조건화가 조용히 꺼진다.
+
+    `None != None` 이 거짓이라, `score_fn` 이 크기를 안 실어 주면 모든 회차가
+    참조집합에 들어가 **옛(편향된) 계산으로 소리 없이 되돌아간다.** 아무 것도
+    안 터지므로 다음 사람이 알 방법이 없다 - 크기가 없으면 비교 불가로 센다.
+    """
+    masks = [("L1", 0b0011, 0b1100)]
+
+    def _no_sizes(labels):
+        return {_K: 0.9}, {}                       # 점수만 주고 크기는 안 준다
+
+    out = cm._null_distribution(masks, 0b1111, {_K: 0.5}, {_K: 2}, 100, 1, _no_sizes)
+    assert out["n_reference"][_K] == 0
+    assert out["p"][_K] == 1.0
+
+    # **관측 쪽 크기도 없을 때가 진짜 위험한 경우다.** 위 단언은 `None != 2` 라
+    # 가드가 없어도 통과한다 - `None != None` 이 거짓이 되는 조합을 여기서 잰다.
+    # 귀무 점수를 관측보다 **낮게** 주는 것도 필수다. 높게 주면 가드가 없어도 전부
+    # '넘었다' 로 세어 p 가 1.0 이 되어, 되돌아간 계산과 구별이 안 된다.
+    def _low_and_no_sizes(labels):
+        return {_K: 0.1}, {}
+
+    out = cm._null_distribution(masks, 0b1111, {_K: 0.5}, {}, 100, 1, _low_and_no_sizes)
+    assert out["n_reference"][_K] == 0
+    assert out["p"][_K] == 1.0

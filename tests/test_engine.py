@@ -179,6 +179,9 @@ def test_evaluate_carries_the_p_floor_so_a_big_p_can_be_read_correctly(fx_db):
     assert ch["p_min_possible"] == 0.05
     assert ch["n_permutations_total"] == 20
     assert ch["p_permutation"] == ch["p_min_possible"]   # 완전 분리 = 바닥값에 닿음
+    # 바닥값은 1/(n_reference+1) 이고 n_reference 는 후보마다 다르다. 이 숫자가 같이
+    # 안 가면 n_permutations_total 20 과 바닥 0.05 의 관계를 LLM 이 설명할 수 없다.
+    assert ch["n_reference"] == 19
 
 
 def test_evaluate_carries_the_fdr_table_and_family_wise_p(fx_db):

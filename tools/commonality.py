@@ -443,6 +443,13 @@ def _null_distribution(strata_masks, seen, observed: dict[tuple, float],
     p 도 바닥도 1.0 이다("비교할 것이 없었다" 를 작은 p 로 내보내면 안 된다).
 
     전수 계측이나 고정 슬롯처럼 **nt 가 안 움직이는 조건에서는 옛 값과 완전히 같다.**
+
+    **여기서 맞추는 "표본 크기" 는 타깃 쪽(nt) 하나뿐이다.** legend 축은 nt+nc 가
+    라벨 불변이라 결과가 같지만 metro 는 아니다 - 관측이 (nt=2, nc=1) 인 후보의 참조
+    회차에 (nc=4) 짜리가 섞인다. 그런데도 **nc·strata 까지 넓히지 않는다**: 넓혀서
+    재보면 검정력만 깎이고 보정은 안 된다(p<=0.05 가 2.7% -> 1.4% 로 더 보수적이 될
+    뿐 p<=0.10·p<=0.50 은 9.6%·46.6% 로 동일, 참조 회차 중앙값은 255 -> 131).
+    다음 사람이 "조건화가 절반뿐인데?" 로 되돌아오는 자리라 여기 적어 둔다.
     """
     n_total = _n_permutations_total(strata_masks, seen)
     exhaustive = n_total <= PERM_EXHAUSTIVE_MAX
@@ -461,7 +468,11 @@ def _null_distribution(strata_masks, seen, observed: dict[tuple, float],
         for key, obs in observed.items():
             # 표본 크기가 다른 회차는 그 후보의 귀무 표본이 아니다. 관측을 못 넘은
             # 것이 아니라 **같은 것을 재지 않았다.**
-            if null_sizes.get(key) != observed_sizes.get(key):
+            # `is None` 을 따로 보는 이유: `None != None` 은 거짓이라, 크기를 안 실어
+            # 주면 모든 회차가 참조집합에 들어가 **옛 편향 계산으로 소리 없이
+            # 되돌아간다.** 크기가 없으면 비교 불가로 센다.
+            null_size = null_sizes.get(key)
+            if null_size is None or null_size != observed_sizes.get(key):
                 continue
             reference[key] += 1
             if null_scores.get(key, float("-inf")) >= obs:
@@ -694,6 +705,11 @@ def find_commonality(target_wafers: list[str], control_wafers: list[str],
             # 바닥값도 후보마다 갈린다 - 스칼라 하나로는 말할 수 없다.
             cand["p_min_possible"] = round(perm["p_min_possible"][key], 4)
             cand["n_permutations_total"] = perm["n_permutations_total"]
+            # **바닥값을 설명하는 유일한 숫자다.** 바닥은 1/(참조 회차+1) 인데
+            # 참조 회차는 후보마다 다르므로, 이것 없이는 같은 결과 안에서
+            # n_permutations_total 70 인데 바닥이 0.0143 인 후보와 0.0278 인 후보가
+            # 나란히 나와 읽는 쪽이 모순으로 읽는다.
+            cand["n_reference"] = perm["n_reference"][key]
         for col in all_cols:               # legend 컬럼값을 이름별로 (미해당은 None)
             cand[col] = colvals.get(col)
         candidates.append(cand)

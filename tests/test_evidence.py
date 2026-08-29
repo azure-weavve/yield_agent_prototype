@@ -509,3 +509,27 @@ def test_an_error_string_without_the_failed_mark_is_not_counted_as_a_crash():
     b = evidence.build_bundle([_finding("hyp_ppid_commonality", None, None, None,
                                         result="분석 종료로 생략")])
     assert b.failed == frozenset()
+
+
+def test_a_candidate_with_no_null_reference_is_not_called_the_samples_best():
+    """참조 회차가 0이면 p = 바닥 = 1.0 인데, 그것은 '이 표본의 최강' 이 아니다.
+
+    옛 코드에서는 바닥이 `1/(회차+1)` 이라 이 분기가 켜질 수 없었다. 귀무 참조집합을
+    표본 크기로 좁히면서 바닥이 1.0 인 후보가 생겼고, 그때 "이 표본의 최소값" 딱지는
+    **정반대 뜻**을 붙인다 - 비교 대상이 하나도 없었던 후보가 "낼 수 있는 최강" 으로
+    읽힌다. 분리 점수 1.0 과 함께 나가면 엔지니어가 그것을 근거로 설비를 세운다.
+    """
+    line = evidence.format_evidence_line(
+        {**CAND_PASS, "p_permutation": 1.0, "p_min_possible": 1.0})
+    assert "이 표본의 최소값" not in line
+    assert "비교" in line               # 왜 판단할 수 없는지는 말해 준다
+
+
+def test_a_real_floor_is_still_marked_as_the_samples_best():
+    """분기 반대쪽 - 진짜 바닥에 닿은 후보의 딱지는 그대로 있어야 한다.
+
+    한쪽만 막으면 "1.0 이면 빼기" 대신 "딱지를 아예 없애기" 로 고쳐도 안 잡힌다.
+    """
+    line = evidence.format_evidence_line(
+        {**CAND_PASS, "p_permutation": 0.05, "p_min_possible": 0.05})
+    assert "이 표본의 최소값" in line

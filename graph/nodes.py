@@ -620,9 +620,12 @@ def _gate_rejection(claim_id, claim, bundle, coverage, conf, conf_note, groups) 
             # 순위는 코드가 매긴다. 순열 p 가 먼저이고 동점이면 분리 점수다 —
             # 점수만 보고 고르면 탐색 폭이 넓은 축(계측)이 늘 이긴다.
             best = groups[0].lead
-            return (f"반려: {claim.claim_id}(p {claim.p_permutation}, 점수 {claim.score}) "
-                    f"보다 앞선 근거가 있다: {best.claim_id}"
-                    f"(p {best.p_permutation}, 점수 {best.score}). "
+            # 바닥값을 같이 인용한다. 참조집합이 후보마다 좁혀지면서 **p 의 해상도가
+            # 후보마다 달라졌기** 때문이다 - 바닥이 0.33 인 후보는 완전 분리여도 거기서
+            # 멈추므로, 숫자 둘만 보여 주면 LLM 은 신호 차이로 읽고 반려를 고칠 수 없다.
+            return (f"반려: {claim.claim_id}(p {claim.p_permutation}{_floor(claim)}, "
+                    f"점수 {claim.score}) 보다 앞선 근거가 있다: {best.claim_id}"
+                    f"(p {best.p_permutation}{_floor(best)}, 점수 {best.score}). "
                     f"순위 1등을 서술의 축으로 지목하라 - 나머지 근거는 게이트가 함께 싣는다.")
         return (f"반려: 확신도 {conf:.2f} < {ya_config.CONFIDENCE_THRESHOLD}.{conf_note} "
                 f"근거를 좁힐 tool 을 더 호출하라.")
@@ -633,6 +636,11 @@ def _gate_rejection(claim_id, claim, bundle, coverage, conf, conf_note, groups) 
         return (f"반려: claim_id 를 제출하지 않았다. 결론은 도구가 발급한 claim_id 로 "
                 f"지목해야 한다. 통과 후보: {', '.join(valid)}.")
     return f"반려: {_no_candidate_action(bundle, coverage)}"
+
+
+def _floor(claim) -> str:
+    """반려 문구에 덧붙일 바닥값 조각. 순열을 안 돌렸으면 빈 문자열이다."""
+    return "" if claim.p_min_possible is None else f", 바닥 {claim.p_min_possible}"
 
 
 def _no_candidate_action(bundle, coverage) -> str:

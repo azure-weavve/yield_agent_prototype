@@ -112,9 +112,14 @@ lot 마다 달라진다 — 어떤 lot 이 전 스텝을 같은 슬롯으로만 
 말할 수 없다. 참조 회차가 0이면 p 도 바닥도 1.0 이다("비교할 것이 없었다" 를 작은 p
 로 내보내면 근거 없는 후보가 순위 1등이 된다).
 
-**전수 계측·고정 슬롯처럼 nt 가 안 움직이는 조건에서는 옛 값과 완전히 같다.** 기존
-3개 축(eqp_ch·ppid·step_passage)도 `passed` 마스크가 라벨과 무관해 nt 가 거의 안
-움직이므로 사실상 영향이 없다 — 다만 같은 함수를 타므로 흔들리는 경우에는 같이 교정된다.
+**전수 계측·고정 슬롯처럼 nt 가 안 움직이는 조건에서는 옛 값과 완전히 같다.** 다만
+기존 3개 축이 무사하다는 뜻은 아니다 — nt 를 정하는 것은 `passed` 가 아니라
+`answer`(그 스텝·그 컬럼에 값이 있는 wafer)다. step_passage 는 universal 이라 `seen`
+을 쓰고 wafer 전원이 이력을 가지면 불변이지만, **eqp_ch·ppid 는 그 스텝에 이력이 없는
+wafer 가 있으면 라벨을 섞을 때 nt 가 움직여 참조집합이 같이 좁혀진다.** 사내 데이터에는
+결측이 있으므로 "legend 축은 사실상 영향 없다" 로 읽으면 안 된다 —
+`tests/test_commonality.py::test_the_family_wise_floor_and_the_candidate_floor_part_ways`
+가 바닥이 갈리는 쪽(0.05 -> 0.1111)을 잰다.
 
 `tests/test_no_signal_data_does_not_produce_a_flood_of_small_p` 가 이 교정을 잠근다
 (샘플링/전수 비 0.88, 옛 값 1.5+).
@@ -542,6 +547,7 @@ def find_metro_commonality(target_wafers: list[str], control_wafers: list[str],
         if perm:
             cand["p_permutation"] = round(perm["p"][key], 4)
             cand["p_min_possible"] = round(perm["p_min_possible"][key], 4)
+            cand["n_reference"] = perm["n_reference"][key]   # 바닥값을 설명하는 숫자
             cand["n_permutations_total"] = perm["n_permutations_total"]
         candidates.append(cand)
 

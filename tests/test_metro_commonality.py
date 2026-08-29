@@ -423,7 +423,10 @@ def test_every_round_scores_all_combinations_with_one_label_set():
 
     def _spy(label_masks, cb, an, sn, **kw):
         calls.append(len(cb))
-        return real(label_masks, cb, an, sn)
+        # **kw 를 삼키면 sizes 가 안 실려 모든 회차의 참조집합이 비고, 이 픽스처의
+        # 순열이 전부 n_reference 0 / p 1.0 로 퇴화한다. 지금 단언(호출 횟수)은
+        # 그래도 통과하므로, 여기 p 단언을 하나라도 얹는 순간 뜻 없는 통과가 된다.
+        return real(label_masks, cb, an, sn, **kw)
 
     mc._aggregate_metro = _spy
     try:
@@ -434,6 +437,9 @@ def test_every_round_scores_all_combinations_with_one_label_set():
 
     assert len(calls) == perm["n_used"]               # 회차당 정확히 한 번
     assert set(calls) == {len(combos)}                # 매번 조합 전체를 본다
+    # 스파이가 크기를 그대로 넘겼는지 - 삼키면 참조집합이 전부 비어 위 두 단언이
+    # 통과한 채로 순열만 조용히 죽는다.
+    assert any(n > 0 for n in perm["n_reference"].values())
 
 
 def test_permutation_p_is_carried_all_the_way_into_the_public_result():
@@ -449,8 +455,10 @@ def test_permutation_p_is_carried_all_the_way_into_the_public_result():
     assert res["fdr_table"] and res["p_family_wise"] is not None
     assert res["p_family_wise_min_possible"] is not None
     for c in res["candidates"]:
+        # n_reference 가 빠지면 바닥값이 왜 후보마다 다른지 설명할 숫자가 없어져
+        # n_permutations_total 과 p_min_possible 이 서로 안 맞아 보인다.
         for field in ("p_permutation", "p_min_possible", "n_permutations_total",
-                      "split_value", "split_direction", "item"):
+                      "n_reference", "split_value", "split_direction", "item"):
             assert field in c, field
 
 

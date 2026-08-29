@@ -76,6 +76,9 @@ def evaluate(spec: dict, group_ids: list[str], control_ids: list[str]) -> dict:
             # hypotheses.yaml 이 LLM 에게 이 필드를 읽으라고 지시한다.
             "p_min_possible": cand.get("p_min_possible"),
             "n_permutations_total": cand.get("n_permutations_total"),
+            # 바닥값은 1/(참조 회차+1) 이고 참조 회차는 후보마다 다르다. 이 숫자가
+            # 없으면 n_permutations_total 과 p_min_possible 이 서로 안 맞아 보인다.
+            "n_reference": cand.get("n_reference"),
         })
         # metro 후보만 갖는 것들. 이게 없으면 LLM 은 "THK >= 129.0" 이라는 key
         # 문자열을 다시 파싱해야 하고, 그러다 129.0 을 놓치거나 방향을 뒤집는다.
