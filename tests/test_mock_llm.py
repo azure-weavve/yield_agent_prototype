@@ -552,6 +552,7 @@ def _rolled_up_claims():
              "confounded_with": [],
              "rolled_up_as": [{"claim_id": "eqp_ch_commonality:equipment:CC001000:PHOT7",
                                "level": "equipment", "key": "PHOT7",
+                               "resolution": "coarser", "of": "PHOT7_B",
                                "target_pass": 4, "target_total": 6,
                                "control_pass": 0, "control_total": 6}]}]
 
@@ -569,6 +570,12 @@ def test_operational_client_tells_the_report_that_a_roll_up_is_not_a_rival():
         status_summary="s", hypothesis="h", confidence=0.9,
         finalize_status="confirmed", claims=_rolled_up_claims(), findings=[])
     assert "rolled_up_as" in client.llm.seen_sys
+    # 목록에는 **양방향**이 담긴다 - 대표가 굵은 이름일 수도 있다(챔버 분모가 작아
+    # 설비 점수가 더 큰 경우). 방향은 항목의 resolution 이 말하고, 그 필드를 읽으라는
+    # 지시가 없으면 LLM 은 목록 전체를 "대표보다 굵은 이름" 으로 읽어 되돌린다.
+    # 필드 이름만 대는 지시는 값의 뜻을 안 알려 준다 - LLM 은 coarser/finer 를
+    # 어느 쪽이 굵은지로 되짚을 길이 없어 방향을 뒤집어 쓴다.
+    assert "coarser" in client.llm.seen_sys and "finer" in client.llm.seen_sys
 
 
 def test_operational_client_repeats_the_roll_up_instruction_beside_the_claims():
@@ -583,4 +590,4 @@ def test_operational_client_repeats_the_roll_up_instruction_beside_the_claims():
         target_wafers=["W1"], target_source="manual", target_group=["W1"],
         status_summary="s", hypothesis="h", confidence=0.9,
         finalize_status="confirmed", claims=_rolled_up_claims(), findings=[])
-    assert "굵은 해상도" in client.llm.seen
+    assert "대조군 범위의 한계로 적어라" in client.llm.seen

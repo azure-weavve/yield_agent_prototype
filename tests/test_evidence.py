@@ -660,3 +660,107 @@ def test_a_different_equipment_at_another_step_is_not_a_roll_up():
     d = evidence.group_to_dict(groups[0])
     assert d["rolled_up_as"] == []
     assert [o["key"] for o in d["confounded_with"]] == ["PHOT8"]
+
+
+def test_the_same_equipment_at_another_step_is_not_a_roll_up():
+    """스텝이 다르면 같은 설비여도 같은 설명이 아니다.
+
+    `level_columns` 에는 legend 컬럼만 들어 있고 **step_seq 는 없다**(eqp_ch 의 컬럼은
+    eqp_id·ch_id 뿐이다). 그런데 후보 키는 (level, step, key) 라 같은 설비가 스텝마다
+    별개 후보로 나온다. 스텝을 안 보면 'CC001000 의 PHOT7' 과 'CC003000 의 PHOT7_B' 가
+    한 설명의 두 해상도로 판정돼 **진짜 교락이 리포트에서 사라진다.** 근거 줄에는
+    step_seq 가 안 찍히므로 읽는 사람이 알아챌 방법도 없다. 같은 설비를 여러 레이어에서
+    쓰거나 재작업 스텝에서 다시 타는 경우라 실데이터에서 흔한 모양이다.
+    """
+    coarse = _cand("h:equipment:CC001000:PHOT7", "PHOT7", 0.8, 0.02, ["W1", "W2"],
+                   level="equipment", step="CC001000")
+    fine = _cand("h:chamber:CC003000:PHOT7_B", "PHOT7_B", 0.8, 0.02, ["W1", "W2"],
+                 level="chamber", step="CC003000")
+    coarse["level_columns"] = {"eqp_id": "PHOT7"}
+    fine["level_columns"] = {"eqp_id": "PHOT7", "ch_id": "B"}
+
+    d = evidence.group_to_dict(evidence.build_bundle([
+        _finding("hyp_eqp_ch", "eqp_ch_commonality", "ok", [coarse, fine])]).ranked_groups()[0])
+    assert d["rolled_up_as"] == []
+    assert [o["key"] for o in d["confounded_with"]] == ["PHOT7"]
+
+
+def test_a_coarser_lead_still_reports_one_explanation_at_two_resolutions():
+    """굵은 쪽이 대표가 돼도 "구분되지 않는다" 로 돌아가면 안 된다.
+
+    챔버 분모는 ch_id 결측 wafer 를 빼므로 설비 분모보다 작다. 대조군에 반례가 있으면
+    (설비 2/10 vs 챔버 2/5) **굵은 쪽의 분리 점수가 더 커져** 대표가 된다. 판정을
+    대표 한 명하고만 하면 세밀한 쪽이 교락으로 흘러, 이 커밋이 없애려던 문장이 그대로
+    돌아온다. 관계는 방향이 있을 뿐 대칭이다.
+    """
+    coarse = _cand("h:equipment:CC001000:PHOT7", "PHOT7", 0.8, 0.02, ["W1", "W2"],
+                   level="equipment")
+    fine = _cand("h:chamber:CC001000:PHOT7_B", "PHOT7_B", 0.6, 0.02, ["W1", "W2"])
+    coarse["level_columns"] = {"eqp_id": "PHOT7"}
+    fine["level_columns"] = {"eqp_id": "PHOT7", "ch_id": "B"}
+
+    d = evidence.group_to_dict(evidence.build_bundle([
+        _finding("hyp_eqp_ch", "eqp_ch_commonality", "ok", [coarse, fine])]).ranked_groups()[0])
+    assert d["key"] == "PHOT7"                      # 순위 규칙은 그대로 (별건)
+    assert [o["key"] for o in d["rolled_up_as"]] == ["PHOT7_B"]
+    assert d["confounded_with"] == []
+    line = evidence.format_group_line(d)
+    assert "교락" not in line and "세밀한 해상도로는 PHOT7_B(chamber)" in line
+
+
+def test_a_roll_up_is_not_counted_as_a_third_rival_beside_another_hypothesis():
+    """레시피가 1등이면 설비·챔버가 **근거 둘**로 세어져 확신도가 부푼다.
+
+    셋이 같은 wafer 를 가리켜 한 묶음이 될 때, 설비와 챔버는 여전히 한 설명이다.
+    대표(레시피)와만 대보면 둘 다 교락 목록에 들어가 리포트가 "서로 다른 설명 셋" 을
+    말한다 - 접기가 막으려던 바로 그 부풀림이다.
+    """
+    eq = _cand("h:equipment:CC001000:PHOT7", "PHOT7", 0.6, 0.05, ["W1", "W2"],
+               level="equipment")
+    ch = _cand("h:chamber:CC001000:PHOT7_B", "PHOT7_B", 0.6, 0.05, ["W1", "W2"])
+    pp = _cand("p:ppid:CC001000:PPID_X", "PPID_X", 0.6, 0.01, ["W1", "W2"], level="ppid")
+    eq["level_columns"] = {"eqp_id": "PHOT7"}
+    ch["level_columns"] = {"eqp_id": "PHOT7", "ch_id": "B"}
+    pp["level_columns"] = {"ppid": "PPID_X"}
+
+    d = evidence.group_to_dict(evidence.build_bundle([
+        _finding("hyp_eqp_ch", "eqp_ch_commonality", "ok", [eq, ch]),
+        _finding("hyp_ppid", "ppid_commonality", "ok", [pp])]).ranked_groups()[0])
+    assert d["key"] == "PPID_X"
+    # 설비는 챔버의 굵은 이름이다 - 레시피와 경합하는 제3의 근거가 아니다
+    assert [o["key"] for o in d["rolled_up_as"]] == ["PHOT7"]
+    assert [o["key"] for o in d["confounded_with"]] == ["PHOT7_B"]
+    # 굵은 이름이 대는 상대는 대표가 아니라 **챔버**다
+    assert "'PHOT7 통과 · PHOT7_B 미통과'" in evidence.format_group_line(d)
+
+
+def test_old_findings_without_level_columns_stay_confounded():
+    """`level_columns` 를 안 싣던 옛 감사 기록도 오판정 없이 떨어져야 한다.
+
+    빈 사전은 어떤 사전의 부분집합이라, 가드가 없으면 옛 후보가 같은 가설의 새 후보에게
+    **무조건** 롤업으로 붙는다. 모르는 것은 교락으로 두는 쪽이 안전하다.
+    """
+    old = _cand("h:equipment:CC001000:PHOT7", "PHOT7", 0.8, 0.02, ["W1", "W2"],
+                level="equipment")                       # level_columns 없음
+    new = _cand("h:chamber:CC001000:PHOT7_B", "PHOT7_B", 0.8, 0.02, ["W1", "W2"])
+    new["level_columns"] = {"eqp_id": "PHOT7", "ch_id": "B"}
+
+    d = evidence.group_to_dict(evidence.build_bundle([
+        _finding("hyp_eqp_ch", "eqp_ch_commonality", "ok", [old, new])]).ranked_groups()[0])
+    assert d["rolled_up_as"] == []
+    assert [o["key"] for o in d["confounded_with"]] == ["PHOT7"]
+
+
+def test_a_folded_name_carries_its_own_numbers_into_the_line():
+    """접힌 이름은 **자기 분모**를 달고 나간다 - 이름만 적으면 대표와 같은 무게로 읽힌다.
+
+    같은 wafer 를 가리켜도 몇 장 중 몇 장인지는 이름마다 다르다(챔버 분모는 ch_id 가
+    결측인 wafer 를 뺀다). 그 수치가 "어느 이름으로 의뢰할 것인가" 의 재료다.
+    """
+    a = _cand("a:1", "CH_B", 0.8, 0.02, ["W1", "W2"])
+    b = _cand("b:1", "PPID_X", 0.8, 0.02, ["W1", "W2"], level="ppid")
+    b["target_total"], b["control_total"] = 4, 3
+    line = evidence.format_group_line(evidence.group_to_dict(
+        evidence.build_bundle([_finding("hyp_a", "a", "ok", [a]),
+                               _finding("hyp_b", "b", "ok", [b])]).ranked_groups()[0]))
+    assert "타깃 2/4" in line and "대조군 0/3" in line

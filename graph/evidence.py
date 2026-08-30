@@ -128,8 +128,14 @@ def _is_roll_up_of(coarse: Claim, fine: Claim) -> bool:
     `{step_seq}` 를 포함하지만, '그 스텝을 지났다' 와 '그 스텝의 계측값이 높다' 는
     해상도 차이가 아니라 서로 다른 두 설명이다. 한 legend 안의 레벨들만이 같은 사실을
     굵게/가늘게 부르기로 선언된 것이다.
+
+    **같은 스텝이어야 한다.** 그 선언은 한 스텝 안에서만 참이다 - `level_columns` 에는
+    legend 컬럼만 있고 step_seq 는 없는데(eqp_ch 의 컬럼은 eqp_id·ch_id 뿐이다) 후보
+    키는 (level, step, key) 라 같은 설비가 스텝마다 별개 후보로 나온다. 스텝을 안 보면
+    'CC001000 의 PHOT7' 과 'CC003000 의 PHOT7_B' 가 같은 설명이 돼 진짜 교락이 리포트에서
+    사라진다. 같은 설비를 여러 레이어에서 쓰거나 재작업 스텝에서 다시 타면 바로 이 모양이다.
     """
-    if coarse.hypothesis_id != fine.hypothesis_id:
+    if coarse.hypothesis_id != fine.hypothesis_id or coarse.step_seq != fine.step_seq:
         return False
     a, b = coarse.level_columns, fine.level_columns
     if not a or not b or not a.keys() < b.keys():   # 진부분집합만 (동률은 같은 레벨)
@@ -257,11 +263,39 @@ def group_to_dict(group: ClaimGroup, picked: bool = False) -> dict:
     # 거리가 아니고 뒤의 것만이 "다음에 무엇을 볼까" 의 입력이다. 한 목록에 담고 항목마다
     # 구분을 붙이는 대신 키를 나누는 이유: LLM 프롬프트가 목록 단위로 지시하므로,
     # 한 목록이면 두 문장을 다르게 쓰라는 지시를 걸 자리가 없다.
-    lead["confounded_with"] = [folded(c) for c in group.claims[1:]
-                               if not _is_roll_up_of(c, group.lead)]
-    lead["rolled_up_as"] = [folded(c) for c in group.claims[1:]
-                            if _is_roll_up_of(c, group.lead)]
+    others, resolutions = [], []
+    for c in group.claims[1:]:
+        rel = _resolution_of(c, group)
+        (resolutions if rel else others).append({**folded(c), **(rel or {})})
+    lead["confounded_with"] = others
+    lead["rolled_up_as"] = resolutions
     return lead
+
+
+def _resolution_of(claim: Claim, group: ClaimGroup) -> dict | None:
+    """이 후보가 묶음 안에서 **같은 설명의 다른 해상도**인가. 아니면 None.
+
+    대표하고만 대보면 안 된다. 분리 점수는 분모를 타므로(챔버 분모는 ch_id 결측 wafer 를
+    뺀다) 굵은 쪽이 대표가 될 수 있고, 제3의 가설이 1등이면 설비·챔버가 둘 다 대표와
+    무관해진다. 그 두 경우에 판정이 통째로 꺼져 "구분되지 않는다" 가 돌아왔다.
+
+    상대를 함께 돌려주는 이유: 문장이 "대조군에 'PHOT7 통과 · PHOT7_B 미통과' 인 wafer 가
+    없다" 라고 **두 이름을 대고** 주장하는데, 상대가 늘 대표인 것은 아니다.
+
+    **세밀한 쪽은 대표와의 관계에서만 접는다.** 굵은 이름은 언제나 다른 후보를 되풀이한
+    것이라 근거로 셀 수 없지만, 세밀한 이름은 대표와 경합하는 진짜 후보일 수 있다
+    (레시피가 1등이면 챔버는 레시피의 경쟁 설명이다 - 설비의 세부라는 이유로 접으면
+    경합 관계가 사라진다).
+    """
+    lead = group.lead
+    if _is_roll_up_of(claim, lead):
+        return {"resolution": "coarser", "of": lead.key}
+    if _is_roll_up_of(lead, claim):
+        return {"resolution": "finer", "of": lead.key}
+    for other in group.claims[1:]:
+        if other is not claim and _is_roll_up_of(claim, other):
+            return {"resolution": "coarser", "of": other.key}
+    return None
 
 
 def groups_to_dicts(groups: list[ClaimGroup], picked: ClaimGroup | None = None) -> list[dict]:
@@ -315,9 +349,13 @@ def format_group_line(group: dict) -> str:
     # "구분되지 않는다" 로 끝내지 않고 무엇을 보면 갈리는지를 적는다. 조치도 다르다:
     # 교락은 다른 축을 더 보는 것이고, 이건 대조군 범위를 넓히는 것이다.
     for o in group.get("rolled_up_as") or []:
-        line += (f"\n        굵은 해상도로는 {o['key']}({o['level']}) 다"
-                 f"{_folded_detail(o)} - 대조군에 '{o['key']} 통과 · "
-                 f"{group.get('key')} 미통과' 인 wafer 가 없어 둘을 가를 대조가 없다")
+        # 방향과 상대를 문장이 그대로 말한다. 상대가 늘 대표인 것은 아니다 - 제3의
+        # 가설이 1등이면 설비가 대는 상대는 대표가 아니라 챔버다.
+        coarse = o.get("resolution") != "finer"
+        wide, narrow = (o["key"], o["of"]) if coarse else (o["of"], o["key"])
+        line += (f"\n        {'굵은' if coarse else '세밀한'} 해상도로는 "
+                 f"{o['key']}({o['level']}) 다{_folded_detail(o)} - 대조군에 "
+                 f"'{wide} 통과 · {narrow} 미통과' 인 wafer 가 없어 둘을 가를 대조가 없다")
     if group.get("tied"):
         # 번호만 보면 앞선 것이 더 강해 보인다. 실제로는 순열 p 도 분리 점수도 같아
         # 우열을 가릴 근거가 없다 - 그 사실이 다음에 무엇을 볼지 정하는 입력이다.
