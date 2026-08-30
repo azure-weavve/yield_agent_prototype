@@ -712,6 +712,12 @@ def find_commonality(target_wafers: list[str], control_wafers: list[str],
             cand["n_reference"] = perm["n_reference"][key]
         for col in all_cols:               # legend 컬럼값을 이름별로 (미해당은 None)
             cand[col] = colvals.get(col)
+        # 같은 값이지만 **이 후보를 정의한 컬럼만** 담는다. 위의 평평한 쪽은 미해당
+        # 컬럼이 None 으로 들어 있어 "설비 후보에게 ch_id 가 있는가" 를 물을 수 없다.
+        # 그 유무가 설비 ETCH9 ⊃ 챔버 ETCH9_B(한 설명의 두 해상도)와 챔버 vs 레시피
+        # (다른 두 설명)를 가르는 유일한 재료다 - level 이름을 알아보는 것은 축이 늘면
+        # 깨지고, key 문자열 파싱은 hypotheses.yaml 이 금지한다.
+        cand["level_columns"] = {c: colvals[c] for c in all_cols if c in colvals}
         candidates.append(cand)
  
     candidates.sort(key=lambda r: (-r["score"], -r["coverage_target"],

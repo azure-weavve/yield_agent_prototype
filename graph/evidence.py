@@ -35,6 +35,10 @@ class Claim:
     # (metro 의 split_value 처럼 축마다 있고 없는 것과 다르다).
     target_wafers: tuple[str, ...] = ()
     control_wafers: tuple[str, ...] = ()
+    # 이 후보를 정의한 legend 컬럼값 (설비 = {eqp_id}, 챔버 = {eqp_id, ch_id}).
+    # 접힌 두 이름이 **한 설명의 두 해상도**인지 **다른 두 설명**인지를 코드가 가르는
+    # 재료다. wafer 목록과 같은 이유로 1급이다 - 축 무관이고, 게이트가 읽는다.
+    level_columns: dict = field(default_factory=dict)
     # 축마다 있고 없는 값들(coverage_*, metro 의 item·split_value·split_direction 등).
     # 예전에는 엔진이 실어도 여기서 통째로 잘려 **코드 게이트가 못 보는** 상태였다.
     # 축이 늘 때마다 이 dataclass 를 고치지 않으려고 한 자리에 모아 둔다.
@@ -47,7 +51,7 @@ _FIRST_CLASS_FIELDS = frozenset({
     "claim_id", "hypothesis_id", "step_seq", "key", "level", "passes",
     "reject_reason", "score", "target_pass", "target_total",
     "control_pass", "control_total", "p_permutation", "p_min_possible",
-    "target_wafers", "control_wafers",
+    "target_wafers", "control_wafers", "level_columns",
 })
 
 
@@ -71,7 +75,12 @@ class ClaimGroup:
 
     @property
     def confounded(self) -> bool:
-        """같은 wafer 를 두 가지 이상의 이름으로 설명하고 있다."""
+        """같은 wafer 를 두 가지 이상의 이름으로 설명하고 있다.
+
+        **접혔다는 사실만 말한다.** 그것이 다른 두 설명(교락)인지 한 설명의 두
+        해상도(설비 ⊃ 챔버)인지는 `_is_roll_up_of` 가 가른다 - 리포트와 LLM 에는
+        두 갈래가 다른 문장으로 나간다.
+        """
         return len(self.claims) > 1
 
     @property
@@ -106,6 +115,36 @@ def _rank_key(claim: Claim) -> tuple:
     """
     p = claim.p_permutation
     return (1.0 if p is None else p, -claim.score)
+
+
+def _is_roll_up_of(coarse: Claim, fine: Claim) -> bool:
+    """coarse 가 fine 을 **굵은 해상도로 부른 같은 설명**인가.
+
+    설비 `PHOT7` 과 챔버 `PHOT7_B` 는 한 설명의 두 해상도이고, 챔버와 레시피는 다른 두
+    설명이다. 앞의 것을 "현재 증거로는 구분되지 않는다" 로 내보내면 엔지니어에게는
+    당연한 소리이고, 그 문장이 진짜 미해결과 섞이면 어느 쪽이 조사할 거리인지 흐려진다.
+
+    **같은 가설이어야 한다.** 컬럼만 보면 metro `{step_seq, item}` 이 스텝 통과
+    `{step_seq}` 를 포함하지만, '그 스텝을 지났다' 와 '그 스텝의 계측값이 높다' 는
+    해상도 차이가 아니라 서로 다른 두 설명이다. 한 legend 안의 레벨들만이 같은 사실을
+    굵게/가늘게 부르기로 선언된 것이다.
+    """
+    if coarse.hypothesis_id != fine.hypothesis_id:
+        return False
+    a, b = coarse.level_columns, fine.level_columns
+    if not a or not b or not a.keys() < b.keys():   # 진부분집합만 (동률은 같은 레벨)
+        return False
+    return all(b.get(col) == val for col, val in a.items())
+
+
+def _fold_key(claim: Claim) -> tuple:
+    """묶음 **안에서** 대표를 고르는 순서. 우열이 같으면 더 세밀한 쪽이 대표다.
+
+    대표는 리포트가 지목하는 이름이고 곧 의뢰 대상이다. 설비와 챔버가 접혔을 때 굵은
+    쪽을 지목하면 조사 범위를 쓸데없이 넓힌다. 지금까지 챔버가 앞선 것은 claim_id
+    문자열에서 'c' < 'e' 였기 때문일 뿐이라 이름이 바뀌면 뒤집힌다.
+    """
+    return (*_rank_key(claim), -len(claim.level_columns), claim.claim_id)
 
 
 def _sort_key(claim: Claim) -> tuple:
@@ -175,7 +214,7 @@ class Bundle:
                 key = (frozenset(claim.target_wafers), frozenset(claim.control_wafers))
             buckets.setdefault(key, []).append(claim)
 
-        groups = [ClaimGroup(claims=tuple(sorted(cs, key=_sort_key)))
+        groups = [ClaimGroup(claims=tuple(sorted(cs, key=_fold_key)))
                   for cs in buckets.values()]
         return sorted(groups, key=lambda g: g.sort_key)
 
@@ -206,14 +245,22 @@ def group_to_dict(group: ClaimGroup, picked: bool = False) -> dict:
     # 손실이 된다 - 같은 wafer 를 가리켜도 분모(target_total)와 p 는 다를 수 있고,
     # 그 차이가 "어느 이름으로 의뢰할 것인가" 를 정하는 재료다. 예를 들어 계측
     # 후보는 분모가 계측된 몇 장뿐이라 같은 wafer 를 가리켜도 근거의 무게가 다르다.
-    lead["confounded_with"] = [
-        {"claim_id": c.claim_id, "hypothesis_id": c.hypothesis_id,
-         "level": c.level, "key": c.key, "step_seq": c.step_seq,
-         "score": c.score, "p_permutation": c.p_permutation,
-         "target_pass": c.target_pass, "target_total": c.target_total,
-         "control_pass": c.control_pass, "control_total": c.control_total}
-        for c in group.claims[1:]
-    ]
+    def folded(c: Claim) -> dict:
+        return {"claim_id": c.claim_id, "hypothesis_id": c.hypothesis_id,
+                "level": c.level, "key": c.key, "step_seq": c.step_seq,
+                "score": c.score, "p_permutation": c.p_permutation,
+                "target_pass": c.target_pass, "target_total": c.target_total,
+                "control_pass": c.control_pass, "control_total": c.control_total}
+
+    # **접힌 이유를 두 갈래로 나눈다.** 굵은 해상도로 부른 같은 설명(설비 ⊃ 챔버)과
+    # 다른 두 설명(챔버 vs 레시피)은 엔지니어에게 완전히 다른 정보다 - 앞의 것은 조사할
+    # 거리가 아니고 뒤의 것만이 "다음에 무엇을 볼까" 의 입력이다. 한 목록에 담고 항목마다
+    # 구분을 붙이는 대신 키를 나누는 이유: LLM 프롬프트가 목록 단위로 지시하므로,
+    # 한 목록이면 두 문장을 다르게 쓰라는 지시를 걸 자리가 없다.
+    lead["confounded_with"] = [folded(c) for c in group.claims[1:]
+                               if not _is_roll_up_of(c, group.lead)]
+    lead["rolled_up_as"] = [folded(c) for c in group.claims[1:]
+                            if _is_roll_up_of(c, group.lead)]
     return lead
 
 
@@ -260,20 +307,38 @@ def format_group_line(group: dict) -> str:
         # 는 축마다 다르다(계측 축은 잰 wafer 만 분모다). 이름만 적으면 접힌 쪽이
         # 대표와 같은 무게인 것처럼 읽힌다.
         for o in others:
-            detail = ""
-            if o.get("target_total") is not None:
-                detail = (f" · 타깃 {o['target_pass']}/{o['target_total']}"
-                          f" · 대조군 {o['control_pass']}/{o['control_total']}")
-                if o.get("p_permutation") is not None:
-                    detail += f" · 순열 p {o['p_permutation']}"
             line += (f"\n        같은 wafer 를 {o['key']}({o['level']}) 로도 설명할 수 "
-                     f"있다 (교락){detail} - 현재 증거로는 구분되지 않는다")
+                     f"있다 (교락){_folded_detail(o)} - 현재 증거로는 구분되지 않는다")
+    # 포함관계는 **다른 문장으로 적는다.** 접기 기준이 대조군 집합까지 같을 것이므로,
+    # 대조군 중 그 설비를 지났으면서 이 챔버는 아닌 wafer 가 하나라도 있으면 두 후보는
+    # 애초에 안 접힌다 - 즉 접혔다는 사실 자체가 "그 대조가 없다" 의 증명이다. 그래서
+    # "구분되지 않는다" 로 끝내지 않고 무엇을 보면 갈리는지를 적는다. 조치도 다르다:
+    # 교락은 다른 축을 더 보는 것이고, 이건 대조군 범위를 넓히는 것이다.
+    for o in group.get("rolled_up_as") or []:
+        line += (f"\n        굵은 해상도로는 {o['key']}({o['level']}) 다"
+                 f"{_folded_detail(o)} - 대조군에 '{o['key']} 통과 · "
+                 f"{group.get('key')} 미통과' 인 wafer 가 없어 둘을 가를 대조가 없다")
     if group.get("tied"):
         # 번호만 보면 앞선 것이 더 강해 보인다. 실제로는 순열 p 도 분리 점수도 같아
         # 우열을 가릴 근거가 없다 - 그 사실이 다음에 무엇을 볼지 정하는 입력이다.
         line += ("\n        같은 등수의 근거가 더 있다 - 순열 p 와 분리 점수가 같아 "
                  "어느 쪽이 유력한지 현재 증거로는 정할 수 없다")
     return line
+
+
+def _folded_detail(o: dict) -> str:
+    """접힌 후보의 수치. 이름만 적으면 대표와 같은 무게인 것처럼 읽힌다.
+
+    같은 wafer 를 가리켜도 **몇 장 중 몇 장인지**는 이름마다 다르다 - 챔버 분모는
+    ch_id 가 결측인 wafer 를 빼므로 설비 분모와 같지 않을 수 있다.
+    """
+    if o.get("target_total") is None:
+        return ""
+    detail = (f" · 타깃 {o['target_pass']}/{o['target_total']}"
+              f" · 대조군 {o['control_pass']}/{o['control_total']}")
+    if o.get("p_permutation") is not None:
+        detail += f" · 순열 p {o['p_permutation']}"
+    return detail
 
 
 def format_evidence_line(claim: dict) -> str:
@@ -373,6 +438,7 @@ def build_bundle(findings: list[dict]) -> Bundle:
                 # (센서 등 다른 형태의 결과)에도 빈 튜플로 안전하게 떨어진다.
                 target_wafers=tuple(c.get("target_wafers") or ()),
                 control_wafers=tuple(c.get("control_wafers") or ()),
+                level_columns=dict(c.get("level_columns") or {}),
                 # 1급이 아닌 것은 버리지 않고 여기 모은다. 예전에는 coverage_* 와
                 # metro 의 split_value 가 이 경계에서 조용히 사라져, LLM 은 보는데
                 # **코드 게이트는 못 보는** 값이 됐다.

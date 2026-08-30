@@ -202,3 +202,22 @@ def test_evaluate_carries_the_fdr_table_and_family_wise_p(fx_db):
     # 1등의 p 도 바닥값을 동반해야 한다 - 최상위 값이라 근거 줄이 교정 못 해 준다
     assert res["p_family_wise_min_possible"] == raw["p_family_wise_min_possible"]
     assert res["p_family_wise"] >= res["p_family_wise_min_possible"]
+
+
+def test_evaluate_carries_the_level_columns_so_roll_ups_can_be_recognised(fx_db):
+    """어느 legend 컬럼이 이 후보를 정의했는가가 게이트까지 가야 한다.
+
+    설비 ETCH9 와 챔버 ETCH9_B 는 **한 설명의 두 해상도**이고, 레시피 PPID_X 는
+    다른 설명이다. 그 차이를 코드가 알 유일한 재료가 컬럼값인데, 여기서 화이트리스트
+    매핑에 걸려 잘려 나가면 evidence 는 둘을 똑같이 '교락' 으로 부른다. level 이름을
+    알아보거나 key 문자열을 파싱하는 것은 대안이 아니다 - 축이 늘면 깨지고,
+    hypotheses.yaml 이 key 파싱을 금지한다.
+    """
+    res = engine.evaluate({"id": "eqp_ch", "legend": EQP_CH},
+                          ["G1", "G2", "G3"], ["C1", "C2", "C3"])
+    by_key = {c["key"]: c for c in res["candidates"]}
+    assert by_key["ETCH9_B"]["level_columns"] == {"eqp_id": "ETCH9", "ch_id": "B"}
+    assert by_key["ETCH9"]["level_columns"] == {"eqp_id": "ETCH9"}
+    # 미해당 컬럼은 None 으로 남지 않고 **빠진다** - 포함관계 판정이 컬럼 유무로
+    # 이뤄지므로, None 이 섞이면 설비 후보가 ch_id 를 가진 것처럼 읽힌다.
+    assert "ch_id" not in by_key["ETCH9"]["level_columns"]

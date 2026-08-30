@@ -533,3 +533,130 @@ def test_a_real_floor_is_still_marked_as_the_samples_best():
     line = evidence.format_evidence_line(
         {**CAND_PASS, "p_permutation": 0.05, "p_min_possible": 0.05})
     assert "이 표본의 최소값" in line
+
+
+# --- 포함관계(롤업) vs 진짜 교락 -------------------------------------------
+#
+# 접힌 두 이름이 **한 설명의 두 해상도**(설비 PHOT7 ⊃ 챔버 PHOT7_B)인지 **다른 두
+# 설명**(챔버 vs 레시피)인지는 엔지니어에게 완전히 다른 정보다. 앞의 것은 "현재
+# 증거로는 구분되지 않는다" 고 적으면 당연한 소리가 되고, 뒤의 것만이 다음에 무엇을
+# 볼지 정하는 진짜 미해결이다. 판별은 legend 컬럼의 포함관계로 한다 - level 이름을
+# 알아보거나 key 문자열을 파싱하면 축이 늘 때마다 깨진다(hypotheses.yaml 이 key
+# 파싱을 명시적으로 금지한다).
+
+
+def _nested_pair():
+    """같은 가설의 두 해상도. 설비 = 챔버의 롤업."""
+    coarse = _cand("h:equipment:PHOT7", "PHOT7", 0.667, 0.03,
+                   ["W1", "W2"], level="equipment")
+    fine = _cand("h:chamber:PHOT7_B", "PHOT7_B", 0.667, 0.03,
+                 ["W1", "W2"], level="chamber")
+    coarse["level_columns"] = {"eqp_id": "PHOT7"}
+    fine["level_columns"] = {"eqp_id": "PHOT7", "ch_id": "B"}
+    return coarse, fine
+
+
+def test_a_rolled_up_name_is_not_reported_as_confounding():
+    """설비 ⊃ 챔버는 교락이 아니다 - 같은 설명을 굵게 부른 것뿐이다."""
+    coarse, fine = _nested_pair()
+    groups = evidence.build_bundle([
+        _finding("hyp_eqp_ch", "eqp_ch_commonality", "ok", [coarse, fine])]).ranked_groups()
+
+    d = evidence.group_to_dict(groups[0])
+    assert [o["key"] for o in d["rolled_up_as"]] == ["PHOT7"]
+    assert d["confounded_with"] == []
+
+
+def test_the_finer_name_leads_a_nested_group():
+    """의뢰 대상이 되는 쪽(챔버)이 대표다.
+
+    지금은 p·score 가 같아 claim_id 문자열 순서('c' < 'e')로 우연히 챔버가 앞선다.
+    이름이 바뀌면 뒤집히는데, 그때 리포트는 "설비 PHOT7 을 보라(챔버 PHOT7_B 로도
+    설명 가능)" 이라고 적어 조사 범위를 쓸데없이 넓힌다.
+    """
+    coarse, fine = _nested_pair()
+    # 문자열 순서를 일부러 뒤집는다 - 지금 챔버가 앞서는 것은 'c' < 'e' 덕분이다
+    coarse["claim_id"], fine["claim_id"] = "a:equipment:PHOT7", "z:chamber:PHOT7_B"
+    groups = evidence.build_bundle([
+        _finding("hyp_eqp_ch", "eqp_ch_commonality", "ok", [coarse, fine])]).ranked_groups()
+
+    assert groups[0].lead.key == "PHOT7_B"
+
+
+def test_a_nested_line_says_what_would_separate_the_two_resolutions():
+    """접혔다는 사실 자체가 '대조군에 그 설비의 다른 챔버가 없다' 의 증명이다.
+
+    접기 기준이 대조군 집합까지 같을 것이므로, 대조군 중 PHOT7 의 다른 챔버를 지난
+    wafer 가 하나라도 있으면 두 후보는 애초에 안 접힌다. 그러니 여기서는 "구분되지
+    않는다" 로 끝내지 말고 무엇을 보면 갈리는지를 적어야 한다.
+    """
+    coarse, fine = _nested_pair()
+    groups = evidence.build_bundle([
+        _finding("hyp_eqp_ch", "eqp_ch_commonality", "ok", [coarse, fine])]).ranked_groups()
+
+    line = evidence.format_group_line(evidence.group_to_dict(groups[0]))
+    assert "교락" not in line
+    # 굵은 이름은 그 이름으로 적힌다 - 'PHOT7' 만 찾으면 대표 'PHOT7_B' 에 걸려
+    # 새 문장이 없어도 통과한다(실제로 그렇게 통과했다).
+    assert "PHOT7(equipment)" in line
+    assert "가를 대조가 없다" in line
+
+
+def test_two_different_explanations_are_still_confounding():
+    """레시피는 설비의 해상도가 아니다 - 컬럼이 겹치지 않으면 진짜 교락이다."""
+    ch = _cand("a:1", "ETCH9_B", 0.8, 0.02, ["W1", "W2"], level="chamber")
+    ppid = _cand("b:1", "PPID_X", 0.8, 0.02, ["W1", "W2"], level="ppid")
+    ch["level_columns"] = {"eqp_id": "ETCH9", "ch_id": "B"}
+    ppid["level_columns"] = {"ppid": "PPID_X"}
+
+    groups = evidence.build_bundle([
+        _finding("hyp_a", "eqp_ch_commonality", "ok", [ch]),
+        _finding("hyp_b", "ppid_commonality", "ok", [ppid])]).ranked_groups()
+
+    d = evidence.group_to_dict(groups[0])
+    assert [o["key"] for o in d["confounded_with"]] == ["PPID_X"]
+    assert d["rolled_up_as"] == []
+    assert "교락" in evidence.format_group_line(d)
+
+
+def test_a_finer_axis_of_another_hypothesis_is_not_a_roll_up():
+    """컬럼이 포함관계여도 가설이 다르면 롤업이 아니다.
+
+    metro 후보는 {step_seq, item} 이고 step 통과 후보는 {step_seq} 라 컬럼만 보면
+    포함관계로 읽힌다. 그러나 '그 스텝을 지났다' 와 '그 스텝의 계측값이 높다' 는
+    해상도 차이가 아니라 서로 다른 두 설명이다.
+    """
+    passage = _cand("s:1", "CC002000", 0.8, 0.02, ["W1", "W2"], level="step_passage")
+    metro = _cand("m:1", "THK >= 129.0", 0.8, 0.02, ["W1", "W2"], level="metro")
+    passage["level_columns"] = {"step_seq": "CC002000"}
+    metro["level_columns"] = {"step_seq": "CC002000", "item": "THK"}
+
+    groups = evidence.build_bundle([
+        _finding("hyp_s", "step_passage_commonality", "ok", [passage]),
+        _finding("hyp_m", "metro_commonality", "ok", [metro])]).ranked_groups()
+
+    d = evidence.group_to_dict(groups[0])
+    assert d["rolled_up_as"] == []
+    assert len(d["confounded_with"]) == 1
+
+
+def test_a_different_equipment_at_another_step_is_not_a_roll_up():
+    """컬럼 이름이 포함관계여도 **값이 다르면** 같은 설명이 아니다.
+
+    타깃 4장이 스텝 A 에서 PHOT8 을, 스텝 B 에서 PHOT7_B 를 지났으면 두 후보는 같은
+    wafer 를 가리켜 접힌다. 컬럼 이름만 보고 롤업으로 판정하면 **진짜 교락이 조용히
+    '당연한 소리' 로 강등돼** 리포트에서 사라진다 - 접기가 정보 손실이 되는 자리다.
+    """
+    coarse = _cand("h:equipment:PHOT8", "PHOT8", 0.8, 0.02, ["W1", "W2"],
+                   level="equipment", step="CC001000")
+    fine = _cand("h:chamber:PHOT7_B", "PHOT7_B", 0.8, 0.02, ["W1", "W2"],
+                 level="chamber", step="CC003000")
+    coarse["level_columns"] = {"eqp_id": "PHOT8"}
+    fine["level_columns"] = {"eqp_id": "PHOT7", "ch_id": "B"}
+
+    groups = evidence.build_bundle([
+        _finding("hyp_eqp_ch", "eqp_ch_commonality", "ok", [coarse, fine])]).ranked_groups()
+
+    d = evidence.group_to_dict(groups[0])
+    assert d["rolled_up_as"] == []
+    assert [o["key"] for o in d["confounded_with"]] == ["PHOT8"]

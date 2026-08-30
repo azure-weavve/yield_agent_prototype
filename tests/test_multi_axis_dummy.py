@@ -260,8 +260,35 @@ def test_both_axes_survive_the_gate_and_reach_the_report():
     # 두 축의 이름이 모두 리포트에 남는다
     assert f"{MULTI_TRUTH_EQP}_{MULTI_TRUTH_CH}" in report
     assert MULTI_TRUTH_PPID in report
-    # 교락은 "같은 사실" 로 명시된다 - 근거를 둘로 세지 않는다
-    assert "교락" in report and "구분되지 않는다" in report
+    # 이 lot 에서 접힌 유일한 쌍은 설비 PHOT7 ⊃ 챔버 PHOT7_B 다. 두 해상도를
+    # "현재 증거로는 구분되지 않는다" 로 내보내면 엔지니어에게는 당연한 소리이고,
+    # 진짜 미해결(챔버냐 레시피냐)과 같은 문장이라 어느 쪽이 조사할 거리인지 흐려진다.
+    assert "교락" not in report
+    assert MULTI_TRUTH_EQP in report and "대조군" in report
+
+
+def test_a_genuine_confounding_pair_keeps_saying_it_cannot_be_told_apart():
+    """LOT2406 은 반대 경우다 - 챔버 ETCH9_B 와 레시피 PPID_X 는 다른 두 설명이다.
+
+    포함관계를 걸러내는 변경이 **진짜 교락까지 같이 지워 버리면** 리포트는 근거를
+    하나로 줄이고, 무엇을 더 봐야 갈리는지가 사라진다. 두 경우가 같은 데이터에서
+    갈리는 것을 실측으로 잠근다(여기서는 설비 롤업이 score 0 으로 소멸한다 -
+    대조군이 ETCH9 의 다른 챔버를 지났기 때문이다).
+    """
+    from data.generate_dummy import CONTROL_WAFERS, GROUP_WAFERS
+    from graph import evidence
+
+    findings = [{"loop": 1, "tool": f"hyp_{spec['id']}", "args": {},
+                 "result": engine.evaluate(spec, GROUP_WAFERS, CONTROL_WAFERS),
+                 "thought": ""}
+                for spec in registry.load_hypotheses()]
+    groups = evidence.build_bundle(findings).ranked_groups()
+    dicts = evidence.groups_to_dicts(groups)
+
+    assert len(dicts) == 1 and len(dicts[0]["confounded_with"]) == 1
+    assert dicts[0]["rolled_up_as"] == []
+    line = evidence.format_group_line(dicts[0])
+    assert "교락" in line and "구분되지 않는다" in line
 
 
 def test_every_tied_group_is_accepted_not_just_the_first():

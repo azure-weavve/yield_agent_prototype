@@ -56,6 +56,10 @@ def evaluate(spec: dict, group_ids: list[str], control_ids: list[str]) -> dict:
             "passes": passes,
             "reject_reason": reject,
             "level": cand["level"],
+            # 이 후보를 정의한 legend 컬럼값. 게이트가 접힌 두 이름이 **한 설명의 두
+            # 해상도**(설비 ⊃ 챔버)인지 **다른 두 설명**(챔버 vs 레시피)인지 가르는
+            # 재료다. legend 가 없는 축(metro)은 안 싣고, 그 축은 롤업이 없다.
+            "level_columns": cand.get("level_columns", {}),
             "key": cand["key"],
             "step_seq": cand["step_seq"],
             "score": cand["score"],

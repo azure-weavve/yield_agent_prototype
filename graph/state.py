@@ -27,7 +27,8 @@ class AgentState(TypedDict, total=False):
     final_confidence: float                         # 승인 시 확신도
     # 승인된 근거 **목록** (게이트가 접고 줄 세운 것). 예전에는 dict 하나였고, 그래서
     # 축이 여럿일 때 LLM 이 고른 것 말고는 리포트에 도달하지 못했다. 각 항목은 대표
-    # claim + `confounded_with`(같은 wafer 를 가리키는 다른 이름들) + `picked_by_llm`.
+    # claim + `confounded_with`(같은 wafer 를 가리키는 **다른 설명**들) +
+    # `rolled_up_as`(같은 설명의 굵은 해상도 - 설비 ⊃ 챔버) + `picked_by_llm`.
     final_claims: list[dict]
     # 어디까지 봤는가: {"ran": [...], "failed": [...], "unrun": [...], "no_data": [...]}.
     # `failed`(실행 중 터진 축)를 `unrun` 과 가르는 이유는 조치가 다르기 때문이다 -

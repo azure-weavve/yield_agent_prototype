@@ -542,3 +542,45 @@ def test_operational_client_hedges_a_conclusion_whose_axes_crashed():
     assert "unrun 이나 failed 가 비어 있지 않으면" in client.llm.seen
     # sys 지시도 같이 열려야 산문 톤이 바뀐다 - user 쪽 JSON 만으로는 안 바뀐다.
     assert "도구 실패로 못 돈 축(failed)이 있으면" in client.llm.seen_sys
+
+
+def _rolled_up_claims():
+    return [{"claim_id": "eqp_ch_commonality:chamber:CC001000:PHOT7_B",
+             "level": "chamber", "key": "PHOT7_B", "step_seq": "CC001000",
+             "score": 0.667, "p_permutation": 0.03, "rank": 1, "tied": False,
+             "target_pass": 4, "target_total": 6, "control_pass": 0, "control_total": 6,
+             "confounded_with": [],
+             "rolled_up_as": [{"claim_id": "eqp_ch_commonality:equipment:CC001000:PHOT7",
+                               "level": "equipment", "key": "PHOT7",
+                               "target_pass": 4, "target_total": 6,
+                               "control_pass": 0, "control_total": 6}]}]
+
+
+def test_operational_client_tells_the_report_that_a_roll_up_is_not_a_rival():
+    """굵은 해상도(설비)와 세밀한 이름(챔버)은 경합하는 두 근거가 아니다.
+
+    지시가 없으면 LLM 은 confounded_with 지시를 유추 적용해 "설비 PHOT7 인지 챔버
+    PHOT7_B 인지 현재 증거로는 구분되지 않는다" 로 쓴다 - 엔지니어가 읽으면 당연한
+    소리이고, 진짜 미해결(챔버냐 레시피냐)과 같은 문장이라 조사할 거리가 흐려진다.
+    """
+    client = _openai_client()
+    client.generate_report(
+        target_wafers=["W1"], target_source="manual", target_group=["W1"],
+        status_summary="s", hypothesis="h", confidence=0.9,
+        finalize_status="confirmed", claims=_rolled_up_claims(), findings=[])
+    assert "rolled_up_as" in client.llm.seen_sys
+
+
+def test_operational_client_repeats_the_roll_up_instruction_beside_the_claims():
+    """지시가 sys 에만 있으면 claims JSON 바로 옆의 지시와 어긋난다.
+
+    `rolled_up_as` 라는 키 이름은 claims 를 통째로 실으면 저절로 user 에 들어가므로
+    그것만 확인하면 아무것도 못 잡는다. 여기서 잠그는 것은 **지시 문구**다 - 이
+    저장소에서 sys 와 user 두 렌더링이 엇갈리는 결함이 반복해서 나왔다.
+    """
+    client = _openai_client()
+    client.generate_report(
+        target_wafers=["W1"], target_source="manual", target_group=["W1"],
+        status_summary="s", hypothesis="h", confidence=0.9,
+        finalize_status="confirmed", claims=_rolled_up_claims(), findings=[])
+    assert "굵은 해상도" in client.llm.seen
