@@ -156,12 +156,98 @@ def test_evidence_line_marks_a_p_that_sits_at_the_floor():
 
 # ---------------------------------------------------------------- 접기와 순위
 
-def _cand(claim_id, key, score, p, wafers, level="chamber", step="CC002000"):
+def _cand(claim_id, key, score, p, wafers, level="chamber", step="CC002000",
+          floor=0.001):
     return {"claim_id": claim_id, "level": level, "step_seq": step, "key": key,
             "passes": True, "reject_reason": None, "score": score,
             "target_pass": len(wafers), "target_total": 6,
             "control_pass": 0, "control_total": 6,
-            "p_permutation": p, "target_wafers": list(wafers), "control_wafers": []}
+            "p_permutation": p, "p_min_possible": floor,
+            "target_wafers": list(wafers), "control_wafers": []}
+
+
+def _groups(*cands):
+    """후보마다 축을 하나씩 줘서 묶음 목록을 만든다 (접히지 않게 wafer 를 가른다)."""
+    return evidence.build_bundle([
+        _finding(f"hyp_{i}", f"h{i}", "ok", [c])
+        for i, c in enumerate(cands)]).ranked_groups()
+
+
+def _by_key(groups, key):
+    return next(g for g in groups if g.lead.key == key)
+
+
+def test_candidates_at_their_floor_do_not_lose_to_a_smaller_p():
+    """바닥에 걸린 후보는 더 작은 p 에게 지지 않는다.
+
+    X 는 참조가 8회뿐이라 완전 분리인데도 p 0.111 에서 멈춘다. Y 는 참조가 300회라
+    더 내려갈 수 있었는데 0.05 에서 멈췄다. 공통 해상도는 거친 쪽인 0.111 이고,
+    거기서는 둘 다 "그 이하" 라 갈리지 않는다. 예전 규칙은 Y 가 이겼다고 봤다.
+    """
+    groups = _groups(
+        _cand("x:1", "AT_FLOOR", 1.0, 0.111, ["W1", "W2"], floor=0.111),
+        _cand("y:1", "SMALL_P", 0.55, 0.050, ["W3", "W4"], floor=0.003))
+    gx, gy = _by_key(groups, "AT_FLOOR"), _by_key(groups, "SMALL_P")
+    assert not evidence.dominates(gx, gy)
+    assert not evidence.dominates(gy, gx)
+
+
+def test_a_candidate_that_wins_at_the_shared_resolution_dominates():
+    """공통 해상도에서 실제로 갈리면 이긴다. 규칙이 전부를 동점으로 만들면 안 된다."""
+    groups = _groups(
+        _cand("y:1", "SMALL_P", 0.55, 0.050, ["W3", "W4"], floor=0.003),
+        _cand("z:1", "TINY_P", 0.55, 0.002, ["W5", "W6"], floor=0.003))
+    gy, gz = _by_key(groups, "SMALL_P"), _by_key(groups, "TINY_P")
+    assert evidence.dominates(gz, gy)
+    assert not evidence.dominates(gy, gz)
+
+
+def test_statistical_evidence_beats_evidence_without_statistics():
+    """p 없는 증거는 통계 등급 아래다 - 등급이 다르면 값을 안 본다.
+
+    분리 점수 0.99 짜리 무통계 증거가 p 0.40 짜리 통계 증거를 못 이긴다.
+    """
+    groups = _groups(
+        _cand("s:1", "WITH_P", 0.55, 0.40, ["W1", "W2"], floor=0.01),
+        _cand("b:1", "NO_P", 0.99, None, ["W3", "W4"], floor=None))
+    gs, gb = _by_key(groups, "WITH_P"), _by_key(groups, "NO_P")
+    assert evidence.dominates(gs, gb)
+    assert not evidence.dominates(gb, gs)
+
+
+def test_a_floor_of_one_means_no_statistics_at_all():
+    """참조 0회(바닥 1.0)는 "우연이다" 가 아니라 "비교할 표본이 없었다" 다.
+
+    통계가 실제로 없으므로 p 를 안 내는 증거와 같은 등급으로 내린다. 분리 점수가
+    1.0 이어도 마찬가지다 - 그 숫자를 근거로 설비를 세우면 안 된다.
+    """
+    groups = _groups(
+        _cand("e:1", "NO_REFERENCE", 1.0, 1.0, ["W1", "W2"], floor=1.0),
+        _cand("w:1", "WEAK", 0.55, 0.40, ["W3", "W4"], floor=0.01))
+    ge, gw = _by_key(groups, "NO_REFERENCE"), _by_key(groups, "WEAK")
+    assert evidence.dominates(gw, ge)
+    assert not evidence.dominates(ge, gw)
+
+
+def test_score_breaks_ties_only_inside_one_axis():
+    """분리 점수는 축을 가로지르면 안 되는 자다.
+
+    점수는 탐색 폭에 따라 부풀고 그 정도가 축마다 다르다(계측 축은 무신호에서도
+    후보의 48.7%가 판별선을 넘는다). p 가 같을 때 축을 넘어 점수로 가르면 탐색이
+    넓은 축이 늘 이긴다 - p 를 1순위로 둔 이유가 사라진다.
+    """
+    same_axis = evidence.build_bundle([
+        _finding("hyp_a", "a", "ok", [
+            _cand("a:1", "HIGH", 0.90, 0.02, ["W1", "W2"]),
+            _cand("a:2", "LOW", 0.60, 0.02, ["W3", "W4"])])]).ranked_groups()
+    assert evidence.dominates(_by_key(same_axis, "HIGH"),
+                              _by_key(same_axis, "LOW"))
+
+    cross = _groups(_cand("a:1", "HIGH", 0.90, 0.02, ["W1", "W2"]),
+                    _cand("b:1", "LOW", 0.60, 0.02, ["W3", "W4"]))
+    hi, lo = _by_key(cross, "HIGH"), _by_key(cross, "LOW")
+    assert not evidence.dominates(hi, lo)      # 축이 다르면 점수로 못 가른다
+    assert not evidence.dominates(lo, hi)
 
 
 def test_ranking_puts_permutation_p_ahead_of_the_raw_score():

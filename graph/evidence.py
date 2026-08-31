@@ -117,6 +117,50 @@ def _rank_key(claim: Claim) -> tuple:
     return (1.0 if p is None else p, -claim.score)
 
 
+def _is_statistical(claim: Claim) -> bool:
+    """이 후보에게 통계적 근거가 있는가. **없으면 순위에서 별도 등급으로 내린다.**
+
+    바닥이 1.0 이라는 것은 참조 회차가 0 이라는 뜻이고, 그것은 "우연이다" 가 아니라
+    **"비교할 귀무 표본이 하나도 없었다"** 다
+    (`tools/commonality.py::_null_distribution`). 분리 점수가 1.0 이어도 통계적
+    근거는 없으므로, p 를 아예 안 내는 증거(2단 센서·잔차)와 같은 등급이다.
+
+    바닥만 없고 p 는 있는 조합은 도구가 둘을 같이 싣기 때문에 실경로에서는 안
+    생긴다(`domain/engine.py::evaluate`). 생기면 보수적으로 비통계로 떨어뜨린다.
+    """
+    if claim.p_permutation is None:
+        return False
+    floor = claim.p_min_possible if claim.p_min_possible is not None else 1.0
+    return floor < 1.0
+
+
+def dominates(a: ClaimGroup, b: ClaimGroup) -> bool:
+    """a 가 b 를 **확실히** 이기는가. 아니면 둘은 갈리지 않는 것이다.
+
+    비교는 두 후보가 **둘 다 표현할 수 있는 해상도**에서만 한다. 순열 p 의 바닥은
+    1/(참조회차+1) 이고 참조 회차는 후보마다 다르므로(참조집합을 표본 크기가 같은
+    회차로 좁힌 2026-08-29 변경), 거친 쪽 바닥 아래로는 두 후보 모두 말할 수 있는
+    것이 없다. 그 아래를 비교하면 순위가 **신호 세기가 아니라 참조집합 크기**를
+    따라간다 - 참조 8회의 완전 분리 후보가 참조 300회의 약한 후보에게 진다.
+
+    비통계 쌍은 p 계산을 **건너뛴다.** 없는 값을 1.0 으로 채워 넣으면 "참조 0회라
+    p 가 1.0" 인 후보와 "p 를 아예 안 낸" 후보가 같은 값이 되어, 나중에 등급 판정을
+    고칠 때 한쪽이 조용히 따라 움직인다.
+    """
+    x, y = a.lead, b.lead
+    sx, sy = _is_statistical(x), _is_statistical(y)
+    if sx != sy:
+        return sx                      # 통계 등급이 비통계 등급을 이긴다
+    if sx:
+        floor = max(x.p_min_possible, y.p_min_possible)   # 공통 해상도
+        px, py = max(x.p_permutation, floor), max(y.p_permutation, floor)
+        if px != py:
+            return px < py
+    # p 로는 안 갈렸다. 점수는 탐색 폭에 따라 부풀고 그 정도가 축마다 다르므로
+    # **같은 축 안에서만** 쓴다 - 축을 넘으면 탐색이 넓은 축이 늘 이긴다.
+    return x.hypothesis_id == y.hypothesis_id and x.score > y.score
+
+
 def _is_roll_up_of(coarse: Claim, fine: Claim) -> bool:
     """coarse 가 fine 을 **굵은 해상도로 부른 같은 설명**인가.
 
