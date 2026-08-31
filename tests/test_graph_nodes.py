@@ -265,10 +265,14 @@ def test_gate_cites_the_p_floor_when_it_names_a_stronger_candidate():
     """순위 반려에 **바닥값**을 같이 싣는다 - 없으면 LLM 이 고칠 수가 없다.
 
     귀무 참조집합을 표본 크기가 같은 회차로 좁히면서 p 의 해상도가 후보마다 달라졌다.
-    아래 픽스처가 그 상태다: 완전 분리(점수 1.0)인 후보가 참조 회차가 적어 p 0.3333
-    에서 **바닥에 걸려** 멈췄고, 더 약한 후보(점수 0.667)가 참조가 많아 p 0.05 로
-    내려가 1등이 됐다. 숫자 둘(p·점수)만 인용하면 "완전 분리인데 왜 졌나" 가 설명이
-    안 되고, LLM 은 반려를 받아도 무엇을 고쳐야 할지 알 수 없다.
+    아래 픽스처가 그 상태다: 완전 분리(점수 1.0)인 ETCH2_B 는 참조 회차가 적어 p
+    0.3333 에서 **바닥에 걸려** 멈췄고, 더 약한 PHOT2_X(점수 0.667)는 참조가 많아
+    p 0.05 까지 내려간다. 공통 해상도(둘 다 표현할 수 있는 바닥, 0.3333)로 클램프
+    하면 둘은 **동점**이다 - 그 동점은 같은 축(hypothesis_id) 안의 분리 점수가
+    깨고, 점수가 더 높은 ETCH2_B 가 이긴다. PHOT2_X 를 지목하면 반려당해야 하는데,
+    숫자 둘(p·점수)만 인용하면 "참조가 더 적은 쪽에 왜 졌나" 가 설명이 안 되고
+    LLM 은 반려를 받아도 무엇을 고쳐야 할지 알 수 없다 - 두 후보의 바닥값을
+    함께 인용해야 동점이 해상도 차이 때문이라는 것이 보인다.
     """
     finding = {
         "loop": 2, "tool": "hyp_eqp_ch_commonality", "args": {},
@@ -286,13 +290,13 @@ def test_gate_cites_the_p_floor_when_it_names_a_stronger_candidate():
         ]},
         "thought": "해상도가 갈린 두 후보",
     }
-    ai = _ai_finalize(0.9, claim_id="eqp_ch_commonality:chamber:CC002000:ETCH2_B")
+    ai = _ai_finalize(0.9, claim_id="eqp_ch_commonality:chamber:CD004000:PHOT2_X")
     out = nodes.tools_node({"messages": [ai], "loop_count": 3, "findings": [finding]})
 
     assert "finalize_accepted" not in out
     content = out["messages"][0].content
-    assert "바닥 0.3333" in content, "진 후보가 바닥에 걸렸다는 것을 안 알려 준다"
-    assert "바닥 0.05" in content, "이긴 후보의 해상도를 안 알려 준다"
+    assert "바닥 0.05" in content, "진 후보(PHOT2_X)의 바닥을 안 알려 준다"
+    assert "바닥 0.3333" in content, "이긴 후보(ETCH2_B)가 바닥에 걸렸다는 것을 안 알려 준다"
 
 
 def test_gate_accepts_a_claim_tied_at_the_top_rank():

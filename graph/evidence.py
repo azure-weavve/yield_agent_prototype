@@ -161,6 +161,35 @@ def dominates(a: ClaimGroup, b: ClaimGroup) -> bool:
     return x.hypothesis_id == y.hypothesis_id and x.score > y.score
 
 
+def layer_ranks(groups: list[ClaimGroup]) -> list[int]:
+    """각 묶음의 등수. **지배당하지 않은 것 전부가 1등**이고, 걷어내고 반복한다.
+
+    정렬로 못 하는 이유: **비교 불가는 이행적이지 않다.** 바닥 0.111 인 X 와 p
+    0.05 인 Y 는 동점인데(공통 해상도 0.111 에서 둘 다 그 이하) Y 는 p 0.002 인
+    Z 에게 진다 - X~Y, X~Z 인데 Z>Y 다. 비교자로 정렬하면 입력 순서에 따라 답이
+    달라진다.
+
+    지배 관계 자체는 이행적이라 순환이 없지만(설계 문서 §2.1) 안전판을 둔다 -
+    증명이 닿지 않는 자리에서 순환이 한 번 나면 무한 루프이고, 그건 분석 전체가
+    멎는다는 뜻이다.
+    """
+    ranks = [0] * len(groups)
+    remaining = list(range(len(groups)))
+    layer = 1
+    while remaining:
+        front = [i for i in remaining
+                 if not any(dominates(groups[j], groups[i])
+                            for j in remaining if j != i)]
+        if not front:                       # 안전판: 순환이면 남은 전부를 한 층으로
+            front = list(remaining)
+        for i in front:
+            ranks[i] = layer
+        taken = set(front)
+        remaining = [i for i in remaining if i not in taken]
+        layer += 1
+    return ranks
+
+
 def _is_roll_up_of(coarse: Claim, fine: Claim) -> bool:
     """coarse 가 fine 을 **굵은 해상도로 부른 같은 설명**인가.
 
@@ -266,7 +295,13 @@ class Bundle:
 
         groups = [ClaimGroup(claims=tuple(sorted(cs, key=_fold_key)))
                   for cs in buckets.values()]
-        return sorted(groups, key=lambda g: g.sort_key)
+        groups.sort(key=lambda g: g.sort_key)          # 같은 등수 안의 표시 순서
+        # **등수를 먼저 본다.** 표시 순서(전순서 키)와 등수가 어긋나면 리포트에서
+        # `[근거 2]` 가 `[근거 1]` 위에 찍힌다 - 바닥에 걸린 후보는 p 가 커서
+        # 전순서로는 뒤인데 등수는 1등일 수 있다. 파이썬 정렬은 안정적이라 같은
+        # 등수 안에서는 위에서 잡은 표시 순서가 그대로 유지된다.
+        ranks = layer_ranks(groups)
+        return [g for _, g in sorted(zip(ranks, groups), key=lambda pair: pair[0])]
 
 
 def find_group(groups: list[ClaimGroup], claim_id: str) -> ClaimGroup | None:
@@ -348,15 +383,11 @@ def groups_to_dicts(groups: list[ClaimGroup], picked: ClaimGroup | None = None) 
     번호만 매기면 `[근거 1]` 과 `[근거 2]` 가 강약으로 읽힌다. 그런데 p 도 점수도
     같으면 우열을 가릴 근거가 실제로 없다 - 그 "못 가린다" 를 표현하지 못하는 것이
     바로 이 프로젝트가 고치려는 결함이다(무엇을 모르는지 알아야 다음에 무엇을 볼지
-    추천할 수 있다). 표시 순서를 고정하는 claim_id 는 `sort_key` 에만 있고 `rank_key`
-    에는 없다 - 우열을 묻는 자리에 그것이 섞이면 안 된다.
+    추천할 수 있다). 등수는 `layer_ranks` 가 지배 관계로 매긴다 - 표시 순서를
+    고정하는 `sort_key` 는 우열을 묻는 자리에 절대 들어가면 안 된다.
     """
     out: list[dict] = []
-    rank, prev = 0, None
-    for i, group in enumerate(groups):
-        key = group.rank_key              # 우열만. claim_id 는 여기 없다
-        if key != prev:
-            rank, prev = i + 1, key
+    for group, rank in zip(groups, layer_ranks(groups)):
         item = group_to_dict(group, picked=(group is picked))
         item["rank"] = rank
         out.append(item)

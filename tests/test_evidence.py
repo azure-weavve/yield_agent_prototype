@@ -274,6 +274,59 @@ def test_missing_permutation_p_ranks_last():
     assert [g.lead.key for g in b.ranked_groups()] == ["HAS_P", "NO_P"]
 
 
+def test_layers_handle_intransitive_incomparability():
+    """비교 불가는 이행적이지 않다 - 그래서 정렬이 아니라 층위여야 한다.
+
+    X~Y, X~Z 인데 Z>Y 다. 비교자로 정렬하면 입력 순서에 따라 답이 달라진다.
+    Z 는 아무에게도 안 지므로 1등, X 도 아무에게도 안 지므로 1등, Y 는 Z 에게
+    졌으므로 2등이다.
+    """
+    groups = _groups(
+        _cand("x:1", "AT_FLOOR", 1.0, 0.111, ["W1"], floor=0.111),
+        _cand("y:1", "SMALL_P", 0.55, 0.050, ["W2"], floor=0.003),
+        _cand("z:1", "TINY_P", 0.55, 0.002, ["W3"], floor=0.003))
+    ranks = dict(zip((g.lead.key for g in groups), evidence.layer_ranks(groups)))
+    assert ranks == {"AT_FLOOR": 1, "TINY_P": 1, "SMALL_P": 2}
+
+
+def test_evidence_without_statistics_leads_when_nothing_else_ran():
+    """통계 후보가 0건이면 p 없는 증거가 1등 층으로 올라온다.
+
+    등급은 절대 순서가 아니라 상대 순서다 - 위가 비면 아래가 1등이다. 이것이
+    A 작업(센서·잔차를 claim 으로 승격)에서 그 증거가 리포트에 도달하는 경로다.
+    """
+    groups = _groups(_cand("b:1", "NO_P", 0.9, None, ["W1"], floor=None),
+                     _cand("c:1", "ALSO_NO_P", 0.7, None, ["W2"], floor=None))
+    assert evidence.layer_ranks(groups) == [1, 1]
+
+
+def test_layer_ranks_terminates_when_domination_cycles(monkeypatch):
+    """지배가 순환하면 한 층으로 내고 끝낸다 - 안전판이 없으면 무한 루프다.
+
+    설계 문서 §2.1 이 지배 관계의 이행성을 증명하지만 그 증명은 등급·축내 점수
+    조건이 섞이지 않은 경우를 다룬다. 증명이 닿지 않는 자리에서 순환이 나면 분석
+    전체가 멎으므로, 안전판 자체를 잠근다.
+    """
+    monkeypatch.setattr(evidence, "dominates", lambda a, b: True)   # 전원이 서로를 이긴다
+    groups = _groups(_cand("a:1", "A", 0.9, 0.01, ["W1"]),
+                     _cand("b:1", "B", 0.8, 0.02, ["W2"]))
+    assert evidence.layer_ranks(groups) == [1, 1]
+
+
+def test_display_order_follows_the_layer_not_the_raw_p():
+    """표시 순서가 등수와 어긋나면 리포트에서 [근거 2] 가 [근거 1] 위에 찍힌다.
+
+    바닥에 걸린 AT_FLOOR 는 p 가 0.111 로 커서 전순서 키로는 맨 뒤인데 등수는
+    1등이다. `ranked_groups` 는 등수를 먼저 보고 정렬해야 한다.
+    """
+    groups = _groups(
+        _cand("x:1", "AT_FLOOR", 1.0, 0.111, ["W1"], floor=0.111),
+        _cand("y:1", "SMALL_P", 0.55, 0.050, ["W2"], floor=0.003),
+        _cand("z:1", "TINY_P", 0.55, 0.002, ["W3"], floor=0.003))
+    assert [g.lead.key for g in groups][-1] == "SMALL_P"   # 2등이 맨 뒤
+    assert evidence.layer_ranks(groups) == [1, 1, 2]
+
+
 def test_identical_wafer_sets_fold_across_axes():
     """축이 달라도 같은 wafer 를 가리키면 한 근거다 (교락)."""
     b = evidence.build_bundle([
