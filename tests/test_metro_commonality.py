@@ -654,8 +654,9 @@ def test_no_signal_data_does_not_produce_a_flood_of_small_p():
     assert sampled < 0.15, f"샘플링 조건인데 p<=0.10 이 {sampled:.1%}"
     assert full < 0.15, f"전수 계측인데 p<=0.10 이 {full:.1%}"
     # **핵심 단언.** 계측 샘플링이 걸렸다는 이유만으로 p 분포가 달라지면 안 된다 -
-    # 순열 p 는 축을 가로지르는 유일한 자라(`graph/evidence.py` 의 `_rank_key`),
-    # metro 만 압축되면 계측 축이 구조적으로 다른 축을 이긴다.
+    # 순열 p 는 축을 가로지르는 유일한 자라(`graph/evidence.py` 의 `dominates`),
+    # metro 만 압축되면 계측 축이 구조적으로 다른 축을 이긴다. 단 p 는 **자기 바닥과
+    # 함께** 읽어야 하고, 비교는 두 후보의 공통 해상도에서 이뤄진다.
     assert 0.7 < sampled / full < 1.3, (
         f"샘플링/전수 비 {sampled / full:.2f} — 계측 샘플링이 p 분포를 흔들고 있다")
 

@@ -383,6 +383,21 @@ def test_tied_groups_share_a_rank_and_say_so():
     assert "정할 수 없다" in evidence.format_group_line(dicts[0])
 
 
+def test_tie_line_explains_resolution_not_equal_numbers():
+    """동점 문장이 이유를 옛 규칙으로 설명하면 안 된다.
+
+    새 규칙에서는 p 가 0.111 과 0.050 으로 **달라도** 동점이다. "순열 p 와 분리
+    점수가 같아" 라고 적으면 바로 옆에 다른 숫자를 찍어 놓고 같다고 말하는 꼴이다.
+    """
+    groups = _groups(
+        _cand("x:1", "AT_FLOOR", 1.0, 0.111, ["W1"], floor=0.111),
+        _cand("y:1", "SMALL_P", 0.55, 0.050, ["W2"], floor=0.003))
+    dicts = evidence.groups_to_dicts(groups)
+    line = evidence.format_group_line(dicts[0])
+    assert "해상도" in line
+    assert "순열 p 와 분리 점수가 같아" not in line
+
+
 def test_distinct_ranks_are_not_marked_tied():
     b = evidence.build_bundle([
         _finding("hyp_a", "a", "ok", [_cand("a:1", "A", 0.7, 0.01, ["W1", "W2"])]),

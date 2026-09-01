@@ -68,3 +68,23 @@ def test_the_eqp_ch_description_tells_the_llm_not_to_double_count_a_roll_up():
     spec = {s["id"]: s for s in registry.load_hypotheses()}["eqp_ch_commonality"]
     assert "level_columns" in spec["description"]
     assert "같은 wafer" in spec["description"]
+
+
+def test_every_hypothesis_tells_the_llm_that_p_is_read_with_its_floor():
+    """순위가 **공통 해상도**에서 매겨진다는 것도 yaml 계약에 있어야 한다 - 4가설 전부에.
+
+    분석 루프 LLM 은 게이트를 거치기 전에 도구 결과를 직접 읽고 다음 행동을 고른다.
+    p 만 보고 "내 후보가 졌다" 고 판단하면, 바닥에 걸려 0.111 에서 멈춘 완전 분리
+    후보를 p 0.05 짜리 약한 후보에게 내주고 스스로 버린다. 코드는 그 둘을 동점으로
+    본다.
+
+    **4가설 전부를 센다.** 통계 해석 문단이 복붙돼 있어 한 곳만 고치면 나머지 셋이
+    옛 계약으로 남는데, 지난 순열 p 교정에서 리뷰 Important 2건이 정확히 그 구멍이었다.
+    """
+    specs = registry.load_hypotheses()
+    assert len(specs) == 4
+    for spec in specs:
+        d = spec["description"]
+        assert "둘 다 표현할 수 있는 해상도" in d, spec["id"]
+        assert "지지 않는다" in d, spec["id"]
+        assert "통계적 근거가 없는 것으로 취급" in d, spec["id"]
