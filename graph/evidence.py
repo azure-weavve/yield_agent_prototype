@@ -156,11 +156,17 @@ def layer_ranks(groups: list[ClaimGroup]) -> list[int]:
     지배 관계 자체는 이행적이라 순환이 없지만(설계 문서 §2.1) 안전판을 둔다 -
     증명이 닿지 않는 자리에서 순환이 한 번 나면 무한 루프이고, 그건 분석 전체가
     멎는다는 뜻이다.
+
+    **끝나는 것과 맞는 것을 따로 보장한다.** 층은 묶음 수를 넘을 수 없으므로 루프를
+    그 수로 묶는다 - 안전판이 하는 일은 순환일 때 등수를 **맞게** 매기는 것이고,
+    안 끝나는 것을 막는 것은 루프 경계다. 둘을 한 곳에 걸면 안전판이 사라졌을 때
+    실패 모드가 행(hang)이 되어 스위트가 통째로 멎는다(2026-08-28 사고).
     """
     ranks = [0] * len(groups)
     remaining = list(range(len(groups)))
-    layer = 1
-    while remaining:
+    for layer in range(1, len(groups) + 1):
+        if not remaining:
+            break
         front = [i for i in remaining
                  if not any(dominates(groups[j], groups[i])
                             for j in remaining if j != i)]
@@ -170,7 +176,6 @@ def layer_ranks(groups: list[ClaimGroup]) -> list[int]:
             ranks[i] = layer
         taken = set(front)
         remaining = [i for i in remaining if i not in taken]
-        layer += 1
     return ranks
 
 
@@ -364,16 +369,19 @@ def _resolution_of(claim: Claim, group: ClaimGroup) -> dict | None:
 def _tie_reason(group: ClaimGroup, peers: list[ClaimGroup]) -> str:
     """**왜** 갈리지 않는가. 사유마다 엔지니어가 할 일이 다르다.
 
-    - `resolution`: p 가 서로 다른데 거친 쪽 바닥에 걸려 못 가른다. **표본을 늘리면
-      갈릴 수 있다** - 참조 회차가 늘면 바닥이 내려간다.
-    - `cross_axis`: p 는 같고 축이 달라 분리 점수를 안 쓴다. 표본을 더 모아도
-      **이 규칙으로는 영원히 안 갈린다** - 두 축을 직접 가르는 대조를 찾아야 한다.
-    - `identical`: 같은 축인데 p 도 점수도 같다. 두 후보가 같은 wafer 를 다르게
-      부르는 것은 아닌지(교락) 부터 본다.
+    - `resolution`: 어느 한쪽의 p 가 **공통 해상도에 걸려 있다**. 걸린 값은 "그
+      이하" 라는 뜻이라 진짜 우열을 알 수 없다. **표본을 늘리면 갈릴 수 있다** -
+      참조 회차가 늘면 바닥이 내려간다.
+    - `cross_axis`: p 는 둘 다 실측값인데 같고, 축이 달라 분리 점수를 안 쓴다.
+      표본을 더 모아도 **이 규칙으로는 영원히 안 갈린다** - 두 축을 직접 가르는
+      대조를 찾아야 한다.
+    - `identical`: 축과 무관하게 p 도 점수도 같다. 같은 축이었어도 안 갈렸다.
+      두 후보가 같은 wafer 를 다르게 부르는 것은 아닌지(교락) 부터 본다.
     - `no_statistics`: 어느 쪽도 귀무 표본이 없다. 순위 이전의 문제다.
 
     하나로 뭉뚱그리면 안 되는 이유가 이것이다. "해상도에서 갈리지 않는다" 만 적으면
-    `cross_axis` 인 엔지니어가 wafer 를 더 모으고, 그래도 안 갈린다.
+    `cross_axis` 인 엔지니어가 wafer 를 더 모으고, 그래도 안 갈린다. 거꾸로도 같다 -
+    바닥에 걸린 것을 `cross_axis` 로 부르면 갈릴 수 있는 것을 포기시킨다.
 
     같은 등수 안에서는 통계 등급이 섞이지 않는다 - `dominates` 가 통계 등급을
     비통계 등급보다 위로 올리므로 둘이 같은 층에 설 수 없다. 그래서 대표 하나의
@@ -382,12 +390,18 @@ def _tie_reason(group: ClaimGroup, peers: list[ClaimGroup]) -> str:
     lead = group.lead
     if not _is_statistical(lead):
         return "no_statistics"
-    if any(p.lead.p_permutation != lead.p_permutation for p in peers):
-        return "resolution"          # clamp 가 없었으면 갈렸다
+    leads = [lead, *(p.lead for p in peers)]
+    # **clamp 가 우열을 덮었는지**를 묻는다. "원 p 가 다른가" 로 물으면 놓치는 경우가
+    # 있다 - 두 후보의 p 가 우연히 같아도 한쪽이 자기 바닥에 걸려 있으면 그 값은
+    # "그 이하" 이므로, 참조 회차를 늘리면 실제로 갈린다. 그때 축 탓을 하면
+    # "더 모아도 소용없다" 는 정반대 안내가 나간다.
+    floor = max(c.p_min_possible for c in leads)
+    if any(c.p_permutation <= floor for c in leads):
+        return "resolution"
     # 축이 다른 것만으로는 부족하다. **점수까지 같으면** 같은 축이었어도 갈리지
     # 않았을 것이므로, 축 탓을 하면 "점수가 갈랐을 텐데" 로 잘못 읽힌다.
-    if any(p.lead.hypothesis_id != lead.hypothesis_id and p.lead.score != lead.score
-           for p in peers):
+    if any(c.hypothesis_id != lead.hypothesis_id and c.score != lead.score
+           for c in leads):
         return "cross_axis"
     return "identical"
 

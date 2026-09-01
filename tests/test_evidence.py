@@ -306,27 +306,17 @@ def test_layer_ranks_terminates_when_domination_cycles(monkeypatch):
     설계 문서 §2.1 이 지배 관계의 이행성을 증명하지만 그 증명은 등급·축내 점수
     조건이 섞이지 않은 경우를 다룬다. 증명이 닿지 않는 자리에서 순환이 나면 분석
     전체가 멎으므로, 안전판 자체를 잠근다.
+
+    **안전판이 사라져도 행(hang)이 아니다.** 루프가 묶음 수로 묶여 있어 등수가 0으로
+    남고, 그것을 아래에서 잡는다. 실패가 스위트를 멈추면 훼손 파일이 다음 실행의
+    기준선이 되는 사고가 난다(2026-08-28). 이 보장은 `layer_ranks` 의 루프 경계에
+    있으므로 `dominates` 를 어떻게 부르든(메모이제이션·인라인) 그대로 유지된다.
     """
     # **묶음을 먼저 만들고 그다음에 훼손한다.** `_groups` 안의 `ranked_groups()` 가
-    # 이미 `layer_ranks` 를 부르므로, 순서를 뒤집으면 아래 상한에 닿기도 전에 멎는다.
+    # 이미 `layer_ranks` 를 부르므로, 순서를 뒤집으면 픽스처부터 어긋난다.
     groups = _groups(_cand("a:1", "A", 0.9, 0.01, ["W1"]),
                      _cand("b:1", "B", 0.8, 0.02, ["W2"]))
-
-    # **탈출구를 훼손 자체에 심는다.** 안전판이 없을 때의 실패 모드는 예외가 아니라
-    # **행(hang)** 이라, 그냥 부르면 스위트가 통째로 멎는다. 이 저장소는 훼손 실험이
-    # 도구 타임아웃에 죽어 훼손 파일이 다음 실행의 기준선이 된 사고를 겪었다
-    # (2026-08-28). 루프가 매 회차 `dominates` 를 부르므로 호출 수에 상한을 두면
-    # 안 끝나는 것이 **즉시 예외로** 드러난다 - 시간 제한이나 별도 스레드가 필요
-    # 없고, 실패 뒤에 도는 것이 아무것도 안 남는다.
-    calls = {"n": 0}
-
-    def always_dominates(a, b):
-        calls["n"] += 1
-        if calls["n"] > 10_000:
-            raise RuntimeError("layer_ranks 가 끝나지 않는다 - 안전판이 없다")
-        return True
-
-    monkeypatch.setattr(evidence, "dominates", always_dominates)   # 전원이 서로를 이긴다
+    monkeypatch.setattr(evidence, "dominates", lambda a, b: True)   # 전원이 서로를 이긴다
     assert evidence.layer_ranks(groups) == [1, 1]
 
 
@@ -418,6 +408,25 @@ def test_tie_line_explains_resolution_not_equal_numbers():
     line = evidence.format_group_line(dicts[0])
     assert "이 표본들이 낼 수 있는 해상도에서는 갈리지 않아" in line
     assert "순열 p 와 분리 점수가 같아" not in line
+
+
+def test_a_p_pinned_to_its_floor_is_a_resolution_tie_even_when_the_numbers_match():
+    """p 숫자가 같아도 **한쪽이 자기 바닥에 걸려 있으면** 해상도 문제다.
+
+    바닥에 걸린 값은 "그 이하" 라는 뜻이라, 우연히 상대와 같은 숫자로 찍혔을 뿐
+    진짜 우열은 모른다. 참조 회차를 늘리면 바닥이 내려가 실제로 갈린다. 이것을
+    `cross_axis` 로 부르면 **"더 모아도 소용없다" 는 정반대 안내**가 나간다 -
+    바로 같은 줄이 "(이 표본의 최소값)" 을 찍고 있는데도.
+
+    "원 p 가 서로 다른가" 로 물으면 이 경우를 놓친다. 물어야 할 것은 **clamp 가
+    우열을 덮었는가**다.
+    """
+    groups = _groups(
+        _cand("x:1", "AT_FLOOR", 0.9, 0.1111, ["W1"], floor=0.1111),   # 참조 8회
+        _cand("y:1", "MEASURED", 0.3, 0.1111, ["W2"], floor=0.0556))   # 참조 17회
+    dicts = evidence.groups_to_dicts(groups)
+    assert [d["tie_reason"] for d in dicts] == ["resolution", "resolution"]
+    assert "해상도에서는 갈리지 않아" in evidence.format_group_line(dicts[0])
 
 
 def test_a_cross_axis_tie_does_not_blame_the_resolution():

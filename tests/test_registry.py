@@ -71,7 +71,7 @@ def test_the_eqp_ch_description_tells_the_llm_not_to_double_count_a_roll_up():
 
 
 def test_every_hypothesis_tells_the_llm_that_p_is_read_with_its_floor():
-    """순위가 **공통 해상도**에서 매겨진다는 것도 yaml 계약에 있어야 한다 - 4가설 전부에.
+    """순위가 **공통 해상도**에서 매겨진다는 것도 yaml 계약에 있어야 한다 - 가설 전부에.
 
     분석 루프 LLM 은 게이트를 거치기 전에 도구 결과를 직접 읽고 다음 행동을 고른다.
     p 만 보고 "내 후보가 졌다" 고 판단하면, 바닥에 걸려 0.111 에서 멈춘 완전 분리
