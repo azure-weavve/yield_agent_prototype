@@ -2273,3 +2273,90 @@ def test_full_coverage_no_signal_does_not_hedge_a_conclusion_it_earned():
     msg = out["messages"][0].content
     assert "분리되는 후보 없음" in msg
     assert "결론은 돌린 축에 한한" not in msg
+
+
+def _rank_cand(claim_id, key, step, score, p, floor, wafer):
+    return {"claim_id": claim_id, "level": "chamber", "step_seq": step, "key": key,
+            "passes": True, "reject_reason": None, "score": score,
+            "target_pass": 2, "target_total": 6,
+            "control_pass": 0, "control_total": 6,
+            "p_permutation": p, "p_min_possible": floor,
+            "target_wafers": [wafer], "control_wafers": []}
+
+
+def _rank_finding(tool, hypothesis_id, cands, loop=1):
+    return {"loop": loop, "tool": tool, "args": {}, "thought": "t",
+            "result": {"hypothesis_id": hypothesis_id, "status": "ok",
+                       "candidates": cands}}
+
+
+def test_gate_approves_any_member_of_the_first_layer():
+    """1등 층 안이면 정렬상 맨 앞이 아니어도 승인한다.
+
+    예전 계약은 `groups[0]` 과 우열 키가 같은지를 물었다. 새 규칙에서는 등수가
+    같아도 키가 다를 수 있다 - 바닥이 다른 두 후보는 p 가 달라도 동점이다. 키로
+    물으면 동점이라고 리포트에 적어 놓고 게이트는 반려하는 모순이 난다.
+    """
+    findings = [
+        _rank_finding("hyp_a", "a",
+                      [_rank_cand("a:1", "TINY_P", "CC001000", 0.55, 0.002, 0.003, "W1")]),
+        _rank_finding("hyp_b", "b",
+                      [_rank_cand("b:1", "AT_FLOOR", "CC002000", 1.0, 0.111, 0.111, "W2")],
+                      loop=2),
+    ]
+    update = {}
+    verdict = nodes._finalize_gate(
+        {"claim_id": "b:1", "hypothesis": "바닥에 걸린 쪽", "confidence": 0.9},
+        1, update, findings)
+    assert update.get("finalize_status") == "confirmed", verdict
+    assert any(c.get("picked_by_llm") for c in update["final_claims"])
+
+
+def test_gate_rejection_names_the_candidate_that_actually_beat_it():
+    """반려는 **실제로 이긴 근거**를 대야 한다 - 정렬상 1등이 아니라.
+
+    `a:1` 은 p 가 가장 작아 목록 맨 앞이지만 지목(`b:lo`)을 **이기지 못한다** -
+    공통 해상도 0.111 에서 둘 다 그 이하로 내려가 갈리지 않고, 축이 달라 점수로도
+    못 가른다. 실제로 이긴 것은 같은 축에서 분리 점수가 더 높은 `b:hi` 다.
+    맨 앞을 그냥 집어 대면 LLM 은 자기가 왜 졌는지 못 읽고, 이기지도 않은 후보로
+    지목을 옮겼다가 다시 반려당한다. 바닥도 함께 인용해야 두 숫자를 같이 읽는다.
+    """
+    findings = [
+        _rank_finding("hyp_a", "a",
+                      [_rank_cand("a:1", "TINY_P", "CC001000", 0.55, 0.002, 0.003, "W1")]),
+        _rank_finding("hyp_b", "b", [
+            _rank_cand("b:hi", "AT_FLOOR_HI", "CC002000", 0.9, 0.111, 0.111, "W2"),
+            _rank_cand("b:lo", "AT_FLOOR_LO", "CC003000", 0.6, 0.111, 0.111, "W3"),
+        ], loop=2),
+    ]
+    update = {}
+    verdict = nodes._finalize_gate(
+        {"claim_id": "b:lo", "hypothesis": "같은 축에서 진 쪽", "confidence": 0.9},
+        1, update, findings)
+    assert "finalize_status" not in update           # 반려는 종료가 아니다
+    assert "b:hi" in verdict and "바닥" in verdict
+    assert "a:1" not in verdict                      # 맨 앞은 이 후보를 이기지 않았다
+
+
+def test_gate_does_not_tell_a_first_layer_pick_that_it_lost():
+    """1등 층 후보가 확신도로 반려될 때 "졌다" 고 말하면 안 된다.
+
+    `b:1` 은 정렬상 맨 앞이 아니지만 등수는 1등이다 - 공통 해상도에서 `a:1` 과
+    갈리지 않는다. 옛 계약처럼 맨 앞과 키가 같은지로 물으면 여기서 순위 반려가
+    나가고, LLM 은 **이기지도 않은 후보로 지목을 옮긴 뒤 같은 이유로 또 반려**
+    당한다. 부족한 것이 순위가 아니라 확신도일 때는 그렇게 말해야 고칠 수 있다.
+    """
+    findings = [
+        _rank_finding("hyp_a", "a",
+                      [_rank_cand("a:1", "TINY_P", "CC001000", 0.55, 0.002, 0.003, "W1")]),
+        _rank_finding("hyp_b", "b",
+                      [_rank_cand("b:1", "AT_FLOOR", "CC002000", 1.0, 0.111, 0.111, "W2")],
+                      loop=2),
+    ]
+    update = {}
+    verdict = nodes._finalize_gate(
+        {"claim_id": "b:1", "hypothesis": "바닥에 걸린 쪽", "confidence": 0.5},
+        1, update, findings)
+    assert "finalize_status" not in update           # 확신도 미달이라 승인은 아니다
+    assert "확신도" in verdict, verdict
+    assert "졌다" not in verdict, verdict            # 순위로 반려한 것이 아니다

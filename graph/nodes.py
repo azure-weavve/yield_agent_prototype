@@ -371,10 +371,15 @@ def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) ->
     failed = coverage["failed"]
     groups = bundle.ranked_groups()
     picked = evidence.find_group(groups, claim_id) if claim_id else None
+    # 등수는 목록과 **같은 객체**로 맞춘다. `find_group` 이 목록에서 꺼낸 바로 그
+    # 객체를 돌려주므로 `is` 로 찾는다 - 다시 만들면 조용히 어긋난다(그 함수의
+    # docstring 이 경고하는 함정이 이것이다).
+    ranks = evidence.layer_ranks(groups)
+    picked_rank = next((r for g, r in zip(groups, ranks) if g is picked), None)
 
     # (1) 승인
     if (claim is not None and claim.passes
-            and picked is not None and picked.rank_key == groups[0].rank_key
+            and picked_rank == 1
             and conf >= ya_config.CONFIDENCE_THRESHOLD):
         update["finalize_accepted"] = True
         update["finalize_status"] = "confirmed"
@@ -484,7 +489,8 @@ def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) ->
         return "미확정 (루프 한계 도달): 확정 근거 없이 리포팅으로 진행한다."
 
     # (5) 반려
-    return _gate_rejection(claim_id, claim, bundle, coverage, conf, conf_note, groups)
+    return _gate_rejection(claim_id, claim, bundle, coverage, conf, conf_note,
+                           groups, ranks)
 
 
 def _record_evidence(update: dict, groups, picked) -> None:
@@ -577,7 +583,8 @@ def _confidence(raw) -> tuple[float, str]:
                      f"0~1 사이 숫자로 다시 제출하라)")
 
 
-def _gate_rejection(claim_id, claim, bundle, coverage, conf, conf_note, groups) -> str:
+def _gate_rejection(claim_id, claim, bundle, coverage, conf, conf_note,
+                    groups, ranks) -> str:
     """왜 승인하지 않았는지를 LLM 이 다음 행동으로 옮길 수 있게 돌려준다."""
     if claim_id and claim is None:
         # **없는 것과 대체된 것을 가른다.** LLM 은 재실행 뒤에도 앞 실행의 claim_id 를
@@ -616,17 +623,22 @@ def _gate_rejection(claim_id, claim, bundle, coverage, conf, conf_note, groups) 
             return (f"반려: {claim.claim_id} 는 판별선을 넘지 못했다 ({claim.reject_reason}). "
                     f"통과한 후보를 지목하라.")
         picked = evidence.find_group(groups, claim_id)
-        if picked is not None and groups and picked.rank_key != groups[0].rank_key:
-            # 순위는 코드가 매긴다. 순열 p 가 먼저이고 동점이면 분리 점수다 —
-            # 점수만 보고 고르면 탐색 폭이 넓은 축(계측)이 늘 이긴다.
-            best = groups[0].lead
+        picked_rank = next((r for g, r in zip(groups, ranks) if g is picked), None)
+        if picked is not None and groups and picked_rank != 1:
+            # **실제로 이긴 근거**를 댄다. 3등을 지목했으면 그것을 이긴 것은 2등일
+            # 수 있고, 그때 1등을 대면 LLM 은 왜 졌는지 못 읽는다.
+            best = next((g.lead for g in groups if evidence.dominates(g, picked)),
+                        groups[0].lead)
             # 바닥값을 같이 인용한다. 참조집합이 후보마다 좁혀지면서 **p 의 해상도가
             # 후보마다 달라졌기** 때문이다 - 바닥이 0.33 인 후보는 완전 분리여도 거기서
             # 멈추므로, 숫자 둘만 보여 주면 LLM 은 신호 차이로 읽고 반려를 고칠 수 없다.
             return (f"반려: {claim.claim_id}(p {claim.p_permutation}{_floor(claim)}, "
-                    f"점수 {claim.score}) 보다 앞선 근거가 있다: {best.claim_id}"
-                    f"(p {best.p_permutation}{_floor(best)}, 점수 {best.score}). "
-                    f"순위 1등을 서술의 축으로 지목하라 - 나머지 근거는 게이트가 함께 싣는다.")
+                    f"점수 {claim.score}) 는 {best.claim_id}"
+                    f"(p {best.p_permutation}{_floor(best)}, 점수 {best.score}) 에게 "
+                    f"두 후보가 **함께 표현할 수 있는 해상도**에서 졌다. p 는 자기 "
+                    f"바닥과 함께 읽어야 한다 - 바닥에 걸린 후보는 더 작은 p 에게 "
+                    f"지지 않는다. 1등 층의 근거를 서술의 축으로 지목하라, 나머지 "
+                    f"근거는 게이트가 함께 싣는다.")
         return (f"반려: 확신도 {conf:.2f} < {ya_config.CONFIDENCE_THRESHOLD}.{conf_note} "
                 f"근거를 좁힐 tool 을 더 호출하라.")
 

@@ -84,34 +84,18 @@ class ClaimGroup:
         return len(self.claims) > 1
 
     @property
-    def rank_key(self) -> tuple:
-        """**우열을 가르는 값.** 이게 같으면 동점이고, 동점은 우열이 없다는 뜻이다."""
-        return _rank_key(self.lead)
-
-    @property
     def sort_key(self) -> tuple:
         """표시 순서를 고정하는 값. 우열 비교에 쓰면 안 된다."""
         return _sort_key(self.lead)
 
 
-def _rank_key(claim: Claim) -> tuple:
-    """순위 기준: 순열 p 가 먼저, 동점이면 분리 점수. **여기까지가 우열이다.**
+def _order_key(claim: Claim) -> tuple:
+    """**표시 순서와 대표 선정에만 쓰는 전순서 키.** 우열은 `dominates` 가 가른다.
 
-    **원시 점수를 1순위로 쓰지 않는다.** 점수는 탐색 폭에 따라 부풀고(계측 축은
-    무신호에서도 후보의 48.7%가 판별선을 넘는다), 축마다 그 부풀림 정도가 다르다.
-    p 는 그 탐색까지 포함해 잰 값이라 축을 가로질러 비교할 수 있는 유일한 자다.
-    p 가 없으면(순열을 껐으면) 최하위로 민다 - 없는 것을 좋은 것으로 읽으면 안 된다.
-
-    ⚠️ **열린 한계 (2026-08-29): p 의 해상도가 이제 후보마다 다르다.** 귀무 참조집합을
-    표본 크기가 같은 회차로 좁히면서(`tools/commonality.py::_null_distribution`)
-    바닥값이 후보별로 갈렸다. 예전에는 전 후보가 회차 수를 공유해 균질했다. 그래서
-    참조 회차가 적은 후보는 **완전 분리(점수 1.0)여도 p 가 0.33 에서 멈추고**, 참조가
-    많은 약한 후보(점수 0.33, 바닥 0.05)에게 순위를 내줄 수 있다. 즉 순위가 신호 세기가
-    아니라 참조집합 크기를 따라가는 구간이 생겼다
-    (`tests/test_commonality.py::test_the_family_wise_floor_and_the_candidate_floor_part_ways`
-    의 픽스처에서 재현된다). **여기서는 규칙을 바꾸지 않는다** - 순위 규칙은 게이트
-    판정까지 걸려 있어 별도 훼손 설계가 필요하다. 지금은 게이트 반려 문구가
-    `p_min_possible` 을 함께 인용해 LLM 이 두 숫자를 같이 읽게만 해 둔다.
+    예전에는 이 키가 우열까지 겸했는데, 순열 p 의 바닥이 후보마다 달라지면서
+    (2026-08-29) 그 비교가 **신호 세기가 아니라 참조집합 크기**를 재게 됐다.
+    우열 판정은 `dominates` 로 옮겼다. 여기 남은 일은 "같은 등수 안에서 매번 같은
+    순서로 보여 주는 것" 뿐인데 그것도 필요하다 - 리포트를 실행마다 비교해야 한다.
     """
     p = claim.p_permutation
     return (1.0 if p is None else p, -claim.score)
@@ -223,17 +207,17 @@ def _fold_key(claim: Claim) -> tuple:
     쪽을 지목하면 조사 범위를 쓸데없이 넓힌다. 지금까지 챔버가 앞선 것은 claim_id
     문자열에서 'c' < 'e' 였기 때문일 뿐이라 이름이 바뀌면 뒤집힌다.
     """
-    return (*_rank_key(claim), -len(claim.level_columns), claim.claim_id)
+    return (*_order_key(claim), -len(claim.level_columns), claim.claim_id)
 
 
 def _sort_key(claim: Claim) -> tuple:
-    """정렬용. 우열(`_rank_key`)에 **표시 순서 고정용 tie-break** 만 덧붙인다.
+    """정렬용. 표시 순서(`_order_key`)에 **표시 순서 고정용 tie-break** 만 덧붙인다.
 
     둘을 한 튜플로 겸하게 두었더니 게이트는 claim_id 까지 넣어 비교하고 등수 계산은
     빼고 비교해서, **동점이라고 보고해 놓고 게이트는 반려하는** 상태가 됐다.
     claim_id 는 우열이 아니므로 우열을 묻는 자리에서는 절대 보이면 안 된다.
     """
-    return (*_rank_key(claim), claim.claim_id)
+    return (*_order_key(claim), claim.claim_id)
 
 
 @dataclass(frozen=True)

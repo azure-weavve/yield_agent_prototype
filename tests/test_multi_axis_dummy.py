@@ -325,11 +325,12 @@ def test_every_tied_group_is_accepted_not_just_the_first():
         assert len(update["final_claims"]) == 2
 
 
-def test_rank_key_carries_no_display_tiebreak():
-    """우열을 묻는 값에 표시 순서용 tie-break 가 섞이면 안 된다.
+def test_domination_carries_no_display_tiebreak():
+    """우열을 묻는 자리에 표시 순서용 tie-break 가 섞이면 안 된다.
 
-    이 둘을 한 튜플로 겸하게 두어 위 결함이 생겼다. 등수를 계산하는 쪽과 게이트가
-    같은 값을 봐야 "동점이라 보고하고 반려" 같은 모순이 안 생긴다.
+    둘을 한 튜플로 겸하게 두었더니 게이트는 claim_id 까지 넣어 비교하고 등수
+    계산은 빼고 비교해서, **동점이라 보고해 놓고 게이트는 반려하는** 상태가 됐다.
+    우열이 키에서 `dominates` 로 옮겨 간 지금도 같은 계약이 필요하다.
     """
     from graph import evidence
 
@@ -338,9 +339,11 @@ def test_rank_key_carries_no_display_tiebreak():
          "result": engine.evaluate(spec, MULTI_TARGETS, MULTI_CONTROLS), "thought": ""}
         for spec in registry.load_hypotheses()]).ranked_groups()
 
-    assert groups[0].rank_key == groups[1].rank_key      # 우열은 같다
-    assert groups[0].sort_key != groups[1].sort_key      # 표시 순서만 다르다
-    assert len(groups[0].rank_key) == 2                  # (p, -score) 뿐이다
+    assert not evidence.dominates(groups[0], groups[1])   # 우열이 없다
+    assert not evidence.dominates(groups[1], groups[0])
+    assert groups[0].sort_key != groups[1].sort_key       # 표시 순서만 다르다
+    ranks = evidence.layer_ranks(groups)
+    assert ranks[0] == ranks[1]                           # 등수도 같다
 
 
 def test_ranking_is_deterministic_when_the_evidence_ties():
@@ -354,4 +357,6 @@ def test_ranking_is_deterministic_when_the_evidence_ties():
     assert len(set(orders)) == 1
 
     groups = _bundle().ranked_groups()
-    assert groups[0].rank_key == groups[1].rank_key   # p·점수가 동점이다
+    from graph import evidence
+    ranks = evidence.layer_ranks(groups)
+    assert ranks[0] == ranks[1]                       # 우열을 못 가린다

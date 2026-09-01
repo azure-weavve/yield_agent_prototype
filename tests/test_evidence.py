@@ -494,7 +494,7 @@ def test_the_picked_group_is_never_truncated_away(monkeypatch):
         for i in range(5)
     ]
     groups = evidence.build_bundle(findings).ranked_groups()
-    assert len({g.rank_key for g in groups}) == 1, "이 fixture 는 전부 동점이어야 한다"
+    assert set(evidence.layer_ranks(groups)) == {1}, "이 fixture 는 전부 동점이어야 한다"
 
     last = groups[-1]                       # 정렬상 맨 뒤 = 상한 밖
     update = {}
