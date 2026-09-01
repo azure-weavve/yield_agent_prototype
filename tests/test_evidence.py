@@ -3,6 +3,7 @@
 판정하지 않는다. 사실만 모은다. 판정은 graph/nodes.py 의 게이트가 한다.
 """
 
+import threading
 from dataclasses import asdict
 
 from graph import evidence
@@ -307,10 +308,24 @@ def test_layer_ranks_terminates_when_domination_cycles(monkeypatch):
     조건이 섞이지 않은 경우를 다룬다. 증명이 닿지 않는 자리에서 순환이 나면 분석
     전체가 멎으므로, 안전판 자체를 잠근다.
     """
-    monkeypatch.setattr(evidence, "dominates", lambda a, b: True)   # 전원이 서로를 이긴다
+    # **묶음을 먼저 만들고 그다음에 훼손한다.** `_groups` 안의 `ranked_groups()` 가
+    # 이미 `layer_ranks` 를 부르므로, 순서를 뒤집으면 아래 시간 제한에 닿기도 전에
+    # 본 스레드가 멎는다.
     groups = _groups(_cand("a:1", "A", 0.9, 0.01, ["W1"]),
                      _cand("b:1", "B", 0.8, 0.02, ["W2"]))
-    assert evidence.layer_ranks(groups) == [1, 1]
+    monkeypatch.setattr(evidence, "dominates", lambda a, b: True)   # 전원이 서로를 이긴다
+
+    # **시간 제한을 테스트가 직접 건다.** 안전판이 없을 때의 실패 모드는 예외가 아니라
+    # **행(hang)** 이라, 그냥 부르면 스위트가 통째로 멎는다. 이 저장소는 훼손 실험이
+    # 도구 타임아웃에 죽어 훼손 파일이 다음 실행의 기준선이 된 사고를 겪었다
+    # (2026-08-28). 안 끝나는 것은 안 끝난다고 실패해야 한다.
+    out = []
+    worker = threading.Thread(
+        target=lambda: out.append(evidence.layer_ranks(groups)), daemon=True)
+    worker.start()
+    worker.join(10)
+    assert not worker.is_alive(), "layer_ranks 가 10초 안에 안 끝났다 - 안전판이 없다"
+    assert out == [[1, 1]]
 
 
 def test_display_order_follows_the_layer_not_the_raw_p():
