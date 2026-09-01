@@ -3,7 +3,6 @@
 판정하지 않는다. 사실만 모은다. 판정은 graph/nodes.py 의 게이트가 한다.
 """
 
-import threading
 from dataclasses import asdict
 
 from graph import evidence
@@ -309,23 +308,26 @@ def test_layer_ranks_terminates_when_domination_cycles(monkeypatch):
     전체가 멎으므로, 안전판 자체를 잠근다.
     """
     # **묶음을 먼저 만들고 그다음에 훼손한다.** `_groups` 안의 `ranked_groups()` 가
-    # 이미 `layer_ranks` 를 부르므로, 순서를 뒤집으면 아래 시간 제한에 닿기도 전에
-    # 본 스레드가 멎는다.
+    # 이미 `layer_ranks` 를 부르므로, 순서를 뒤집으면 아래 상한에 닿기도 전에 멎는다.
     groups = _groups(_cand("a:1", "A", 0.9, 0.01, ["W1"]),
                      _cand("b:1", "B", 0.8, 0.02, ["W2"]))
-    monkeypatch.setattr(evidence, "dominates", lambda a, b: True)   # 전원이 서로를 이긴다
 
-    # **시간 제한을 테스트가 직접 건다.** 안전판이 없을 때의 실패 모드는 예외가 아니라
+    # **탈출구를 훼손 자체에 심는다.** 안전판이 없을 때의 실패 모드는 예외가 아니라
     # **행(hang)** 이라, 그냥 부르면 스위트가 통째로 멎는다. 이 저장소는 훼손 실험이
     # 도구 타임아웃에 죽어 훼손 파일이 다음 실행의 기준선이 된 사고를 겪었다
-    # (2026-08-28). 안 끝나는 것은 안 끝난다고 실패해야 한다.
-    out = []
-    worker = threading.Thread(
-        target=lambda: out.append(evidence.layer_ranks(groups)), daemon=True)
-    worker.start()
-    worker.join(10)
-    assert not worker.is_alive(), "layer_ranks 가 10초 안에 안 끝났다 - 안전판이 없다"
-    assert out == [[1, 1]]
+    # (2026-08-28). 루프가 매 회차 `dominates` 를 부르므로 호출 수에 상한을 두면
+    # 안 끝나는 것이 **즉시 예외로** 드러난다 - 시간 제한이나 별도 스레드가 필요
+    # 없고, 실패 뒤에 도는 것이 아무것도 안 남는다.
+    calls = {"n": 0}
+
+    def always_dominates(a, b):
+        calls["n"] += 1
+        if calls["n"] > 10_000:
+            raise RuntimeError("layer_ranks 가 끝나지 않는다 - 안전판이 없다")
+        return True
+
+    monkeypatch.setattr(evidence, "dominates", always_dominates)   # 전원이 서로를 이긴다
+    assert evidence.layer_ranks(groups) == [1, 1]
 
 
 def test_display_order_follows_the_layer_not_the_raw_p():
@@ -403,14 +405,81 @@ def test_tie_line_explains_resolution_not_equal_numbers():
 
     새 규칙에서는 p 가 0.111 과 0.050 으로 **달라도** 동점이다. "순열 p 와 분리
     점수가 같아" 라고 적으면 바로 옆에 다른 숫자를 찍어 놓고 같다고 말하는 꼴이다.
+
+    **동점 문장 고유의 구절로 단언한다.** 그냥 "해상도" 만 찾으면 같은 함수의
+    롤업 분기("굵은 해상도로는 ...")가 대신 맞아 줘서, 동점 문장이 통째로
+    사라져도 통과한다.
     """
     groups = _groups(
         _cand("x:1", "AT_FLOOR", 1.0, 0.111, ["W1"], floor=0.111),
         _cand("y:1", "SMALL_P", 0.55, 0.050, ["W2"], floor=0.003))
     dicts = evidence.groups_to_dicts(groups)
+    assert [d["tie_reason"] for d in dicts] == ["resolution", "resolution"]
     line = evidence.format_group_line(dicts[0])
-    assert "해상도" in line
+    assert "이 표본들이 낼 수 있는 해상도에서는 갈리지 않아" in line
     assert "순열 p 와 분리 점수가 같아" not in line
+
+
+def test_a_cross_axis_tie_does_not_blame_the_resolution():
+    """축이 달라 못 가르는 것을 "해상도" 탓으로 적으면 엔지니어가 헛수고를 한다.
+
+    p 가 정확히 같고 점수가 0.95 대 0.30 이면 표본 해상도는 둘 다 충분하다. 안
+    갈리는 이유는 **분리 점수를 축 너머로는 쓰지 않기로 한 규칙** 이다. 해상도
+    탓으로 적으면 wafer 를 더 모으는데, 그래도 영원히 안 갈린다. 갈라야 할 것은
+    두 축을 직접 가르는 대조다.
+    """
+    groups = _groups(
+        _cand("x:1", "BIG_SCORE", 0.95, 0.03, ["W1"], floor=0.003),
+        _cand("y:1", "SMALL_SCORE", 0.30, 0.03, ["W2"], floor=0.003))
+    dicts = evidence.groups_to_dicts(groups)
+    assert [d["tie_reason"] for d in dicts] == ["cross_axis", "cross_axis"]
+    line = evidence.format_group_line(dicts[0])
+    assert "축이 달라 분리 점수로는 가르지 않아" in line
+    assert "해상도에서는 갈리지 않아" not in line
+
+
+def test_a_tie_with_no_statistics_at_all_says_so():
+    """참조 0회끼리의 동점을 "해상도" 로 설명하면 한 줄 안에서 말이 어긋난다.
+
+    바로 윗줄이 "비교 가능한 귀무 표본이 없어 판단 불가" 를 찍어 놓고 다음 줄에서
+    "해상도에서 갈리지 않는다" 를 붙이면, 없는 통계의 해상도를 말하는 꼴이다.
+    """
+    groups = _groups(
+        _cand("x:1", "NOREF_A", 1.0, 1.0, ["W1"], floor=1.0),
+        _cand("y:1", "NOREF_B", 0.5, 1.0, ["W2"], floor=1.0))
+    dicts = evidence.groups_to_dicts(groups)
+    assert [d["tie_reason"] for d in dicts] == ["no_statistics", "no_statistics"]
+    line = evidence.format_group_line(dicts[0])
+    assert "어느 쪽도 통계적 근거가 없어" in line
+    assert "해상도" not in line
+
+
+def test_axes_differing_with_equal_scores_is_not_blamed_on_the_axis():
+    """축이 달라도 **점수까지 같으면** 축 탓을 하면 안 된다.
+
+    다축 더미(M2423)의 실제 모양이다 - 설비/챔버 축과 레시피 축이 p 0.0303, 점수
+    0.667 로 똑같다. 여기서 "축이 달라 분리 점수로는 가르지 않아" 라고 적으면
+    점수가 갈랐을 텐데 규칙 때문에 못 갈랐다는 뜻이 되는데, 사실은 같은 축이었어도
+    안 갈렸다.
+    """
+    groups = _groups(
+        _cand("x:1", "A", 0.667, 0.0303, ["W1"], floor=0.003),
+        _cand("y:1", "B", 0.667, 0.0303, ["W2"], floor=0.003))
+    dicts = evidence.groups_to_dicts(groups)
+    assert [d["tie_reason"] for d in dicts] == ["identical", "identical"]
+
+
+def test_identical_numbers_are_still_reported_as_identical():
+    """같은 축에서 p 도 점수도 같은 동점은 그대로 그렇게 적는다.
+
+    사유를 나눈다고 원래 있던 경우가 다른 이름으로 새면 안 된다.
+    """
+    groups = evidence.build_bundle([
+        _finding("hyp_a", "a", "ok", [_cand("x:1", "A1", 0.7, 0.03, ["W1"]),
+                                      _cand("y:1", "A2", 0.7, 0.03, ["W2"])])]).ranked_groups()
+    dicts = evidence.groups_to_dicts(groups)
+    assert [d["tie_reason"] for d in dicts] == ["identical", "identical"]
+    assert "순열 p 도 분리 점수도 같아" in evidence.format_group_line(dicts[0])
 
 
 def test_distinct_ranks_are_not_marked_tied():

@@ -361,14 +361,48 @@ def _resolution_of(claim: Claim, group: ClaimGroup) -> dict | None:
     return None
 
 
+def _tie_reason(group: ClaimGroup, peers: list[ClaimGroup]) -> str:
+    """**왜** 갈리지 않는가. 사유마다 엔지니어가 할 일이 다르다.
+
+    - `resolution`: p 가 서로 다른데 거친 쪽 바닥에 걸려 못 가른다. **표본을 늘리면
+      갈릴 수 있다** - 참조 회차가 늘면 바닥이 내려간다.
+    - `cross_axis`: p 는 같고 축이 달라 분리 점수를 안 쓴다. 표본을 더 모아도
+      **이 규칙으로는 영원히 안 갈린다** - 두 축을 직접 가르는 대조를 찾아야 한다.
+    - `identical`: 같은 축인데 p 도 점수도 같다. 두 후보가 같은 wafer 를 다르게
+      부르는 것은 아닌지(교락) 부터 본다.
+    - `no_statistics`: 어느 쪽도 귀무 표본이 없다. 순위 이전의 문제다.
+
+    하나로 뭉뚱그리면 안 되는 이유가 이것이다. "해상도에서 갈리지 않는다" 만 적으면
+    `cross_axis` 인 엔지니어가 wafer 를 더 모으고, 그래도 안 갈린다.
+
+    같은 등수 안에서는 통계 등급이 섞이지 않는다 - `dominates` 가 통계 등급을
+    비통계 등급보다 위로 올리므로 둘이 같은 층에 설 수 없다. 그래서 대표 하나의
+    등급만 봐도 된다.
+    """
+    lead = group.lead
+    if not _is_statistical(lead):
+        return "no_statistics"
+    if any(p.lead.p_permutation != lead.p_permutation for p in peers):
+        return "resolution"          # clamp 가 없었으면 갈렸다
+    # 축이 다른 것만으로는 부족하다. **점수까지 같으면** 같은 축이었어도 갈리지
+    # 않았을 것이므로, 축 탓을 하면 "점수가 갈랐을 텐데" 로 잘못 읽힌다.
+    if any(p.lead.hypothesis_id != lead.hypothesis_id and p.lead.score != lead.score
+           for p in peers):
+        return "cross_axis"
+    return "identical"
+
+
 def groups_to_dicts(groups: list[ClaimGroup], picked: ClaimGroup | None = None) -> list[dict]:
     """순위 목록을 상태가 들고 다닐 사전 목록으로. **동점에 같은 등수를 준다.**
 
-    번호만 매기면 `[근거 1]` 과 `[근거 2]` 가 강약으로 읽힌다. 그런데 p 도 점수도
-    같으면 우열을 가릴 근거가 실제로 없다 - 그 "못 가린다" 를 표현하지 못하는 것이
-    바로 이 프로젝트가 고치려는 결함이다(무엇을 모르는지 알아야 다음에 무엇을 볼지
-    추천할 수 있다). 등수는 `layer_ranks` 가 지배 관계로 매긴다 - 표시 순서를
-    고정하는 `sort_key` 는 우열을 묻는 자리에 절대 들어가면 안 된다.
+    번호만 매기면 `[근거 1]` 과 `[근거 2]` 가 강약으로 읽힌다. 그런데 두 후보가
+    **함께 표현할 수 있는 해상도**에서 갈리지 않으면 우열을 가릴 근거가 실제로 없다
+    - 그 "못 가린다" 를 표현하지 못하는 것이 바로 이 프로젝트가 고치려는 결함이다
+    (무엇을 모르는지 알아야 다음에 무엇을 볼지 추천할 수 있다). 등수는 `layer_ranks`
+    가 지배 관계로 매긴다 - 표시 순서를 고정하는 `sort_key` 는 우열을 묻는 자리에
+    절대 들어가면 안 된다.
+
+    동점이면 **사유까지** 싣는다(`_tie_reason`). 사유마다 다음 행동이 다르다.
     """
     out: list[dict] = []
     for group, rank in zip(groups, layer_ranks(groups)):
@@ -376,12 +410,23 @@ def groups_to_dicts(groups: list[ClaimGroup], picked: ClaimGroup | None = None) 
         item["rank"] = rank
         out.append(item)
 
-    counts: dict[int, int] = {}
-    for item in out:
-        counts[item["rank"]] = counts.get(item["rank"], 0) + 1
-    for item in out:
-        item["tied"] = counts[item["rank"]] > 1
+    by_rank: dict[int, list[ClaimGroup]] = {}
+    for group, item in zip(groups, out):
+        by_rank.setdefault(item["rank"], []).append(group)
+    for group, item in zip(groups, out):
+        peers = [g for g in by_rank[item["rank"]] if g is not group]
+        item["tied"] = bool(peers)
+        if peers:
+            item["tie_reason"] = _tie_reason(group, peers)
     return out
+
+
+_TIE_REASONS = {
+    "resolution": "이 표본들이 낼 수 있는 해상도에서는 갈리지 않아",
+    "cross_axis": "순열 p 가 같고 축이 달라 분리 점수로는 가르지 않아",
+    "identical": "순열 p 도 분리 점수도 같아",
+    "no_statistics": "어느 쪽도 통계적 근거가 없어",
+}
 
 
 def format_group_line(group: dict) -> str:
@@ -416,13 +461,13 @@ def format_group_line(group: dict) -> str:
                  f"{o['key']}({o['level']}) 다{_folded_detail(o)} - 대조군에 "
                  f"'{wide} 통과 · {narrow} 미통과' 인 wafer 가 없어 둘을 가를 대조가 없다")
     if group.get("tied"):
-        # 번호만 보면 앞선 것이 더 강해 보인다. 실제로는 **이 표본들이 낼 수 있는
-        # 해상도에서 갈리지 않는다** - p 숫자가 서로 달라도 그렇다(참조 회차가 적은
-        # 후보는 자기 바닥 아래를 말할 수 없다). 그 "못 가린다" 가 다음에 무엇을
-        # 볼지 정하는 입력이다.
-        line += ("\n        같은 등수의 근거가 더 있다 - 이 표본들이 낼 수 있는 "
-                 "해상도에서는 갈리지 않아 어느 쪽이 유력한지 현재 증거로는 "
-                 "정할 수 없다")
+        # 번호만 보면 앞선 것이 더 강해 보인다. 실제로는 갈리지 않는데, **왜 못
+        # 가리는지에 따라 다음에 할 일이 다르다** - 표본을 늘리면 갈리는 경우와
+        # 늘려도 안 갈리는 경우를 한 문장으로 뭉개면 엔지니어가 헛수고를 한다.
+        # 사유가 없는 사전(옛 상태에서 실려 온 것)이면 이유를 지어내지 않는다.
+        why = _TIE_REASONS.get(group.get("tie_reason"), "우열을 가릴 근거가 없어")
+        line += (f"\n        같은 등수의 근거가 더 있다 - {why} 어느 쪽이 유력한지 "
+                 f"현재 증거로는 정할 수 없다")
     return line
 
 

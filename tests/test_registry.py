@@ -78,13 +78,20 @@ def test_every_hypothesis_tells_the_llm_that_p_is_read_with_its_floor():
     후보를 p 0.05 짜리 약한 후보에게 내주고 스스로 버린다. 코드는 그 둘을 동점으로
     본다.
 
-    **4가설 전부를 센다.** 통계 해석 문단이 복붙돼 있어 한 곳만 고치면 나머지 셋이
+    **가설 전부를 센다.** 통계 해석 문단이 복붙돼 있어 한 곳만 고치면 나머지가
     옛 계약으로 남는데, 지난 순열 p 교정에서 리뷰 Important 2건이 정확히 그 구멍이었다.
+
+    **점수 규칙까지 같이 잠근다.** "바닥에 걸리면 안 진다" 만 적으면 거짓이다 -
+    같은 축 안에서는 공통 해상도에서 p 가 같아진 뒤 분리 점수가 우열을 가르므로
+    바닥에 걸린 후보도 진다. 반쪽만 적힌 계약을 읽으면 LLM 은 실제 순위를 보고
+    "계약과 다르다" 고 판단해 엉뚱한 축을 다시 돈다.
     """
     specs = registry.load_hypotheses()
-    assert len(specs) == 4
+    assert specs                    # 빈 목록이면 아래 루프가 공허하게 통과한다
     for spec in specs:
         d = spec["description"]
         assert "둘 다 표현할 수 있는 해상도" in d, spec["id"]
-        assert "지지 않는다" in d, spec["id"]
+        assert "다른 축의** 더 작은 p 에게 지지 않는다" in d, spec["id"]
+        assert "같은 축 안에서만" in d, spec["id"]
+        assert "축이 다르면 점수는 쓰지 않는다" in d, spec["id"]
         assert "통계적 근거가 없는 것으로 취급" in d, spec["id"]
