@@ -99,6 +99,25 @@ def test_sensor_candidate_becomes_a_claim():
     assert c.extra["target_mean"] == 812.4
 
 
+def test_sensor_extra_drops_first_class_keeps_distribution():
+    """센서 `extra` 축소를 양쪽에서 잠근다.
+
+    1급으로 옮겨 간 넷(effect_size·n_target·n_control·sensor_name)이 extra 에도
+    남으면 같은 사실이 두 이름으로 겹쳐 실려, 렌더러가 어느 쪽을 읽을지 정해야
+    하고 한쪽만 고치면 조용히 어긋난다. 반대로 분포 넷(target_mean·control_mean·
+    target_std·control_std) 은 1급 자리가 없으므로 **남아 있어야** 근거 줄이 읽을
+    수 있다 - 통계 후보 쪽의 대칭 단언(`test_axis_specific_fields_survive_in_extra`)
+    을 센서에도 그대로 적용한다.
+    """
+    b = evidence.build_bundle([_sensor_finding("CC003000",
+                                               [_sensor_cand("CC003000", "TEMP_1", 2.31)])])
+    extra = b.claims["sensor:CC003000:TEMP_1"].extra
+    for k in ("effect_size", "n_target", "n_control", "sensor_name"):
+        assert k not in extra
+    for k in ("target_mean", "control_mean", "target_std", "control_std"):
+        assert k in extra
+
+
 def test_failing_sensor_candidate_is_kept_but_does_not_pass():
     """미통과 센서도 번들에는 남는다 - 게이트가 claim_id 로 조회할 수 있어야 한다.
 
@@ -281,6 +300,31 @@ def test_evidence_line_marks_a_p_that_sits_at_the_floor():
     line2 = evidence.format_evidence_line(asdict(b2.claims[CAND_PASS["claim_id"]]))
     assert line2.endswith("· 순열 p 0.1667")     # 같은 p 인데 바닥이 아니면 표시 없음
     assert "최소값" not in line2
+
+
+def test_sensor_evidence_line_never_prints_a_2x2():
+    """센서에는 2x2 가 없다. 그대로 태우면 '타깃 0/0 통과' 가 찍히는데, 그것은 숫자가
+    없는 것이 아니라 **틀린 숫자**다 - 엔지니어는 대조가 실패한 줄로 읽는다.
+    """
+    b = evidence.build_bundle([_sensor_finding("CC003000",
+                                               [_sensor_cand("CC003000", "TEMP_1", 2.31)])])
+    line = evidence.format_evidence_line(asdict(b.claims["sensor:CC003000:TEMP_1"]))
+    assert "0/0" not in line
+    assert "통과" not in line
+    assert "분리 점수" not in line
+    assert "효과크기 2.31" in line
+    assert "n=12" in line and "n=40" in line
+    assert "812.4" in line and "799.1" in line
+
+
+def test_statistical_evidence_line_is_unchanged():
+    """센서 분기를 넣다가 1단 줄을 건드리면 안 된다 (리포트가 이 문장을 쓴다)."""
+    b = evidence.build_bundle([_finding("hyp_eqp_ch_commonality", "eqp_ch_commonality",
+                                        "ok", [CAND_PASS])])
+    line = evidence.format_evidence_line(asdict(b.claims[CAND_PASS["claim_id"]]))
+    assert "분리 점수 1.0" in line
+    assert "타깃 3/3 통과" in line
+    assert "대조군 0/6 통과" in line
 
 
 # ---------------------------------------------------------------- 접기와 순위

@@ -344,9 +344,14 @@ def group_to_dict(group: ClaimGroup, picked: bool = False) -> dict:
     # 그 차이가 "어느 이름으로 의뢰할 것인가" 를 정하는 재료다. 예를 들어 계측
     # 후보는 분모가 계측된 몇 장뿐이라 같은 wafer 를 가리켜도 근거의 무게가 다르다.
     def folded(c: Claim) -> dict:
-        return {"claim_id": c.claim_id, "hypothesis_id": c.hypothesis_id,
-                "level": c.level, "key": c.key, "step_seq": c.step_seq,
-                "score": c.score, "p_permutation": c.p_permutation,
+        base = {"claim_id": c.claim_id, "hypothesis_id": c.hypothesis_id,
+                "kind": c.kind, "level": c.level, "key": c.key,
+                "step_seq": c.step_seq, "score": c.score}
+        if c.kind == "sensor":
+            # 2x2 키를 아예 안 싣는다. `_folded_detail` 은 target_total 유무로
+            # 분기하므로, 0 을 실으면 "타깃 0/0" 이 그대로 찍힌다.
+            return base
+        return {**base, "p_permutation": c.p_permutation,
                 "target_pass": c.target_pass, "target_total": c.target_total,
                 "control_pass": c.control_pass, "control_total": c.control_total}
 
@@ -530,6 +535,13 @@ def format_evidence_line(claim: dict) -> str:
     게이트 승인 verdict(`graph/nodes.py`)와 리포트 `[근거]` 줄(`report_node`)이
     같은 본문을 문자 그대로 복제하던 것을 여기 하나로 모았다.
     """
+    if claim.get("kind") == "sensor":
+        # 2x2 도 순열 p 도 없다. 있는 것은 효과크기와 두 분포뿐이고, 그 둘을 표본 수와
+        # 함께 읽어야 한다 - 표본이 작으면 효과크기가 커지므로 n 을 떼면 거짓말이 된다.
+        ex = claim.get("extra") or {}
+        return (f"{claim['claim_id']} · 효과크기 {claim['score']} · "
+                f"타깃 n={claim['target_total']} 평균 {ex.get('target_mean')} · "
+                f"대조군 n={claim['control_total']} 평균 {ex.get('control_mean')}")
     line = (f"{claim['claim_id']} · 분리 점수 {claim['score']} · "
             f"타깃 {claim['target_pass']}/{claim['target_total']} 통과 · "
             f"대조군 {claim['control_pass']}/{claim['control_total']} 통과")
@@ -606,8 +618,11 @@ def build_bundle(findings: list[dict]) -> Bundle:
                 claims[claim_id] = Claim(
                     claim_id=claim_id, tool=tool, kind="sensor",
                     # 등록 가설이 아니다. `_is_roll_up_of` 는 level_columns 가 비어
-                    # False 로 떨어지고, `dominates` 의 점수 비교는 같은 값끼리만
-                    # 걸리므로 센서끼리만 효과크기로 비교된다.
+                    # False 로 떨어지고, hypothesis_id="" 는 `dominates` 의 점수
+                    # 비교 줄(같은 hypothesis_id 끼리만 걸린다)에서 1단 가설과
+                    # 오비교되는 것을 막는다. 다만 센서 쌍끼리는 그 줄에 닿기도
+                    # 전에 `dominates` 의 센서 하한이 먼저 막아 늘 갈리지 않는
+                    # 것(동점)으로 판정한다 - 효과크기로 비교하지 않는다.
                     hypothesis_id="",
                     # 센서 후보 dict 에는 step_seq 키가 없다 (claim_id 문자열 안에만
                     # 있는데, 그것을 파싱하지 않기로 했다). 대신 감사 기록의 도구
