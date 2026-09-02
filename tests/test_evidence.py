@@ -198,10 +198,17 @@ def test_sensor_candidates_do_not_fold_into_one_group():
     assert ranks[0] == ranks[1]
     dicts = evidence.groups_to_dicts(groups)
     assert all(d["tied"] for d in dicts)
-    # 센서는 p 를 안 내므로 `_is_statistical` 이 항상 False 다 - 동점 사유는
-    # "해상도에서 못 가른다"(resolution)나 "축이 다르다"(cross_axis)가 아니라
-    # "애초에 통계적 근거가 없다"(no_statistics) 여야 한다.
-    assert all(d["tie_reason"] == "no_statistics" for d in dicts)
+    # 센서는 p 를 안 내므로 `_is_statistical` 이 항상 False 다. 그렇다고 사유가
+    # "귀무 표본이 없다"(no_statistics, 표본을 모으면 풀린다는 뜻으로 읽힌다)면
+    # 안 된다 - 이 둘이 안 갈리는 것은 `dominates` 의 센서 하한이 **의도적으로**
+    # 거부하는 것이라 표본을 아무리 늘려도 영원히 안 갈린다. 사유는
+    # `sensor_correlated` 여야 한다.
+    assert all(d["tie_reason"] == "sensor_correlated" for d in dicts)
+    # 사유 이름만 잠그면 실제로 나가는 문장은 무방비다 - 도구 note 그대로
+    # "연동된 센서는 함께 움직여" 가 리포트 문장에 실제로 찍히는지 확인한다.
+    line = evidence.format_group_line(dicts[0])
+    assert "연동된 센서는 함께 움직여" in line
+    assert "통계적 근거가 없어" not in line
 
 
 def test_tool_error_string_does_not_count_as_ran():
@@ -302,29 +309,34 @@ def test_evidence_line_marks_a_p_that_sits_at_the_floor():
     assert "최소값" not in line2
 
 
-def test_sensor_evidence_line_never_prints_a_2x2():
-    """센서에는 2x2 가 없다. 그대로 태우면 '타깃 0/0 통과' 가 찍히는데, 그것은 숫자가
-    없는 것이 아니라 **틀린 숫자**다 - 엔지니어는 대조가 실패한 줄로 읽는다.
+def test_sensor_evidence_line_replaces_the_fake_2x2():
+    """센서에는 2x2 가 없다. 그대로 태우면 '타깃 0/12 통과 · 대조군 0/40 통과' 가
+    찍히는데(target_total 자리에 n_target 이 온다 - 0/0 이 아니다), 그것은 숫자가
+    없는 것이 아니라 **그럴듯한 틀린 숫자**다 - 엔지니어는 대조가 실패한 줄로 읽는다.
+
+    부분 문자열만 따로 보면 타깃/대조군 전치나 claim_id 누락도 통과한다 - 숫자가
+    **어디에 붙는지**까지 잠그기 위해 줄 전체를 등가 비교한다.
     """
     b = evidence.build_bundle([_sensor_finding("CC003000",
                                                [_sensor_cand("CC003000", "TEMP_1", 2.31)])])
     line = evidence.format_evidence_line(asdict(b.claims["sensor:CC003000:TEMP_1"]))
-    assert "0/0" not in line
+    assert line == ("sensor:CC003000:TEMP_1 · 효과크기 2.31 · "
+                     "타깃 n=12 평균 812.4 · 대조군 n=40 평균 799.1")
     assert "통과" not in line
     assert "분리 점수" not in line
-    assert "효과크기 2.31" in line
-    assert "n=12" in line and "n=40" in line
-    assert "812.4" in line and "799.1" in line
 
 
 def test_statistical_evidence_line_is_unchanged():
-    """센서 분기를 넣다가 1단 줄을 건드리면 안 된다 (리포트가 이 문장을 쓴다)."""
+    """센서 분기를 넣다가 1단 줄을 건드리면 안 된다 (리포트가 이 문장을 그대로 쓴다).
+
+    등가 비교인 이유는 위와 같다 - 부분 문자열만 보면 구분자(` · `)를 바꾸는 훼손도
+    통과한다.
+    """
     b = evidence.build_bundle([_finding("hyp_eqp_ch_commonality", "eqp_ch_commonality",
                                         "ok", [CAND_PASS])])
     line = evidence.format_evidence_line(asdict(b.claims[CAND_PASS["claim_id"]]))
-    assert "분리 점수 1.0" in line
-    assert "타깃 3/3 통과" in line
-    assert "대조군 0/6 통과" in line
+    assert line == ("eqp_ch_commonality:chamber:CC002000:ETCH9_B · 분리 점수 1.0 · "
+                     "타깃 3/3 통과 · 대조군 0/6 통과")
 
 
 # ---------------------------------------------------------------- 접기와 순위
@@ -636,6 +648,26 @@ def test_a_tie_with_no_statistics_at_all_says_so():
     assert "해상도" not in line
 
 
+def test_a_tie_between_a_sensor_and_a_zero_reference_candidate_is_not_no_statistics():
+    """센서와 참조 0회 1단 후보는 둘 다 `_is_statistical` 이 False 라 `dominates` 의
+    센서 하한에 걸려 같은 층에 묶인다. 그렇다고 사유가 `no_statistics`(표본을
+    모으면 풀린다는 뜻으로 읽힌다)면 안 된다 - 센서가 낀 이상 이 규칙으로는
+    영원히 안 갈린다. `_tie_reason` 은 대표 하나가 아니라 층 전체를 봐야 하므로,
+    어느 쪽이 lead 가 되든(정렬은 -score 라 참조0회 쪽이 앞선다) 사유가 같아야
+    한다.
+    """
+    b = evidence.build_bundle([
+        _finding("hyp_zero_ref", "zero_ref", "ok",
+                 [_cand("h:1", "ZERO_REF", 0.99, 1.0, ["W1", "W2"], floor=1.0)]),
+        _sensor_finding("CC003000", [_sensor_cand("CC003000", "TEMP_1", 2.3)])])
+    groups = b.ranked_groups()
+    assert len(groups) == 2                          # 서로 다른 근거라 접히지 않는다
+    ranks = evidence.layer_ranks(groups)
+    assert ranks[0] == ranks[1]                       # 같은 층으로 묶였다
+    dicts = evidence.groups_to_dicts(groups)
+    assert [d["tie_reason"] for d in dicts] == ["sensor_correlated", "sensor_correlated"]
+
+
 def test_axes_differing_with_equal_scores_is_not_blamed_on_the_axis():
     """축이 달라도 **점수까지 같으면** 축 탓을 하면 안 된다.
 
@@ -691,6 +723,31 @@ def test_axis_specific_fields_survive_in_extra():
     assert claim.extra["coverage_target"] == 1.0
     # 1급 필드는 extra 로 중복되지 않는다
     assert "score" not in claim.extra and "target_wafers" not in claim.extra
+
+
+def test_folded_sensor_branch_omits_the_2x2_and_the_kind_field():
+    """`group_to_dict` 의 `folded()` 센서 분기는 지금 도달 불가다 - 센서는
+    target_wafers 가 비어 있어 `ranked_groups()` 가 늘 혼자만의 묶음을 만들고,
+    그래서 `group.claims[1:]` 가 항상 비어 `folded()` 가 센서로 호출되지 않는다.
+    브리프가 시킨 것은 접기 규칙이 바뀌는 날의 방어선이라, 잠금이 없으면 조용히
+    썩는다 - 센서 두 개짜리 `ClaimGroup` 을 직접 만들어 호출한다.
+    """
+    lead = evidence.Claim(
+        claim_id="sensor:CC003000:TEMP_1", tool="compare_sensor_distribution",
+        hypothesis_id="", step_seq="CC003000", key="TEMP_1", level="sensor",
+        passes=True, reject_reason=None, score=2.31, kind="sensor",
+        target_pass=0, target_total=12, control_pass=0, control_total=40)
+    other = evidence.Claim(
+        claim_id="sensor:CC003000:RF_2", tool="compare_sensor_distribution",
+        hypothesis_id="", step_seq="CC003000", key="RF_2", level="sensor",
+        passes=True, reject_reason=None, score=1.9, kind="sensor",
+        target_pass=0, target_total=12, control_pass=0, control_total=40)
+    d = evidence.group_to_dict(evidence.ClaimGroup(claims=(lead, other)))
+    assert len(d["confounded_with"]) == 1
+    folded = d["confounded_with"][0]
+    for missing in ("target_pass", "target_total", "control_pass", "control_total",
+                    "kind"):
+        assert missing not in folded
 
 
 def test_same_targets_but_different_counterexamples_do_not_fold():

@@ -345,11 +345,13 @@ def group_to_dict(group: ClaimGroup, picked: bool = False) -> dict:
     # 후보는 분모가 계측된 몇 장뿐이라 같은 wafer 를 가리켜도 근거의 무게가 다르다.
     def folded(c: Claim) -> dict:
         base = {"claim_id": c.claim_id, "hypothesis_id": c.hypothesis_id,
-                "kind": c.kind, "level": c.level, "key": c.key,
-                "step_seq": c.step_seq, "score": c.score}
+                "level": c.level, "key": c.key, "step_seq": c.step_seq,
+                "score": c.score}
         if c.kind == "sensor":
-            # 2x2 키를 아예 안 싣는다. `_folded_detail` 은 target_total 유무로
-            # 분기하므로, 0 을 실으면 "타깃 0/0" 이 그대로 찍힌다.
+            # 2x2 키를 아예 안 싣는다. target_total 자리에는 n_target(예: 12) 이
+            # 온다 - 0 을 그대로 실으면 "타깃 0/0" 이 아니라 "타깃 0/12" 같은
+            # 그럴듯한 가짜 2x2 가 찍힌다. `_folded_detail` 은 target_total 유무로만
+            # 분기하므로 여기서 아예 안 실어야 막힌다.
             return base
         return {**base, "p_permutation": c.p_permutation,
                 "target_pass": c.target_pass, "target_total": c.target_total,
@@ -406,20 +408,33 @@ def _tie_reason(group: ClaimGroup, peers: list[ClaimGroup]) -> str:
       대조를 찾아야 한다.
     - `identical`: 축과 무관하게 p 도 점수도 같다. 같은 축이었어도 안 갈렸다.
       두 후보가 같은 wafer 를 다르게 부르는 것은 아닌지(교락) 부터 본다.
-    - `no_statistics`: 어느 쪽도 귀무 표본이 없다. 순위 이전의 문제다.
+    - `no_statistics`: 어느 쪽도 귀무 표본이 없다. 순위 이전의 문제다 - **표본을
+      늘리면 풀릴 수 있다**(참조 회차가 늘면 통계적 근거가 생긴다).
+    - `sensor_correlated`: 묶음에 센서가 하나라도 있다. `dominates` 의 센서
+      하한(`if x.kind == "sensor" or y.kind == "sensor": return False`)은
+      의도된 거부라 표본을 아무리 늘려도 **영원히** 안 갈린다 - 도구 자신의
+      note 그대로 "연동된 센서는 함께 움직이므로 효과크기 순위만으로는 원인을
+      가릴 수 없다." `no_statistics` 와 헷갈리면 안 된다 - 그건 "아직 근거가
+      없다"(모으면 풀린다)로 읽히는데, 이건 "이 규칙으로는 원천적으로 비교하지
+      않는다"다.
 
     하나로 뭉뚱그리면 안 되는 이유가 이것이다. "해상도에서 갈리지 않는다" 만 적으면
     `cross_axis` 인 엔지니어가 wafer 를 더 모으고, 그래도 안 갈린다. 거꾸로도 같다 -
     바닥에 걸린 것을 `cross_axis` 로 부르면 갈릴 수 있는 것을 포기시킨다.
 
-    같은 등수 안에서는 통계 등급이 섞이지 않는다 - `dominates` 가 통계 등급을
-    비통계 등급보다 위로 올리므로 둘이 같은 층에 설 수 없다. 그래서 대표 하나의
-    등급만 봐도 된다.
+    같은 등수 안에서는 통계/비통계 등급이 섞이지 않는다 - `dominates` 가 통계
+    등급을 비통계 등급보다 위로 올리므로 둘이 같은 층에 설 수 없다(`resolution`
+    이하 세 갈래는 그래서 대표 하나의 등급만 봐도 된다). 다만 **비통계 등급 안에서는
+    kind 가 섞일 수 있다** - 센서와 참조 회차 0인 1단 후보는 둘 다 `_is_statistical`
+    이 False 라 센서 하한으로 갈리지 않고 같은 층에 묶인다. 그래서 `sensor_correlated`
+    판정만은 대표 하나가 아니라 **층 전체**(peers 까지)를 본다.
     """
     lead = group.lead
+    leads = [lead, *(p.lead for p in peers)]
+    if any(c.kind == "sensor" for c in leads):
+        return "sensor_correlated"
     if not _is_statistical(lead):
         return "no_statistics"
-    leads = [lead, *(p.lead for p in peers)]
     # **clamp 가 우열을 덮었는지**를 묻는다. "원 p 가 다른가" 로 물으면 놓치는 경우가
     # 있다 - 두 후보의 p 가 우연히 같아도 한쪽이 자기 바닥에 걸려 있으면 그 값은
     # "그 이하" 이므로, 참조 회차를 늘리면 실제로 갈린다. 그때 축 탓을 하면
@@ -469,6 +484,7 @@ _TIE_REASONS = {
     "cross_axis": "순열 p 가 같고 축이 달라 분리 점수로는 가르지 않아",
     "identical": "순열 p 도 분리 점수도 같아",
     "no_statistics": "어느 쪽도 통계적 근거가 없어",
+    "sensor_correlated": "연동된 센서는 함께 움직여 효과크기 순위만으로는 가릴 수 없어",
 }
 
 
@@ -538,10 +554,14 @@ def format_evidence_line(claim: dict) -> str:
     if claim.get("kind") == "sensor":
         # 2x2 도 순열 p 도 없다. 있는 것은 효과크기와 두 분포뿐이고, 그 둘을 표본 수와
         # 함께 읽어야 한다 - 표본이 작으면 효과크기가 커지므로 n 을 떼면 거짓말이 된다.
-        ex = claim.get("extra") or {}
+        # `ex[...]` 다 - `.get` 이 아니다. 통계 분기 아래의 `claim['target_pass']`
+        # 와 같은 실패 모드를 쓴다: target_mean 이 사라지면 조용히 "평균 None" 을
+        # 찍는 대신 KeyError 로 죽어야 한다 - 이 함수의 취지가 "숫자가 없는 게
+        # 아니라 틀린 숫자가 나가는 것" 을 막는 것이다.
+        ex = claim["extra"]
         return (f"{claim['claim_id']} · 효과크기 {claim['score']} · "
-                f"타깃 n={claim['target_total']} 평균 {ex.get('target_mean')} · "
-                f"대조군 n={claim['control_total']} 평균 {ex.get('control_mean')}")
+                f"타깃 n={claim['target_total']} 평균 {ex['target_mean']} · "
+                f"대조군 n={claim['control_total']} 평균 {ex['control_mean']}")
     line = (f"{claim['claim_id']} · 분리 점수 {claim['score']} · "
             f"타깃 {claim['target_pass']}/{claim['target_total']} 통과 · "
             f"대조군 {claim['control_pass']}/{claim['control_total']} 통과")
@@ -617,12 +637,15 @@ def build_bundle(findings: list[dict]) -> Bundle:
                     continue
                 claims[claim_id] = Claim(
                     claim_id=claim_id, tool=tool, kind="sensor",
-                    # 등록 가설이 아니다. `_is_roll_up_of` 는 level_columns 가 비어
-                    # False 로 떨어지고, hypothesis_id="" 는 `dominates` 의 점수
-                    # 비교 줄(같은 hypothesis_id 끼리만 걸린다)에서 1단 가설과
-                    # 오비교되는 것을 막는다. 다만 센서 쌍끼리는 그 줄에 닿기도
-                    # 전에 `dominates` 의 센서 하한이 먼저 막아 늘 갈리지 않는
-                    # 것(동점)으로 판정한다 - 효과크기로 비교하지 않는다.
+                    # 등록 가설이 아니다. hypothesis_id="" 가 실제로 읽히는 자리는
+                    # `_is_roll_up_of`(coarse.hypothesis_id != fine.hypothesis_id
+                    # 줄 - 다만 level_columns 가 비어 있어 이미 False 로 떨어진다)와
+                    # `_tie_reason`(다만 그 줄은 lead 가 통계적일 때만 닿는데 센서는
+                    # 늘 비통계라 역시 안 닿는다) 뿐이다. `dominates` 에서는 아무
+                    # 일도 안 한다 - 센서가 낀 쌍은 통계 등급 분기(sx != sy)나 센서
+                    # 하한(`if x.kind == "sensor" or y.kind == "sensor": return
+                    # False`)에서 먼저 걸려 hypothesis_id 를 비교하는 줄까지 가지
+                    # 못한다.
                     hypothesis_id="",
                     # 센서 후보 dict 에는 step_seq 키가 없다 (claim_id 문자열 안에만
                     # 있는데, 그것을 파싱하지 않기로 했다). 대신 감사 기록의 도구
