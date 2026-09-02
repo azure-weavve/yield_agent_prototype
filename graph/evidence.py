@@ -145,6 +145,16 @@ def dominates(a: ClaimGroup, b: ClaimGroup) -> bool:
         px, py = max(x.p_permutation, floor), max(y.p_permutation, floor)
         if px != py:
             return px < py
+    # 센서는 점수로 안 가른다. `tools/sensor_compare.py` 가 결과 note 에 스스로
+    # 적는다 - "연동된 센서는 함께 움직이므로 순위만으로 원인을 가릴 수 없다." 센서
+    # 효과크기(d)를 우열로 쓰면 그 경고가 투영 경계에서 정확히 뒤집힌다: 상관된
+    # 센서 top-K 가 1등부터 꼴찌까지 엄격한 서열로 리포트에 나간다. 스텝을 넘으면
+    # 더 나쁘다 - 센서 수가 스텝마다 달라(수백 개 vs 수십 개) 최대 d 의 분포 자체가
+    # 탐색 폭을 타므로, 방금 위에서 p 비교를 축 안으로 가둔 것과 같은 이유로 축을
+    # 넘는 d 비교도 막아야 한다. hypothesis_id 로는 못 막는다 - 센서는 전부 ""
+    # 이므로 이 줄만으로는 "모든 센서가 같은 축" 이 되어 버린다.
+    if x.kind == "sensor" or y.kind == "sensor":
+        return False
     # p 로는 안 갈렸다. 점수는 탐색 폭에 따라 부풀고 그 정도가 축마다 다르므로
     # **같은 축 안에서만** 쓴다 - 축을 넘으면 탐색이 넓은 축이 늘 이긴다.
     return x.hypothesis_id == y.hypothesis_id and x.score > y.score
@@ -613,8 +623,16 @@ def build_bundle(findings: list[dict]) -> Bundle:
                     control_pass=0, control_total=int(c.get("n_control") or 0),
                     # wafer 목록을 안 싣는다: 한 호출의 top-K 는 전부 같은 집합이라
                     # 실으면 서로 다른 센서 열 개가 한 덩어리로 접힌다.
+                    # extra 에서 1급으로 옮겨 간 키를 다시 뺀다 - 안 빼면 같은 사실이
+                    # 두 이름(score/effect_size, target_total/n_target, control_total/
+                    # n_control)으로 겹쳐 실려, 나중에 렌더러가 어느 쪽을 읽을지 정해야
+                    # 하고 한쪽만 고치면 조용히 어긋난다. target_mean·control_mean·
+                    # target_std·control_std 는 1급 자리가 없으므로 그대로 남긴다 -
+                    # 근거 줄이 그 넷을 읽는다.
                     extra={k: v for k, v in c.items()
-                           if k not in _FIRST_CLASS_FIELDS and k != "sensor_name"},
+                           if k not in _FIRST_CLASS_FIELDS
+                           and k not in ("sensor_name", "effect_size",
+                                         "n_target", "n_control")},
                 )
             continue
         if not _is_hypothesis_result(result):

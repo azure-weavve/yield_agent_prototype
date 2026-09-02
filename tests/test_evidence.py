@@ -27,9 +27,19 @@ CAND_FAIL = {"claim_id": "eqp_ch_commonality:chamber:CD004000:PHOT2_X", "level":
 
 
 def _sensor_finding(step_seq, cands, status="ok", loop=3):
+    # refetch_key 를 실물 모양대로 채운다(tools/sensor_compare.py 의 base 참고) - 특히
+    # target_wafers/control_wafers 를 **비워 두지 않는다.** 이 자리가 wafer 목록이
+    # 실제로 존재하는 유일한 자리라, 비워 두면 "접기 방지를 위해 후보 dict 대신 여기서
+    # wafer 를 읽어 싣자" 는 미래의 훼손이 no-op 인 옛 데이터로는 안 잡힌다.
     return {"loop": loop, "tool": "compare_sensor_distribution",
             "args": {"step_seq": step_seq},
-            "result": {"kind": "sensor", "status": status, "candidates": cands},
+            "result": {"kind": "sensor", "status": status, "candidates": cands,
+                       "truncated": 0,
+                       "refetch_key": {"step_seq": step_seq,
+                                       "target_wafers": ["W001", "W002", "W003"],
+                                       "control_wafers": ["W101", "W102", "W103", "W104"],
+                                       "sensors": [c.get("sensor_name") for c in cands],
+                                       "store_mode": "csv"}},
             "thought": "2단"}
 
 
@@ -89,6 +99,23 @@ def test_sensor_candidate_becomes_a_claim():
     assert c.extra["target_mean"] == 812.4
 
 
+def test_failing_sensor_candidate_is_kept_but_does_not_pass():
+    """미통과 센서도 번들에는 남는다 - 게이트가 claim_id 로 조회할 수 있어야 한다.
+
+    두 훼손을 같이 잡는다: (1) `passes` 를 하드코딩하면(예: 항상 True) Task 1 의
+    판별선(`SENSOR_PASS_MIN_EFFECT`)이 투영 경계에서 무효화된다. (2) 미통과 후보를
+    아예 claims 에서 빼면(예: `if not passes: continue`), LLM 이 미통과 센서를
+    정직하게 지목했을 때 게이트가 "claim_id 는 도구 결과에 없다" 는 거짓 반려를
+    낸다 - M3 에서 이미 비싸게 배운 실패 모드다.
+    """
+    b = evidence.build_bundle([_sensor_finding(
+        "CC003000", [_sensor_cand("CC003000", "TEMP_1", 0.05, passes=False)])])
+    c = b.claims["sensor:CC003000:TEMP_1"]
+    assert c.passes is False
+    assert c.reject_reason == "효과크기 0.05 < 0.8"
+    assert b.passing() == []
+
+
 def test_sensor_does_not_enter_coverage_vocabulary():
     """센서 status 는 ran/statuses 에 들어오지 않는다.
 
@@ -101,6 +128,13 @@ def test_sensor_does_not_enter_coverage_vocabulary():
         _sensor_finding("CC003000", [], status="no_signal")])
     assert b.ran == set()
     assert b.statuses == {}
+
+    # 후보 0건 경로만으로는 부족하다 - `ran.add`/`statuses[...] =` 를 후보 루프
+    # **안**에 넣는 훼손은 후보가 있어야만 실행돼 위 단언을 빠져나간다.
+    b2 = evidence.build_bundle([
+        _sensor_finding("CC003000", [_sensor_cand("CC003000", "TEMP_1", 2.3)])])
+    assert b2.ran == set()
+    assert b2.statuses == {}
 
 
 def test_second_sensor_call_on_another_step_keeps_the_first():
@@ -133,7 +167,22 @@ def test_sensor_candidates_do_not_fold_into_one_group():
     b = evidence.build_bundle([_sensor_finding("CC003000", [
         _sensor_cand("CC003000", "TEMP_1", 2.3),
         _sensor_cand("CC003000", "RF_2", 1.9)])])
-    assert len(b.ranked_groups()) == 2
+    groups = b.ranked_groups()
+    assert len(groups) == 2
+
+    # 효과크기로 우열을 매기면 안 된다 - `dominates` 가 점수로 가르면 이 둘은
+    # 1등/2등으로 갈리고, 도구 자신의 note("연동된 센서는 함께 움직이므로 순위만으로
+    # 원인을 가릴 수 없다")가 투영 경계에서 정확히 뒤집힌다. 등수가 같고 `tied=True`
+    # 여야 한다. 표시 순서(sort_key)는 여전히 -score 라 TEMP_1 이 위에 오지만, 그건
+    # 화면 순서일 뿐 등수가 아니다.
+    ranks = evidence.layer_ranks(groups)
+    assert ranks[0] == ranks[1]
+    dicts = evidence.groups_to_dicts(groups)
+    assert all(d["tied"] for d in dicts)
+    # 센서는 p 를 안 내므로 `_is_statistical` 이 항상 False 다 - 동점 사유는
+    # "해상도에서 못 가른다"(resolution)나 "축이 다르다"(cross_axis)가 아니라
+    # "애초에 통계적 근거가 없다"(no_statistics) 여야 한다.
+    assert all(d["tie_reason"] == "no_statistics" for d in dicts)
 
 
 def test_tool_error_string_does_not_count_as_ran():
