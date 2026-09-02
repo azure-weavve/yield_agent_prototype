@@ -5,6 +5,9 @@
   유의하다. 효과크기 랭킹 + 원시 표본 수를 실어 "후보이지 결론이 아님" 이 드러나게 한다.
 - **wafer 별 원본값을 반환하지 않는다.** 반환은 top-K 절단으로 유계다.
 - **결측을 신호로 만들지 않는다.** 센서 행이 없는 wafer 는 그 센서의 분모에서 빠진다.
+- **판별선은 효과크기 하나뿐이다.** claim_id 와 passes 를 여기서 발급하는 이유는
+  `domain/engine.py` 가 commonality 후보에 하는 것과 같다 - 판정에 필요한 임계를
+  아는 곳이 여기이고, `graph/evidence.py` 는 판정하지 않는 자리이기 때문이다.
 """
 
 import statistics
@@ -38,7 +41,7 @@ def compare_sensor_distribution(step_seq: str, group_ids: list[str],
     targets = sorted(set(group_ids or []))
     controls = sorted(set(control_ids or []) - set(targets))
 
-    base = {"candidates": [], "truncated": 0,
+    base = {"kind": "sensor", "candidates": [], "truncated": 0,
             "refetch_key": {"step_seq": step_seq,
                             "target_wafers": targets, "control_wafers": controls,
                             "sensors": [], "store_mode": ya_config.SENSOR_MODE}}
@@ -69,6 +72,14 @@ def compare_sensor_distribution(step_seq: str, group_ids: list[str],
         if d <= 0:
             continue
         candidates.append({
+            # 게이트가 조회할 유일한 키. 게이트는 이 문자열을 파싱하지 않는다.
+            # step_seq 를 넣는 이유: 다른 스텝의 두 번째 호출이 첫 호출의 근거를
+            # 덮어쓰면 안 된다 - 두 스텝은 재실행이 아니라 다른 질문이다.
+            "claim_id": f"sensor:{step_seq}:{name}",
+            "passes": d >= ya_config.SENSOR_PASS_MIN_EFFECT,
+            "reject_reason": (None if d >= ya_config.SENSOR_PASS_MIN_EFFECT
+                              else f"효과크기 {round(d, 3)} < "
+                                   f"{ya_config.SENSOR_PASS_MIN_EFFECT}"),
             "sensor_name": name,
             "effect_size": round(d, 3),
             "target_mean": round(statistics.mean(t_vals), 3),

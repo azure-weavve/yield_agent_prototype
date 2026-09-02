@@ -31,7 +31,8 @@ def test_return_is_bounded_and_carries_raw_counts():
     res = _run()
     assert len(res["candidates"]) <= ya_config.SENSOR_TOP_K
     c = res["candidates"][0]
-    assert set(c) == {"sensor_name", "effect_size", "target_mean", "control_mean",
+    assert set(c) == {"claim_id", "passes", "reject_reason",
+                      "sensor_name", "effect_size", "target_mean", "control_mean",
                       "target_std", "control_std", "n_target", "n_control"}
     assert c["n_target"] == len(GROUP_WAFERS)
 
@@ -86,3 +87,38 @@ def test_step_without_sensors_is_no_signal():
     assert res["status"] == "no_signal"
     assert res["candidates"] == []
     assert "원인 없음이 아니다" in res["note"]
+
+
+def test_candidates_carry_the_gate_contract():
+    """센서 후보도 claim_id 를 받는다 - 그래야 게이트가 조회하고 리포트가 인용한다.
+
+    claim_id 에 step_seq 를 넣는 이유: 다른 스텝의 두 번째 호출이 첫 호출의 근거를
+    덮어쓰면 안 된다. 두 스텝은 서로를 대체하는 재실행이 아니라 다른 질문이다.
+    """
+    res = _run()
+    assert res["kind"] == "sensor"
+    c = res["candidates"][0]
+    assert c["claim_id"] == f"sensor:{SENSOR_STEP}:{c['sensor_name']}"
+    assert c["passes"] is True                     # 실제 원인 센서는 효과가 크다
+    assert c["reject_reason"] is None
+
+
+def test_weak_effect_is_recorded_but_does_not_pass(monkeypatch):
+    """판별선 미달 센서는 목록에 남되 passes=False 다 (1단 미통과 후보와 같은 취급).
+
+    지우면 게이트가 reject_reason 을 돌려줄 수 없고, 그대로 통과시키면 d=0.05 짜리가
+    리포트 [근거] 에 올라간다.
+    """
+    monkeypatch.setattr(ya_config, "SENSOR_PASS_MIN_EFFECT", 99.0)
+    cands = _run()["candidates"]
+    assert cands, "후보 자체는 여전히 나와야 한다"
+    assert all(c["passes"] is False for c in cands)
+    assert all("99.0" in c["reject_reason"] for c in cands)
+
+
+def test_kind_is_present_even_when_nothing_separates():
+    """판별자는 모든 경로에 있어야 한다 - 하나라도 빠지면 그 경로의 결과가
+    build_bundle 에서 조용히 무시된다."""
+    res = sc.compare_sensor_distribution(SENSOR_STEP, GROUP_WAFERS[:1], CONTROL_WAFERS)
+    assert res["status"] == "insufficient_sample"
+    assert res["kind"] == "sensor"

@@ -86,6 +86,12 @@ SENSOR_TOP_K = int(os.getenv("SENSOR_TOP_K", "10"))
 # 한 그룹의 센서 표본이 이 미만이면 비교하지 않는다 (표본 2장짜리 효과크기는 허상)
 SENSOR_MIN_SAMPLE = int(os.getenv("SENSOR_MIN_SAMPLE", "3"))
 
+# 센서 판별선 - 이 효과크기 미만이면 근거로 싣지 않는다(후보 목록에는 남는다).
+# 도구는 d>0 이면 전부 top-K 에 싣는데, 그대로 리포트 [근거] 로 태우면 d=0.05 짜리가
+# 원인 후보로 읽힌다. 0.8 은 Cohen 의 large 관례이며 실데이터를 본 값이 아니다 -
+# COMMONALITY_PASS_* 와 같은 성격의 조정 노브다.
+SENSOR_PASS_MIN_EFFECT = float(os.getenv("SENSOR_PASS_MIN_EFFECT", "0.8"))
+
 # 형제 묶기 (status 입력 재설계): "같은 사건" 판정이라 유사 사례 검색(0.5)보다 높게.
 # 실행 중 불변이므로 결정론 원칙과 충돌 없음 (재설계 문서 6절 2번).
 SIBLING_MIN_SIMILARITY = float(os.getenv("SIBLING_MIN_SIMILARITY", "0.8"))
