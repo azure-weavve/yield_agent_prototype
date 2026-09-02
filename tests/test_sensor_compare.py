@@ -76,6 +76,7 @@ def test_insufficient_sample_is_reported_not_computed():
     res = sc.compare_sensor_distribution(SENSOR_STEP, GROUP_WAFERS[:1], CONTROL_WAFERS)
     assert res["status"] == "insufficient_sample"
     assert res["candidates"] == []
+    assert res["kind"] == "sensor"
 
 
 def test_step_without_sensors_is_no_signal():
@@ -87,6 +88,16 @@ def test_step_without_sensors_is_no_signal():
     assert res["status"] == "no_signal"
     assert res["candidates"] == []
     assert "원인 없음이 아니다" in res["note"]
+    assert res["kind"] == "sensor"
+
+
+def test_kind_is_present_when_fetch_fails(monkeypatch):
+    """판별자는 fetch_failed 경로에도 있어야 한다 - 없으면 조회 실패 결과가
+    build_bundle 에서 조용히 무시된다."""
+    monkeypatch.setattr(ya_config, "SENSOR_MODE", "bogus")   # get_store() 가 죽어 fetch_failed
+    res = _run()
+    assert res["status"] == "fetch_failed"
+    assert res["kind"] == "sensor"
 
 
 def test_candidates_carry_the_gate_contract():
@@ -114,11 +125,3 @@ def test_weak_effect_is_recorded_but_does_not_pass(monkeypatch):
     assert cands, "후보 자체는 여전히 나와야 한다"
     assert all(c["passes"] is False for c in cands)
     assert all("99.0" in c["reject_reason"] for c in cands)
-
-
-def test_kind_is_present_even_when_nothing_separates():
-    """판별자는 모든 경로에 있어야 한다 - 하나라도 빠지면 그 경로의 결과가
-    build_bundle 에서 조용히 무시된다."""
-    res = sc.compare_sensor_distribution(SENSOR_STEP, GROUP_WAFERS[:1], CONTROL_WAFERS)
-    assert res["status"] == "insufficient_sample"
-    assert res["kind"] == "sensor"
