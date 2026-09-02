@@ -26,6 +26,22 @@ CAND_FAIL = {"claim_id": "eqp_ch_commonality:chamber:CD004000:PHOT2_X", "level":
              "target_pass": 3, "target_total": 4, "control_pass": 2, "control_total": 5}
 
 
+def _sensor_finding(step_seq, cands, status="ok", loop=3):
+    return {"loop": loop, "tool": "compare_sensor_distribution",
+            "args": {"step_seq": step_seq},
+            "result": {"kind": "sensor", "status": status, "candidates": cands},
+            "thought": "2단"}
+
+
+def _sensor_cand(step_seq, name, effect, passes=True):
+    return {"claim_id": f"sensor:{step_seq}:{name}", "sensor_name": name,
+            "effect_size": effect, "passes": passes,
+            "reject_reason": None if passes else f"효과크기 {effect} < 0.8",
+            "target_mean": 812.4, "control_mean": 799.1,
+            "target_std": 3.0, "control_std": 2.8,
+            "n_target": 12, "n_control": 40}
+
+
 def test_build_bundle_collects_claims_and_status():
     b = evidence.build_bundle([_finding("hyp_eqp_ch_commonality", "eqp_ch_commonality",
                                         "ok", [CAND_PASS, CAND_FAIL])])
@@ -43,17 +59,81 @@ def test_build_bundle_collects_claims_and_status():
         1.0, 3, 3, 0, 6)
 
 
-def test_sensor_result_is_not_evidence():
-    """센서 결과에도 candidates 키가 있다 — 덕타이핑이면 여기로 딸려 들어온다.
+def test_sensor_result_needs_its_own_discriminator():
+    """센서 결과에도 candidates 키가 있다 - 덕타이핑이면 가설 결과와 섞인다.
 
-    판별자는 hypothesis_id 의 유무이지 candidates 의 유무가 아니다.
+    이제 센서도 Claim 이 되지만 **판별자는 여전히 다르다**: 가설은 hypothesis_id,
+    센서는 kind 다. kind 가 없는 옛 모양은 어느 쪽으로도 안 들어간다 - 정체를 모르는
+    결과를 짐작으로 투영하면 필드가 통째로 어긋난다.
     """
-    sensor = {"status": "ok", "candidates": [
+    legacy = {"status": "ok", "candidates": [
         {"sensor_name": "rf_power_steady_avg", "effect_size": 14.99, "passes": True}]}
     b = evidence.build_bundle([{"loop": 1, "tool": "compare_sensor_distribution",
-                                "args": {}, "result": sensor, "thought": "t"}])
+                                "args": {}, "result": legacy, "thought": "t"}])
     assert b.claims == {}
     assert b.ran == set()
+
+
+def test_sensor_candidate_becomes_a_claim():
+    """센서 후보가 claim_id 로 조회된다 - 이것이 이번 변경의 목적이다."""
+    b = evidence.build_bundle([_sensor_finding("CC003000",
+                                               [_sensor_cand("CC003000", "TEMP_1", 2.31)])])
+    c = b.claims["sensor:CC003000:TEMP_1"]
+    assert c.kind == "sensor"
+    assert (c.step_seq, c.key, c.level) == ("CC003000", "TEMP_1", "sensor")
+    assert c.score == 2.31                          # 효과크기가 score 자리에 온다
+    assert (c.target_total, c.control_total) == (12, 40)
+    assert c.hypothesis_id == ""                    # 등록 가설이 아니다
+    assert c.p_permutation is None                  # 설계상 p 를 안 낸다
+    assert c.target_wafers == ()                    # 접기 대상이 아니다 (spec §7)
+    assert c.extra["target_mean"] == 812.4
+
+
+def test_sensor_does_not_enter_coverage_vocabulary():
+    """센서 status 는 ran/statuses 에 들어오지 않는다.
+
+    들어오면 게이트 (3)의 `ran_statuses <= NO_DATA_STATUSES` 가 센서의 'ok' 때문에
+    영영 False 가 되어 no_comparable_data 가 안 열리고, 센서의 no_signal 이 1단의
+    것으로 둔갑해 축을 하나도 안 돌리고 "대조한 축에서는 못 찾았다" 로 끝난다.
+    ran/statuses 는 '등록 축 커버리지' 전용 어휘다.
+    """
+    b = evidence.build_bundle([
+        _sensor_finding("CC003000", [], status="no_signal")])
+    assert b.ran == set()
+    assert b.statuses == {}
+
+
+def test_second_sensor_call_on_another_step_keeps_the_first():
+    """다른 스텝의 센서 호출은 재실행이 아니라 다른 질문이다.
+
+    tool 이름으로 앞 후보를 버리는 폐기 규칙의 근거는 '그룹이 바뀌어 분모가 달라졌다'
+    인데, 센서는 group/control 이 주입이라 항상 같고 step_seq 만 다르다. tool 키로
+    묶으면 스텝 B 호출이 스텝 A 근거를 조용히 지운다.
+    """
+    b = evidence.build_bundle([
+        _sensor_finding("CC003000", [_sensor_cand("CC003000", "TEMP_1", 2.3)], loop=3),
+        _sensor_finding("CD004000", [_sensor_cand("CD004000", "RF_2", 1.9)], loop=4)])
+    assert set(b.claims) == {"sensor:CC003000:TEMP_1", "sensor:CD004000:RF_2"}
+    assert b.superseded == frozenset()
+    assert b.dropped_claims == {}
+
+
+def test_statistical_passing_excludes_sensors():
+    """지목 가능한 후보와 근거로 실리는 후보를 가르는 자리."""
+    b = evidence.build_bundle([
+        _finding("hyp_eqp_ch_commonality", "eqp_ch_commonality", "ok", [CAND_PASS]),
+        _sensor_finding("CC003000", [_sensor_cand("CC003000", "TEMP_1", 2.3)])])
+    assert len(b.passing()) == 2                        # 근거로는 둘 다
+    assert [c.claim_id for c in b.statistical_passing()] == [CAND_PASS["claim_id"]]
+
+
+def test_sensor_candidates_do_not_fold_into_one_group():
+    """한 호출의 top-K 는 전부 같은 wafer 집합이라, 목록을 실으면 열 개가 한 덩어리로
+    접혀 '같은 사실의 열 가지 이름' 이 된다. 온도와 파티클은 다른 설명이다."""
+    b = evidence.build_bundle([_sensor_finding("CC003000", [
+        _sensor_cand("CC003000", "TEMP_1", 2.3),
+        _sensor_cand("CC003000", "RF_2", 1.9)])])
+    assert len(b.ranked_groups()) == 2
 
 
 def test_tool_error_string_does_not_count_as_ran():

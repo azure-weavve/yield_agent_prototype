@@ -27,6 +27,11 @@ class Claim:
     target_total: int
     control_pass: int
     control_total: int
+    # 이 후보가 어떤 종류의 증거인가. **게이트 승인 하한이 읽는 자리다.**
+    # `_is_statistical` 로 대신하면 안 된다 - 그 함수는 "순열 참조 회차가 0이라 바닥이
+    # 1.0" 인 1단 후보에도 False 를 주므로, 그것으로 승인을 막으면 이번 변경이 1단의
+    # 승인 가능 범위까지 조용히 좁혀 2026-09-01 에 확정한 순위 계약이 흔들린다.
+    kind: str = "statistical"
     p_permutation: float | None = None
     p_min_possible: float | None = None    # 이 표본이 낼 수 있는 최소 p (바닥값)
     # 이 후보가 가리키는 실제 wafer. 카운트만 담으면 두 후보가 **같은 3장**을 말하는지
@@ -50,7 +55,7 @@ class Claim:
 _FIRST_CLASS_FIELDS = frozenset({
     "claim_id", "hypothesis_id", "step_seq", "key", "level", "passes",
     "reject_reason", "score", "target_pass", "target_total",
-    "control_pass", "control_total", "p_permutation", "p_min_possible",
+    "control_pass", "control_total", "kind", "p_permutation", "p_min_possible",
     "target_wafers", "control_wafers", "level_columns",
 })
 
@@ -258,6 +263,15 @@ class Bundle:
 
     def passing(self) -> list[Claim]:
         return [c for c in self.claims.values() if c.passes]
+
+    def statistical_passing(self) -> list[Claim]:
+        """**지목 가능한** 통과 후보. `passing()` 은 근거로 실을 것 전부다.
+
+        둘을 가르는 이유: 센서는 근거로 인용되지만 원인 확정의 지목 대상이 아니다
+        (다중비교 보정을 일부러 안 한 도구다). 이 구분이 없으면 센서만 통과한 상태에서
+        게이트가 승인도 물러섬도 못 하고 루프 한계까지 왕복한다.
+        """
+        return [c for c in self.passing() if c.kind != "sensor"]
 
     def ranked_groups(self) -> list[ClaimGroup]:
         """통과 후보를 wafer 집합으로 접고 순위를 매긴다 — **코드가 하는 판단.**
@@ -532,6 +546,16 @@ def _is_hypothesis_result(result) -> bool:
             and "hypothesis_id" in result and "candidates" in result)
 
 
+def _is_sensor_result(result) -> bool:
+    """2단 센서 결과인가. **판별자는 `kind` 다.**
+
+    `candidates` 유무로 가르면 가설 결과와 섞이고, `sensor_name` 같은 후보 내부 키로
+    가르면 후보가 0건인 경로(no_signal·insufficient_sample)를 못 알아본다.
+    """
+    return (isinstance(result, dict)
+            and result.get("kind") == "sensor" and "candidates" in result)
+
+
 def build_bundle(findings: list[dict]) -> Bundle:
     """감사 기록에서 가설 도구의 결과만 골라 Claim 사전으로 투영한다.
 
@@ -558,6 +582,41 @@ def build_bundle(findings: list[dict]) -> Bundle:
 
     for i, f in enumerate(findings):
         result = f.get("result")
+        if _is_sensor_result(result):
+            # **ran / statuses / 폐기 장부에 넣지 않는다.** 그 셋은 '등록 축 커버리지'
+            # 전용 어휘라, 센서 status 가 섞이면 게이트 (3) 의 `uncomputable` 이 영영
+            # False 가 되고 센서의 no_signal 이 1단의 것으로 둔갑한다.
+            # 폐기도 안 건다: claim_id 에 step_seq 가 들어가 같은 스텝 재호출은 같은
+            # 키로 덮어써지고, 다른 스텝 호출은 대체가 아니라 다른 질문이다.
+            tool = f.get("tool", "")
+            for c in result["candidates"]:
+                claim_id = c.get("claim_id")
+                if not claim_id:
+                    continue
+                claims[claim_id] = Claim(
+                    claim_id=claim_id, tool=tool, kind="sensor",
+                    # 등록 가설이 아니다. `_is_roll_up_of` 는 level_columns 가 비어
+                    # False 로 떨어지고, `dominates` 의 점수 비교는 같은 값끼리만
+                    # 걸리므로 센서끼리만 효과크기로 비교된다.
+                    hypothesis_id="",
+                    # 센서 후보 dict 에는 step_seq 키가 없다 (claim_id 문자열 안에만
+                    # 있는데, 그것을 파싱하지 않기로 했다). 대신 감사 기록의 도구
+                    # 인자(`f["args"]["step_seq"]`, tools_node 가 주입)에서 읽는다.
+                    step_seq=str(c.get("step_seq") or f.get("args", {}).get("step_seq") or ""),
+                    key=c.get("sensor_name", ""), level="sensor",
+                    passes=bool(c.get("passes")),
+                    reject_reason=c.get("reject_reason"),
+                    score=float(c.get("effect_size") or 0.0),
+                    # 2x2 가 아니다. 분모(n)만 참이고 pass 카운트는 없는 값이라
+                    # 0 으로 두되 렌더러가 kind 로 막는다.
+                    target_pass=0, target_total=int(c.get("n_target") or 0),
+                    control_pass=0, control_total=int(c.get("n_control") or 0),
+                    # wafer 목록을 안 싣는다: 한 호출의 top-K 는 전부 같은 집합이라
+                    # 실으면 서로 다른 센서 열 개가 한 덩어리로 접힌다.
+                    extra={k: v for k, v in c.items()
+                           if k not in _FIRST_CLASS_FIELDS and k != "sensor_name"},
+                )
+            continue
         if not _is_hypothesis_result(result):
             if f.get("failed"):
                 crashed.add(f.get("tool", ""))
