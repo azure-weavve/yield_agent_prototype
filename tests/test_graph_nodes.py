@@ -2459,6 +2459,27 @@ def test_gate_rejects_a_picked_sensor_by_name_not_by_confidence():
     assert "claim_id 를 비우고" in verdict, verdict  # 물러설 길을 안내한다
 
 
+def test_a_failing_sensor_is_also_rejected_as_unpickable_not_as_below_the_line():
+    """**분기를 `not claim.passes` 보다 앞에 둔다** (계획서는 뒤라고 적었다).
+
+    미통과 센서에 "판별선을 넘지 못했다 (효과크기 0.4 < 0.8). 통과한 후보를
+    지목하라" 를 돌려주면 둘 다 사실이지만 **넘었으면 지목할 수 있다**는 거짓을
+    함께 말한다 - 센서를 다시 돌려 큰 d 를 찾아오면 된다고 읽히고, 그러면 같은
+    반려를 한 바퀴 더 받는다. 지목 불가는 판별선보다 앞선 사실이다.
+    """
+    failing = {**SENSOR_FINDING, "result": {
+        **SENSOR_FINDING["result"],
+        "candidates": [{**SENSOR_FINDING["result"]["candidates"][0],
+                        "passes": False, "effect_size": 0.4,
+                        "reject_reason": "효과크기 0.4 < 0.8"}]}}
+    verdict = nodes._finalize_gate(
+        {"claim_id": "sensor:CC002000:TEMP_1", "hypothesis": "h", "confidence": 0.9},
+        loop=2, update={}, findings=[EQP_CH_SILENT, failing])
+    assert "2단 센서" in verdict, verdict
+    assert "판별선" not in verdict, verdict
+    assert "통과한 후보를 지목하라" not in verdict, verdict
+
+
 def test_rejection_of_a_picked_sensor_names_the_statistical_candidates():
     """1단 통과 후보가 있으면 그것을 대야 한다.
 
