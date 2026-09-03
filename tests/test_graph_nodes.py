@@ -2441,6 +2441,45 @@ def test_statistical_claim_outranks_a_sensor():
     assert ranks["sensor:CC002000:TEMP_1"] > 1
 
 
+def test_gate_rejects_a_picked_sensor_by_name_not_by_confidence():
+    """센서를 지목하면 **그 이유로** 반려해야 한다.
+
+    게이트 (1) 에 kind 하한만 걸고 반려 쪽에 분기를 안 두면, 통과한 1등 센서를
+    지목한 제출이 아래 확신도 줄까지 굴러떨어져 "확신도 0.95 < 0.8" 이라는 거짓말이
+    나간다. 판정 (2)·(3)·(3b)는 전부 `not claim_id` 를 요구하므로 종료도 안 열리고,
+    LLM 은 고칠 것이 없는 반려를 받아 루프 한계까지 왕복하다 inconclusive 로 끝난다 -
+    `statistical_passing()` 이 막으려던 라이브락이 claim_id 를 **낸** 경로로 되살아난다.
+    """
+    update = {}
+    verdict = nodes._finalize_gate(
+        {"claim_id": "sensor:CC002000:TEMP_1", "hypothesis": "온도", "confidence": 0.95},
+        loop=2, update=update, findings=[EQP_CH_SILENT, SENSOR_FINDING])
+    assert "확신도" not in verdict, verdict          # 확신도는 0.95 다 - 모자란 적이 없다
+    assert "센서" in verdict, verdict
+    assert "claim_id 를 비우고" in verdict, verdict  # 물러설 길을 안내한다
+
+
+def test_rejection_of_a_picked_sensor_names_the_statistical_candidates():
+    """1단 통과 후보가 있으면 그것을 대야 한다.
+
+    순위 반려 문구로 흘려보내면 센서가 내지도 않은 'p None' 을 인용하고, 효과크기
+    2.31 을 분리 점수 0.55 와 나란히 "점수" 로 놓아 **센서가 더 센데 규칙 때문에
+    졌다**로 읽힌다 - LLM 은 같은 지목을 다시 낸다.
+    """
+    findings = [
+        _rank_finding("hyp_a", "a",
+                      [_rank_cand("a:1", "ETCH9_B", "CC002000", 0.55, 0.002, 0.003, "W1")]),
+        SENSOR_FINDING,
+    ]
+    update = {}
+    verdict = nodes._finalize_gate(
+        {"claim_id": "sensor:CC002000:TEMP_1", "hypothesis": "h", "confidence": 0.9},
+        loop=2, update=update, findings=findings)
+    assert "a:1" in verdict, verdict
+    assert "p None" not in verdict, verdict
+    assert "졌다" not in verdict, verdict
+
+
 def test_gate_does_not_offer_sensors_as_pickable_candidates():
     """지목 불가한 것을 '통과 후보' 로 안내하면 LLM 이 골라 제출하고 또 반려당한다."""
     update = {}

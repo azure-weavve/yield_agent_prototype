@@ -37,6 +37,21 @@ def test_return_is_bounded_and_carries_raw_counts():
     assert c["n_target"] == len(GROUP_WAFERS)
 
 
+def test_the_printed_effect_size_is_the_one_that_was_judged(monkeypatch):
+    """판정과 인쇄를 다른 값으로 하면 경계에서 자기모순이 나간다.
+
+    원값 d 로 `passes` 를 정하고 문구는 `round(d, 3)` 으로 찍으면, d=0.7996 에서
+    "효과크기 0.8 < 0.8" 이라는 반려 사유가 나오고 근거 줄도 0.8 을 찍는다 -
+    엔지니어는 통과해야 할 것이 왜 떨어졌는지 읽을 수 없다. 숫자는 하나여야 한다.
+    """
+    monkeypatch.setattr(sc, "_effect_size",
+                        lambda t, c: ya_config.SENSOR_PASS_MIN_EFFECT - 0.0004)
+    cand = _run()["candidates"][0]
+    assert cand["effect_size"] == ya_config.SENSOR_PASS_MIN_EFFECT
+    assert cand["passes"] is True
+    assert cand["reject_reason"] is None
+
+
 def test_note_says_candidates_are_not_conclusions():
     assert "후보" in _run()["note"]
 

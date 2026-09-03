@@ -1,8 +1,11 @@
 """도구 결과를 게이트가 읽는 구조화된 증거로 투영한다 (EvidenceBundle).
 
-게이트가 findings 를 덕타이핑으로 훑던 것을 대체한다. **판별자는 `hypothesis_id`
-키의 유무**다 — `domain/engine.py` 의 결과에는 있고 `tools/sensor_compare.py` 의
-결과에는 없다. 예전 판별자였던 `"candidates" in result` 는 센서 결과에도 걸린다.
+게이트가 findings 를 덕타이핑으로 훑던 것을 대체한다. 도구 결과는 **두 갈래**로
+받는다 — 1단 가설(`domain/engine.py`)은 `hypothesis_id` 키로, 2단 센서
+(`tools/sensor_compare.py`)는 `kind == "sensor"` 로 가른다(`_is_sensor_result`).
+둘 다 `"candidates" in result` 라 예전 판별자로는 구분되지 않는다. 센서도 Claim 이
+되지만 `kind` 가 다르고, 근거로는 실리되 승인 지목 대상이 아니다
+(`statistical_passing`).
 
 여기는 판정하지 않는다. 사실만 모으고, 판정은 `graph/nodes.py` 의 게이트가 한다.
 상태를 저장하지 않는 순수 함수이므로 감사 기록(findings)이 유일한 출처로 남는다.
@@ -338,6 +341,15 @@ def group_to_dict(group: ClaimGroup, picked: bool = False) -> dict:
     "이 순서를 누가 정했나" 를 되짚을 수 없다.
     """
     lead = asdict(group.lead)
+    if group.lead.kind == "sensor":
+        # **가짜 2x2 를 여기서 막는다.** 아래 `folded()` 의 센서 분기는 실제로는
+        # 안 닿는다 - 센서는 wafer 목록이 없어 늘 홀로 서므로 `group.claims[1:]` 가
+        # 비어 있다. 나가는 길은 이 대표 dict 이고, `llm/client.py` 가 그것을 JSON
+        # 으로 덤프해 "수치를 그대로 인용하라" 와 함께 리포트 LLM 에 넘긴다.
+        # 투영이 채워 둔 통과 카운트 0 이 분모(n_target=12)와 나란히 실리면 "타깃
+        # 0/12 · 대조군 0/40" 이라는 **일어나지도 않은 대조 실패**가 산문에 찍힌다.
+        # 분모는 남긴다 - 효과크기는 표본 수와 함께 읽어야 하고 근거 줄이 그 값을 쓴다.
+        del lead["target_pass"], lead["control_pass"]
     lead["picked_by_llm"] = picked
     # 접힌 쪽도 **자기 수치를 그대로 들고 간다.** 이름만 남기면 접기가 곧 정보
     # 손실이 된다 - 같은 wafer 를 가리켜도 분모(target_total)와 p 는 다를 수 있고,
@@ -410,7 +422,7 @@ def _tie_reason(group: ClaimGroup, peers: list[ClaimGroup]) -> str:
       두 후보가 같은 wafer 를 다르게 부르는 것은 아닌지(교락) 부터 본다.
     - `no_statistics`: 어느 쪽도 귀무 표본이 없다. 순위 이전의 문제다 - **표본을
       늘리면 풀릴 수 있다**(참조 회차가 늘면 통계적 근거가 생긴다).
-    - `sensor_correlated`: 묶음에 센서가 하나라도 있다. `dominates` 의 센서
+    - `sensor_correlated`: 층이 **전부** 센서다. `dominates` 의 센서
       하한(`if x.kind == "sensor" or y.kind == "sensor": return False`)은
       의도된 거부라 표본을 아무리 늘려도 **영원히** 안 갈린다 - 도구 자신의
       note 그대로 "연동된 센서는 함께 움직이므로 효과크기 순위만으로는 원인을
@@ -427,11 +439,15 @@ def _tie_reason(group: ClaimGroup, peers: list[ClaimGroup]) -> str:
     이하 세 갈래는 그래서 대표 하나의 등급만 봐도 된다). 다만 **비통계 등급 안에서는
     kind 가 섞일 수 있다** - 센서와 참조 회차 0인 1단 후보는 둘 다 `_is_statistical`
     이 False 라 센서 하한으로 갈리지 않고 같은 층에 묶인다. 그래서 `sensor_correlated`
-    판정만은 대표 하나가 아니라 **층 전체**(peers 까지)를 본다.
+    판정만은 대표 하나가 아니라 **층 전체**(peers 까지)를 보는데, 조건은 "하나라도"
+    가 아니라 **"전부"** 다: 그 섞인 층은 표본을 모으면 갈린다(1단 후보가 통계 등급이
+    되는 순간 `sx != sy` 가 센서 하한보다 먼저 걸려 1단이 이긴다). 하나라도로 물으면
+    갈릴 수 있는 것에 "영원히 안 갈린다" 를 붙여 조사를 포기시킨다 - 이 docstring 이
+    바로 위에서 경고하는 오안내를 센서 갈래로 되풀이하는 것이다.
     """
     lead = group.lead
     leads = [lead, *(p.lead for p in peers)]
-    if any(c.kind == "sensor" for c in leads):
+    if all(c.kind == "sensor" for c in leads):
         return "sensor_correlated"
     if not _is_statistical(lead):
         return "no_statistics"

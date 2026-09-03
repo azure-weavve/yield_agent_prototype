@@ -69,7 +69,10 @@ def compare_sensor_distribution(step_seq: str, group_ids: list[str],
     for name, (t_vals, c_vals) in by_sensor.items():
         if len(t_vals) < 2 or len(c_vals) < 2:   # 결측으로 분모가 무너진 센서는 건너뛴다
             continue
-        d = _effect_size(t_vals, c_vals)
+        # **판정과 인쇄를 같은 값으로 한다.** 원값으로 판정하고 문구만 반올림하면
+        # 경계에서 "효과크기 0.8 < 0.8" 이라는 자기모순이 나가고(d=0.7996), 근거 줄도
+        # 0.8 을 찍어 왜 떨어졌는지 읽을 수 없다. 숫자는 하나여야 한다.
+        d = round(_effect_size(t_vals, c_vals), 3)
         if d <= 0:
             continue
         candidates.append({
@@ -79,10 +82,10 @@ def compare_sensor_distribution(step_seq: str, group_ids: list[str],
             "claim_id": f"sensor:{step_seq}:{name}",
             "passes": d >= ya_config.SENSOR_PASS_MIN_EFFECT,
             "reject_reason": (None if d >= ya_config.SENSOR_PASS_MIN_EFFECT
-                              else f"효과크기 {round(d, 3)} < "
+                              else f"효과크기 {d} < "
                                    f"{ya_config.SENSOR_PASS_MIN_EFFECT}"),
             "sensor_name": name,
-            "effect_size": round(d, 3),
+            "effect_size": d,
             "target_mean": round(statistics.mean(t_vals), 3),
             "control_mean": round(statistics.mean(c_vals), 3),
             "target_std": round(statistics.stdev(t_vals), 3),

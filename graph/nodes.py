@@ -624,6 +624,22 @@ def _gate_rejection(claim_id, claim, bundle, coverage, conf, conf_note,
         return f"반려: {why} {_no_candidate_action(bundle, coverage)}"
 
     if claim is not None:
+        # **지목 불가는 그 이름으로 반려한다.** 게이트 (1) 에 kind 하한만 걸고 여기에
+        # 분기를 안 두면, 통과한 1등 센서를 지목한 제출이 아래 확신도 줄까지
+        # 굴러떨어져 "확신도 0.95 < 0.8" 이라는 거짓말이 나간다(통과했고 1등이라
+        # 미통과 분기도 순위 분기도 안 걸린다). 판정 (2)·(3)·(3b)는 전부
+        # `not claim_id` 를 요구하므로 종료도 안 열려, `statistical_passing()` 으로
+        # 막은 라이브락이 claim_id 를 낸 경로로 되살아난다.
+        # 순위 문구로 흘려보내도 안 된다 - 센서는 p 를 안 내므로 "p None" 을
+        # 인용하게 되고, 효과크기가 분리 점수와 같은 "점수" 이름으로 나란히 놓여
+        # **더 센데 규칙 때문에 졌다**로 읽힌다.
+        if claim.kind == "sensor":
+            why = (f"{claim.claim_id} 는 2단 센서 근거라 지목 대상이 아니다 "
+                   f"(다중비교 보정을 하지 않는 도구다). 근거로는 게이트가 함께 싣는다.")
+            valid = sorted(c.claim_id for c in bundle.statistical_passing())
+            if valid:
+                return f"반려: {why} 통과 후보: {', '.join(valid)}."
+            return f"반려: {why} {_no_candidate_action(bundle, coverage)}"
         if not claim.passes:
             # 지목할 통과 후보가 **하나도 없으면** "통과한 후보를 지목하라" 는 실행할 수
             # 없는 지시다. 지어낸 claim_id 는 위에서 `_no_candidate_action` 을 타 물러설

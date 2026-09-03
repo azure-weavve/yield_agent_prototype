@@ -648,13 +648,18 @@ def test_a_tie_with_no_statistics_at_all_says_so():
     assert "해상도" not in line
 
 
-def test_a_tie_between_a_sensor_and_a_zero_reference_candidate_is_not_no_statistics():
-    """센서와 참조 0회 1단 후보는 둘 다 `_is_statistical` 이 False 라 `dominates` 의
-    센서 하한에 걸려 같은 층에 묶인다. 그렇다고 사유가 `no_statistics`(표본을
-    모으면 풀린다는 뜻으로 읽힌다)면 안 된다 - 센서가 낀 이상 이 규칙으로는
-    영원히 안 갈린다. `_tie_reason` 은 대표 하나가 아니라 층 전체를 봐야 하므로,
-    어느 쪽이 lead 가 되든(정렬은 -score 라 참조0회 쪽이 앞선다) 사유가 같아야
-    한다.
+def test_a_tie_between_a_sensor_and_a_zero_reference_candidate_is_no_statistics():
+    """센서와 참조 0회 1단 후보의 동점 사유는 `sensor_correlated` 가 아니다.
+
+    둘 다 `_is_statistical` 이 False 라 센서 하한에 걸려 같은 층에 묶이는 것은
+    맞다. 그런데 이 쌍은 **표본을 모으면 갈린다** - 참조 회차가 생겨 1단 후보가
+    통계 등급이 되는 순간 `dominates` 의 등급 분기(`sx != sy`)가 센서 하한보다
+    **먼저** 걸려 1단이 이긴다. `sensor_correlated` 는 "영원히 안 갈린다" 로
+    읽히므로 여기서 그 이름을 대면 갈릴 수 있는 것을 포기시킨다 - `_tie_reason`
+    docstring 이 경고하는 바로 그 오안내를, 센서 갈래를 넣으면서 저질렀다.
+
+    센서 하한이 **유일한** 이유일 때, 즉 층이 전부 센서일 때만 `sensor_correlated`
+    다(그 경우는 위 `test_sensor_candidates_do_not_fold_into_one_group` 이 잠근다).
     """
     b = evidence.build_bundle([
         _finding("hyp_zero_ref", "zero_ref", "ok",
@@ -665,7 +670,7 @@ def test_a_tie_between_a_sensor_and_a_zero_reference_candidate_is_not_no_statist
     ranks = evidence.layer_ranks(groups)
     assert ranks[0] == ranks[1]                       # 같은 층으로 묶였다
     dicts = evidence.groups_to_dicts(groups)
-    assert [d["tie_reason"] for d in dicts] == ["sensor_correlated", "sensor_correlated"]
+    assert [d["tie_reason"] for d in dicts] == ["no_statistics", "no_statistics"]
 
 
 def test_axes_differing_with_equal_scores_is_not_blamed_on_the_axis():
@@ -748,6 +753,31 @@ def test_folded_sensor_branch_omits_the_2x2_and_the_kind_field():
     for missing in ("target_pass", "target_total", "control_pass", "control_total",
                     "kind"):
         assert missing not in folded
+
+
+def test_sensor_lead_does_not_ship_a_pass_count_to_the_report():
+    """**실제로 나가는 길은 `folded()` 가 아니라 대표 dict 다.**
+
+    센서는 wafer 목록이 없어 늘 홀로 서므로 바로 위 분기에는 닿지 않고,
+    `asdict(group.lead)` 가 그대로 `final_claims` 에 실린다. 그리고 `llm/client.py`
+    는 그 목록을 JSON 으로 덤프해 "수치를 그대로 인용하라" 와 함께 리포트 LLM 에
+    넘긴다 - 투영이 채워 둔 통과 카운트 0 이 분모와 나란히 실리면 "타깃 0/12 ·
+    대조군 0/40" 이라는 **일어나지도 않은 대조 실패**가 리포트 산문에 찍힌다.
+    근거 줄(`format_evidence_line`)만 고쳐서는 못 막는 자리다.
+
+    분모(n)는 남긴다 - 효과크기는 표본 수와 함께 읽어야 하고 근거 줄이 그 값을 쓴다.
+    """
+    b = evidence.build_bundle([_sensor_finding("CC003000",
+                                               [_sensor_cand("CC003000", "TEMP_1", 2.31)])])
+    d = evidence.groups_to_dicts(b.ranked_groups())[0]
+    assert "target_pass" not in d and "control_pass" not in d
+    assert (d["target_total"], d["control_total"]) == (12, 40)
+    assert "타깃 n=12" in evidence.format_group_line(d)
+    # 반대쪽도 잠근다 - kind 를 안 보고 전부 빼면 1단 근거에서 2x2 가 사라진다.
+    stat = evidence.groups_to_dicts(evidence.build_bundle(
+        [_finding("hyp_eqp_ch_commonality", "eqp_ch_commonality", "ok",
+                  [CAND_PASS])]).ranked_groups())[0]
+    assert (stat["target_pass"], stat["control_pass"]) == (3, 0)
 
 
 def test_same_targets_but_different_counterexamples_do_not_fold():
