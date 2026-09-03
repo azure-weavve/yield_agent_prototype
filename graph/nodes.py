@@ -347,7 +347,8 @@ def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) ->
     리포트에 도달하지 못했다(같은 wafer 를 가리키는 교락도 구분되지 않았다).
 
     판정은 위에서부터 처음 걸리는 줄로 결정된다:
-      (1) 지목한 claim 이 통과 + 1등 묶음 + 확신도 충족 -> confirmed
+      (1) 지목한 claim 이 통과 + **가설 도구 발급** + 1등 묶음 + 확신도 충족 -> confirmed
+          (2단 센서 claim 은 근거로 실리되 지목 대상이 아니다.)
       (2) 지목 없이 물러섰는데 통과 후보 0 + no_signal 있음 -> no_signal
           (전축 실행은 전제 조건이 아니다. 어디까지 봤는지는 coverage 로 나간다.)
       (3) 지목 없이 물러섰고 등록 가설을 다 돌렸는데 전부 '계산 불가' -> no_comparable_data
@@ -379,6 +380,12 @@ def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) ->
 
     # (1) 승인
     if (claim is not None and claim.passes
+            # **센서는 지목 대상이 아니다.** 근거로는 아래 _record_evidence 가 함께
+            # 싣지만, 다중비교 보정을 일부러 안 한 도구(스텝당 센서 수백 개)를 단독
+            # 승인 근거로 열면 1단이 빈손일 때 효과크기 하나로 confirmed 가 나간다.
+            # `_is_statistical` 로 대신 걸면 참조 회차 0인 1단 후보까지 함께 막혀
+            # 순위 계약이 흔들린다 - 그래서 kind 로 명시한다.
+            and claim.kind != "sensor"
             and picked_rank == 1
             and conf >= ya_config.CONFIDENCE_THRESHOLD):
         update["finalize_accepted"] = True
@@ -414,7 +421,10 @@ def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) ->
     #     - `not claim_id`: **지목을 제출한 것은 물러선 것이 아니다.** 판정선이 앞으로
     #       당겨졌으므로, claim_id 를 안 보면 "확신도 0.9 로 없는 근거를 지목한" 제출이
     #       곧바로 승인으로 빠져나가 환각이 물러섬으로 둔갑한다.
-    if (not bundle.passing() and not claim_id
+    #     하한이 `statistical_passing()` 인 이유: 센서가 통과했다고 물러설 길을 닫으면
+    #     승인(kind 하한)도 물러섬도 막혀 루프 한계까지 왕복한다. 물러섬의 뜻은 "지목할
+    #     원인 후보가 없다" 이지 "아무 근거도 없다" 가 아니다.
+    if (not bundle.statistical_passing() and not claim_id
             and "no_signal" in bundle.statuses.values()):
         update["finalize_accepted"] = True
         update["finalize_status"] = "no_signal"
@@ -604,7 +614,9 @@ def _gate_rejection(claim_id, claim, bundle, coverage, conf, conf_note,
         # 안내 대상은 **통과 후보뿐**이다. 번들 전체를 안내하면 LLM 이 거기서
         # 미통과 후보를 골라 다시 제출하고 또 반려당하는 왕복이 생긴다 -
         # claim_id 미제출 분기(아래)와 같은 것을 안내해야 한다.
-        valid = sorted(c.claim_id for c in bundle.passing())
+        # 센서도 뺀다 - 지목할 수 없는 것을 목록에 넣으면 LLM 이 골라 제출하고
+        # 또 반려당하는 왕복이 생긴다.
+        valid = sorted(c.claim_id for c in bundle.statistical_passing())
         if valid:
             return f"반려: {why} 통과 후보: {', '.join(valid)}."
         # 지목할 대상이 아예 없으면 목록 대신 다음 행동을 안내한다 - 여기서 멈추면
@@ -617,7 +629,7 @@ def _gate_rejection(claim_id, claim, bundle, coverage, conf, conf_note,
             # 없는 지시다. 지어낸 claim_id 는 위에서 `_no_candidate_action` 을 타 물러설
             # 길을 안내받는데, 실재하는 미통과 claim 을 정직하게 지목한 쪽만 막다른 길에
             # 몰려 루프 한계까지 왕복하다 inconclusive 로 끝나던 자리다.
-            if not bundle.passing():
+            if not bundle.statistical_passing():
                 return (f"반려: {claim.claim_id} 는 판별선을 넘지 못했다 "
                         f"({claim.reject_reason}). {_no_candidate_action(bundle, coverage)}")
             return (f"반려: {claim.claim_id} 는 판별선을 넘지 못했다 ({claim.reject_reason}). "
@@ -643,7 +655,7 @@ def _gate_rejection(claim_id, claim, bundle, coverage, conf, conf_note,
                 f"근거를 좁힐 tool 을 더 호출하라.")
 
     # claim_id 미제출
-    valid = sorted(c.claim_id for c in bundle.passing())
+    valid = sorted(c.claim_id for c in bundle.statistical_passing())
     if valid:
         return (f"반려: claim_id 를 제출하지 않았다. 결론은 도구가 발급한 claim_id 로 "
                 f"지목해야 한다. 통과 후보: {', '.join(valid)}.")

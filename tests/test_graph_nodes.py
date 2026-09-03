@@ -115,6 +115,21 @@ METRO_SILENT = {
 }
 ALL_SILENT = [EQP_CH_SILENT, PPID_SILENT, STEP_PASSAGE_SILENT, METRO_SILENT]
 
+# 2단 센서 finding. 게이트 계약(claim_id/passes)을 갖지만 등록 축이 아니다.
+SENSOR_FINDING = {
+    "loop": 3, "tool": "compare_sensor_distribution",
+    "args": {"step_seq": "CC002000",
+             "group_ids": ["W2406_02", "W2406_04", "W2406_06"],
+             "control_ids": ["W2406_01", "W2406_03", "W2406_05"]},
+    "result": {"kind": "sensor", "status": "ok", "candidates": [
+        {"claim_id": "sensor:CC002000:TEMP_1", "sensor_name": "TEMP_1",
+         "effect_size": 2.31, "passes": True, "reject_reason": None,
+         "target_mean": 812.4, "control_mean": 799.1,
+         "target_std": 3.0, "control_std": 2.8,
+         "n_target": 12, "n_control": 40}]},
+    "thought": "2단으로 좁힌다",
+}
+
 
 def _assert_covers_every_hypothesis(findings):
     """이 findings 가 등록된 hyp_* 를 전부 채웠는지 못박는다.
@@ -2360,3 +2375,76 @@ def test_gate_does_not_tell_a_first_layer_pick_that_it_lost():
     assert "finalize_status" not in update           # 확신도 미달이라 승인은 아니다
     assert "확신도" in verdict, verdict
     assert "졌다" not in verdict, verdict            # 순위로 반려한 것이 아니다
+
+
+# ---------------------------------------------------------------------------
+# 센서는 근거로는 실리되 승인 지목 대상이 아니다 (Task 4)
+# ---------------------------------------------------------------------------
+
+def test_gate_does_not_confirm_on_a_sensor_claim():
+    """센서는 인용 가능하되 지목 불가다.
+
+    다중비교 보정을 일부러 안 한 도구(스텝당 센서 수백 개)를 단독 승인 근거로 열면
+    1단이 빈손일 때 효과크기 하나로 confirmed 가 나가는 거짓 양성 기계가 된다.
+    """
+    update = {}
+    nodes._finalize_gate(
+        {"claim_id": "sensor:CC002000:TEMP_1", "hypothesis": "온도", "confidence": 0.95},
+        loop=2, update=update, findings=[EQP_CH_SILENT, SENSOR_FINDING])
+    assert update.get("finalize_accepted") is None
+    assert update.get("finalize_status") != "confirmed"
+
+
+def test_sensor_only_state_can_still_step_back():
+    """**라이브락 방지.** 센서만 통과하면 승인은 막히는데 물러섬까지 막히면 LLM 은
+    할 일이 없어 루프 한계까지 왕복하다 inconclusive 로 끝난다 - 근거를 살리려던
+    변경이 종료 경로를 막는 것이다.
+    """
+    update = {}
+    nodes._finalize_gate(
+        {"claim_id": "", "hypothesis": "센서로도 못 좁혔다", "confidence": 0.4},
+        loop=2, update=update, findings=[EQP_CH_SILENT, SENSOR_FINDING])
+    assert update["finalize_status"] == "no_signal"
+    assert update["finalize_accepted"] is True
+
+
+def test_sensor_evidence_rides_along_in_final_claims():
+    """물러서도 센서 근거는 리포트에 실린다 - 그것이 이번 변경의 목적이다."""
+    update = {}
+    nodes._finalize_gate(
+        {"claim_id": "", "hypothesis": "h", "confidence": 0.4},
+        loop=2, update=update, findings=[EQP_CH_SILENT, SENSOR_FINDING])
+    ids = [c["claim_id"] for c in update["final_claims"]]
+    assert "sensor:CC002000:TEMP_1" in ids
+
+
+def test_statistical_claim_outranks_a_sensor():
+    """**통계 등급** 후보가 있으면 센서는 2등 이하다 (2026-09-01 확정한 등급 계약).
+
+    픽스처로 `EVIDENCE_FINDING_NEW`(2x2 만 있고 순열 통계가 없다)를 쓰면 이 계약을
+    못 잠근다 - `_is_statistical` 이 False 라 센서와 **같은 비통계 등급**이 되고,
+    그러면 `dominates` 의 센서 하한에 걸려 둘이 동점으로 나온다. 센서를 밀어내는
+    것은 '1단이라는 사실' 이 아니라 **순열 근거를 냈다는 사실**이다.
+    """
+    findings = [
+        _rank_finding("hyp_a", "a",
+                      [_rank_cand("a:1", "ETCH9_B", "CC002000", 0.55, 0.002, 0.003, "W1")]),
+        SENSOR_FINDING,
+    ]
+    update = {}
+    nodes._finalize_gate(
+        {"claim_id": "a:1", "hypothesis": "h", "confidence": 0.9},
+        loop=2, update=update, findings=findings)
+    assert update["finalize_status"] == "confirmed"
+    ranks = {c["claim_id"]: c["rank"] for c in update["final_claims"]}
+    assert ranks["a:1"] == 1
+    assert ranks["sensor:CC002000:TEMP_1"] > 1
+
+
+def test_gate_does_not_offer_sensors_as_pickable_candidates():
+    """지목 불가한 것을 '통과 후보' 로 안내하면 LLM 이 골라 제출하고 또 반려당한다."""
+    update = {}
+    verdict = nodes._finalize_gate(
+        {"claim_id": "지어낸:claim:id", "hypothesis": "h", "confidence": 0.9},
+        loop=2, update=update, findings=[EQP_CH_SILENT, SENSOR_FINDING])
+    assert "sensor:CC002000:TEMP_1" not in verdict
