@@ -404,6 +404,27 @@ def test_operational_client_system_prompt_scopes_a_partial_coverage_conclusion()
     assert "안 본 축" in client.llm.seen_sys
 
 
+def test_operational_client_tells_the_report_what_a_sensor_claim_is():
+    """리포트 LLM 은 센서 근거를 **처음** 받는다 (이 브랜치의 투영으로 생겼다).
+
+    센서 항목에는 2x2 도 순열 p 도 없고 효과크기와 두 분포뿐인데, 프롬프트는
+    "근거가 여러 건이면 전부 서술하라" 만 말한다. 무엇인지 안 알려주면 1단 근거와
+    같은 무게로 원인을 단정하는 문장이 나간다 - 다중비교 보정을 안 한 후보를
+    확정 결론의 주어로 쓰는 것이다.
+    """
+    client = _openai_client()
+    client.generate_report(
+        target_wafers=["W1"], target_source="manual", target_group=["W1"],
+        status_summary="s", findings=[], hypothesis="h", confidence=0.9,
+        finalize_status="confirmed", coverage=None,
+        claims=[{"claim_id": "sensor:CC002000:TEMP_1", "kind": "sensor",
+                 "score": 2.31, "rank": 1}])
+    # claims JSON 에 "sensor:..." 가 이미 있으므로 문자열 'sensor' 만 세면 공허하다 -
+    # **지시 문장**을 찾는다.
+    assert "kind 가 sensor" in client.llm.seen
+    assert "확정 결론의 주어로 쓰지 마라" in client.llm.seen
+
+
 def test_operational_client_does_not_hedge_a_confirmed_conclusion():
     """확정 결론에까지 '돌린 축에 한한다' 는 유보를 달게 하면 안 된다.
 

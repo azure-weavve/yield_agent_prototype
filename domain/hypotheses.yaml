@@ -38,6 +38,12 @@
     값만 가질 수 있다). p_family_wise 는 후보 하나가 아니라 목록 전체의 1등이
     우연일 확률이고, p_family_wise_min_possible 이 그 바닥값이다 - 둘이 같으면
     이 표본으로는 더 내려갈 수 없다는 뜻이지 신호가 약하다는 뜻이 아니다.
+    2단 센서(compare_sensor_distribution) 후보에도 claim_id 가 실린다. 그것은
+    리포트에서 근거로 인용하기 위한 것이며 finalize 의 지목 대상이 아니다 -
+    스텝당 센서가 수백 개인데 다중비교 보정을 하지 않으므로, 효과크기 순위만으로는
+    우연한 분리를 가릴 수 없다. 원인을 확정할 때는 가설 도구(hyp_*)가 발급한
+    claim_id 를 지목하라. 센서를 안 돌려도 된다는 뜻이 아니다 - '왜' 를 채우는
+    근거이고, 게이트가 리포트에 함께 싣는다.
   legend:
     - {level: equipment, columns: [eqp_id]}
     - {level: chamber, columns: [eqp_id, ch_id]}
@@ -77,6 +83,12 @@
     값만 가질 수 있다). p_family_wise 는 후보 하나가 아니라 목록 전체의 1등이
     우연일 확률이고, p_family_wise_min_possible 이 그 바닥값이다 - 둘이 같으면
     이 표본으로는 더 내려갈 수 없다는 뜻이지 신호가 약하다는 뜻이 아니다.
+    2단 센서(compare_sensor_distribution) 후보에도 claim_id 가 실린다. 그것은
+    리포트에서 근거로 인용하기 위한 것이며 finalize 의 지목 대상이 아니다 -
+    스텝당 센서가 수백 개인데 다중비교 보정을 하지 않으므로, 효과크기 순위만으로는
+    우연한 분리를 가릴 수 없다. 원인을 확정할 때는 가설 도구(hyp_*)가 발급한
+    claim_id 를 지목하라. 센서를 안 돌려도 된다는 뜻이 아니다 - '왜' 를 채우는
+    근거이고, 게이트가 리포트에 함께 싣는다.
   legend:
     - {level: ppid, columns: [ppid]}
 
@@ -120,6 +132,12 @@
     값만 가질 수 있다). p_family_wise 는 후보 하나가 아니라 목록 전체의 1등이
     우연일 확률이고, p_family_wise_min_possible 이 그 바닥값이다 - 둘이 같으면
     이 표본으로는 더 내려갈 수 없다는 뜻이지 신호가 약하다는 뜻이 아니다.
+    2단 센서(compare_sensor_distribution) 후보에도 claim_id 가 실린다. 그것은
+    리포트에서 근거로 인용하기 위한 것이며 finalize 의 지목 대상이 아니다 -
+    스텝당 센서가 수백 개인데 다중비교 보정을 하지 않으므로, 효과크기 순위만으로는
+    우연한 분리를 가릴 수 없다. 원인을 확정할 때는 가설 도구(hyp_*)가 발급한
+    claim_id 를 지목하라. 센서를 안 돌려도 된다는 뜻이 아니다 - '왜' 를 채우는
+    근거이고, 게이트가 리포트에 함께 싣는다.
   legend:
     - {level: step_passage, columns: [step_seq], denominator: all}
 
@@ -174,5 +192,11 @@
     회차 수이며 n_null_mean 의 해상도를 뜻한다). p_family_wise 는 후보 하나가 아니라
     목록 전체의 1등이 우연일 확률이고, p_family_wise_min_possible 이 그 바닥값이다 -
     둘이 같으면 이 표본으로는 더 내려갈 수 없다는 뜻이지 신호가 약하다는 뜻이 아니다.
+    2단 센서(compare_sensor_distribution) 후보에도 claim_id 가 실린다. 그것은
+    리포트에서 근거로 인용하기 위한 것이며 finalize 의 지목 대상이 아니다 -
+    스텝당 센서가 수백 개인데 다중비교 보정을 하지 않으므로, 효과크기 순위만으로는
+    우연한 분리를 가릴 수 없다. 원인을 확정할 때는 가설 도구(hyp_*)가 발급한
+    claim_id 를 지목하라. 센서를 안 돌려도 된다는 뜻이 아니다 - '왜' 를 채우는
+    근거이고, 게이트가 리포트에 함께 싣는다.
   legend:
     - {level: metro, columns: [step_seq, item], where: {subitem_id: AVG}}

@@ -22,6 +22,18 @@ def test_docstrings_exist():
     assert all(t.description for t in at.ALL_TOOLS)
 
 
+def test_the_two_sensor_facing_docstrings_agree_on_who_can_be_picked():
+    """도구 docstring 은 LLM 이 **결과를 받은 그 자리에서** 읽는 계약이다.
+
+    센서 결과에 claim_id 가 실리므로, 그것을 낸 도구와 그것을 받는 도구 양쪽이
+    같은 말을 해야 한다. 한쪽만 적으면 다른 대화 경로에서 계약이 사라진다 -
+    `finalize` 만 보고 지목하는 경로와 센서 결과만 보고 지목하는 경로가 다르다.
+    """
+    sensor = at.TOOLS_BY_NAME["compare_sensor_distribution"].description
+    assert "claim_id" in sensor and "지목 대상이 아니다" in sensor
+    assert "지목" in at.finalize.description and "센서" in at.finalize.description
+
+
 def test_every_tool_argument_declares_a_json_type():
     """LLM 에 나가는 스키마의 모든 인자에 `type` 이 있어야 한다.
 

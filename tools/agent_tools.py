@@ -43,6 +43,9 @@ def compare_sensor_distribution(step_seq: str,
     """가설 도구(hyp_*)가 지목한 공정 스텝에서 두 그룹의 센서 통계값 분포를 비교한다.
     효과크기가 큰 센서 top-K 를 낸다 — 어느 챔버인지까지 좁힌 뒤 '왜' 를 보는 2단이다.
     후보는 결론이 아니다: 표본 수(n_target/n_control)를 함께 보고 판단하라.
+    후보에 실린 claim_id 는 **리포트에서 근거로 인용하기 위한 것이며 finalize 의
+    지목 대상이 아니다** - 다중비교 보정을 하지 않는 도구라 단독 승인 근거로 쓰면
+    거짓 양성이 나간다. 원인 확정은 가설 도구(hyp_*)의 claim_id 로 지목하라.
     reason: 이 tool 을 호출하는 판단 이유를 한 문장으로 기술한다 (감사 기록에 남는다)."""
     return sc.compare_sensor_distribution(step_seq, group_ids, control_ids)
 
@@ -54,6 +57,8 @@ def finalize(claim_id: str = "", hypothesis: str = "", confidence: float = 0.0) 
     claim_id: 가설 도구(hyp_*) 결과의 후보에 실려 온 claim_id 를 **그대로** 옮긴다.
       이것이 승인 판정의 유일한 근거다. 지어내면 반려된다. 지목할 근거가 없어
       물러설 때는 빈 문자열로 둔다.
+      2단 센서(sensor:...)의 claim_id 는 지목 대상이 아니다 - 근거로는 리포트에
+      함께 실리지만 여기에 내면 반려된다.
     hypothesis: 현장 엔지니어가 읽을 원인 서술. 판정에는 쓰이지 않는다.
     confidence: 0~1 확신도. 확신도만 높고 claim_id 가 없으면 반려된다."""
     return "finalize 는 게이트가 처리한다"  # 직접 실행되지 않음

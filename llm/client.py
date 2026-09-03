@@ -467,7 +467,10 @@ class OpenAILLMClient(LLMClient):
                      f"confounded_with 가 있으면 같은 wafer 를 다른 이름으로도 설명할 수 "
                      f"있다는 뜻이니 둘 중 하나로 단정하지 마라. rolled_up_as 는 같은 "
                      f"설명을 굵은/세밀한 해상도로 부른 것뿐이니(방향은 resolution, 상대는 "
-                     f"of) 경합하는 근거로 쓰지 말고 대조군 범위의 한계로 적어라): "
+                     f"of) 경합하는 근거로 쓰지 말고 대조군 범위의 한계로 적어라. "
+                     f"kind 가 sensor 인 항목은 2단 센서 근거다 - 2x2 도 순열 p 도 없고 "
+                     f"효과크기와 두 분포뿐이며 다중비교 보정을 하지 않은 후보다. "
+                     f"'왜' 를 채우는 근거로 인용하되 확정 결론의 주어로 쓰지 마라): "
                      f"{json.dumps(claims, ensure_ascii=False)}")
         resp = self.llm.invoke([SystemMessage(content=sys), HumanMessage(content=user)])
         return resp.content.strip()

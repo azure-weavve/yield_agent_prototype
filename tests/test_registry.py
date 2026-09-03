@@ -70,6 +70,29 @@ def test_the_eqp_ch_description_tells_the_llm_not_to_double_count_a_roll_up():
     assert "같은 wafer" in spec["description"]
 
 
+def test_every_hypothesis_says_sensor_claims_are_not_pickable():
+    """센서에 claim_id 가 실리기 시작했으므로 yaml 계약이 그 지위를 말해야 한다.
+
+    LLM 은 도구 결과에서 claim_id 를 보면 "지목할 수 있는 것" 으로 읽는다 -
+    `finalize` 계약이 "도구가 발급한 claim_id 를 그대로 옮겨라" 뿐이기 때문이다.
+    말해 주지 않으면 1단이 빈손인 흔한 경로에서 센서를 지목하고 반려당한다.
+    반려 문구로 가르치는 것으로는 부족하다 - 그건 이미 한 바퀴를 버린 뒤다.
+
+    **가설 전부를 센다.** 통계 해석 문단이 4곳에 복붙돼 있어 한 곳만 고치면 나머지
+    축을 돌린 대화에서만 계약이 사라지는데, 지난 순열 p 교정에서 리뷰 Important
+    2건이 정확히 그 구멍이었다.
+    """
+    specs = registry.load_hypotheses()
+    assert specs                    # 빈 목록이면 아래 루프가 공허하게 통과한다
+    for spec in specs:
+        d = spec["description"]
+        assert "2단 센서" in d, spec["id"]
+        assert "지목 대상이 아니다" in d, spec["id"]
+        # 근거로는 실린다는 반쪽도 함께 적혀야 한다 - "쓸모없다" 로 읽으면 LLM 이
+        # 2단을 아예 안 돌려 '왜' 가 리포트에서 사라진다.
+        assert "근거" in d, spec["id"]
+
+
 def test_every_hypothesis_tells_the_llm_that_p_is_read_with_its_floor():
     """순위가 **공통 해상도**에서 매겨진다는 것도 yaml 계약에 있어야 한다 - 가설 전부에.
 

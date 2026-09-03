@@ -370,6 +370,19 @@ def test_analyze_prompt_says_axes_do_not_have_to_be_exhausted():
     assert "전부 돌릴 의무는 없다" in prompt
 
 
+def test_analyze_prompt_says_a_sensor_claim_id_is_not_pickable():
+    """게이트가 막는 것과 LLM 이 아는 것은 다르다.
+
+    시스템 프롬프트는 "도구가 발급한 claim_id 를 그대로 옮겨라" 만 말한다. 센서에도
+    claim_id 가 실리기 시작했으므로 그 문장은 이제 센서까지 가리키고, 1단이 빈손인
+    흔한 경로에서 LLM 은 센서를 지목했다가 반려당한다 - 반려는 한 바퀴를 버린 뒤에야
+    읽힌다. 계약은 **미리** 말해야 한다.
+    """
+    prompt = nodes.ANALYZE_SYSTEM_PROMPT
+    assert "2단 센서" in prompt
+    assert "지목" in prompt
+
+
 def test_gate_declares_no_signal_without_running_every_axis():
     """축 하나만 돌리고 물러서도 게이트가 막지 않는다 - 전축 실행은 전제 조건이 아니다.
 
