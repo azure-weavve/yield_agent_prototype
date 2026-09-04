@@ -330,7 +330,13 @@ class ScriptedMockLLMClient(LLMClient):
             except (TypeError, ValueError):
                 continue          # 도구 오류는 문자열로 온다 - 증거가 아니다
         groups = evidence.build_bundle(findings).ranked_groups()
-        return groups[0].lead if groups else None
+        # **줄은 게이트가 세우되, 지목은 지목 가능한 것에서 고른다.** `ranked_groups()`
+        # 는 근거로 실을 것 전부(`passing()`)를 세우므로 센서가 1등일 수 있다 - 1단이
+        # 비통계 등급(참조 회차 0)이면 `dominates` 가 어느 쪽도 못 이겨 같은 층에 서고,
+        # 표시 순서는 점수순이라 효과크기가 큰 센서가 앞선다. 그것을 그대로 지목하면
+        # 게이트가 반려하는데 이 각본에는 반려에 반응할 분기가 없어, 위 docstring 이
+        # 경고한 왕복이 규칙이 갈라진 자리에서 그대로 되살아난다.
+        return next((g.lead for g in groups if g.lead.kind != "sensor"), None)
 
     @staticmethod
     def _result(tool_msgs, name):

@@ -274,6 +274,49 @@ def test_scripted_keeps_claim_id_when_stage2_fails():
     assert ai.tool_calls[0]["args"]["claim_id"] == "eqp_ch_commonality:chamber:Etch:ETCH9_B"
 
 
+def test_scripted_never_picks_a_sensor_even_when_it_outranks_the_first_stage():
+    """센서가 순위 1등이어도 각본은 **지목 가능한 것**을 낸다.
+
+    1단이 비통계 등급(참조 회차 0 - `p_min_possible` 이 없다)이면 `dominates` 가
+    어느 쪽도 못 이겨 센서와 같은 층에 서고, 표시 순서는 점수순이라 효과크기가 큰
+    센서가 앞에 선다. `_top_ranked` 는 `ranked_groups()`(근거로 실을 것 전부)를
+    그대로 받으므로 그 센서를 돌려주는데, 각본은 그 값을 finalize 의 claim_id 로
+    쓴다 - 게이트가 반려하고 각본에는 그 반려에 반응할 분기가 없어 같은 호출을
+    루프 한계까지 되풀이한다(확정될 분석이 inconclusive 로 끝난다).
+
+    문장도 거짓이 된다: 효과크기가 "분리 점수" 로, 투영이 채운 통과 카운트 0 이
+    "불량군 0장 전용" 으로 인쇄된다 - 이 브랜치가 근거 줄에서 없앤 가짜 2x2 가
+    `final_hypothesis` 산문으로 새는 것이라 렌더러 수정으로는 안 막힌다.
+    """
+    llm = ScriptedMockLLMClient()
+    msgs = [HUMAN]
+    msgs += [llm.analyze_step(msgs), _tm("finalize", "반려")]
+    msgs += [llm.analyze_step(msgs), _tm("hyp_eqp_ch_commonality", {
+        "hypothesis_id": "eqp_ch_commonality", "status": "ok", "candidates": [
+            # 순열을 못 돌린 후보다 (p_permutation 없음) - 소표본에서 흔하다
+            {"level": "chamber", "key": "ETCH9_B", "value": ["Etch", "ETCH9_B"],
+             "claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH9_B",
+             "step_seq": "CC002000", "score": 1.0, "target_pass": 3,
+             "target_total": 3, "control_pass": 0, "control_total": 3,
+             "passes": True}]})]
+    msgs += [llm.analyze_step(msgs), _tm("hyp_ppid_commonality", {
+        "hypothesis_id": "ppid_commonality", "status": "no_signal", "candidates": []})]
+    ai = llm.analyze_step(msgs)
+    assert ai.tool_calls[0]["name"] == "compare_sensor_distribution"
+    msgs += [ai, _tm("compare_sensor_distribution", {
+        "kind": "sensor", "status": "ok", "candidates": [
+            # 효과크기가 1단 분리 점수(1.0)보다 크다 - 표시 순서에서 앞에 선다
+            {"claim_id": "sensor:CC002000:RF_1", "sensor_name": "RF_1",
+             "effect_size": 14.99, "passes": True, "reject_reason": None,
+             "target_mean": 812.4, "control_mean": 799.1,
+             "target_std": 3.0, "control_std": 2.8,
+             "n_target": 12, "n_control": 40}]})]
+
+    args = llm.analyze_step(msgs).tool_calls[0]["args"]
+    assert args["claim_id"] == "eqp_ch_commonality:chamber:CC002000:ETCH9_B"
+    assert "불량군 0장 전용" not in args["hypothesis"]   # 센서에는 2x2 가 없다
+
+
 def test_generate_report_renders_inconclusive_status():
     # 한계 도달(inconclusive) 종료: 결론을 "미확정 + 유력 가설(후보)" 톤으로 표기
     llm = ScriptedMockLLMClient()
