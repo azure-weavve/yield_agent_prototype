@@ -196,7 +196,7 @@ def test_gate_does_not_advertise_failing_candidates_when_the_claim_id_is_unknown
 def test_gate_tells_the_next_action_when_the_claim_id_is_unknown_and_nothing_passed():
     """지어낸 claim_id 인데 통과 후보도 0 이면, 목록 대신 **다음 행동**을 안내해야 한다.
 
-    안내 대상을 통과 후보로 좁힌 대가로, 이 상태에서 문구가 "통과한 후보가 없다" 로
+    안내 대상을 통과 후보로 좁힌 대가로, 이 상태에서 문구가 "지목할 수 있는 후보가 없다" 로
     끝나면 LLM 이 다음에 할 일이 없어 루프 한계까지 왕복만 하다 inconclusive 로 끝난다.
     같은 상태를 만난 claim_id 미제출 분기는 미실행 가설 도구를 알려준다 - 같아야 한다.
     """
@@ -1670,7 +1670,7 @@ PPID_EVIDENCE = {
 def test_gate_does_not_tell_it_to_pick_when_nothing_is_left_to_pick():
     """대체 안내가 실행 불가능한 지시로 끝나면 안 된다.
 
-    "최신 실행 결과에서 골라라" 뒤에 "통과한 후보가 없다" 가 붙으면 한 문장 안에서
+    "최신 실행 결과에서 골라라" 뒤에 "지목할 수 있는 후보가 없다" 가 붙으면 한 문장 안에서
     자기모순이고, H1 이 막으려던 "LLM 이 같은 문맥을 다시 읽는" 행동이 약한 형태로
     되살아난다. 사실(대체됐다)과 다음 행동(무엇을 하라)은 분리한다.
     """
@@ -1680,7 +1680,7 @@ def test_gate_does_not_tell_it_to_pick_when_nothing_is_left_to_pick():
         loop=3, update={}, findings=[EVIDENCE_FINDING_NEW, EQP_CH_RERUN_SILENT])
     assert "대체" in verdict
     assert "골라라" not in verdict          # 고를 것이 없다
-    assert "통과한 후보가 없다" in verdict   # 다음 행동은 이쪽이 안내한다
+    assert "지목할 수 있는 통과 후보가 없다" in verdict   # 다음 행동은 이쪽이 안내한다
 
 
 def test_gate_lists_surviving_candidates_when_a_superseded_claim_is_submitted():

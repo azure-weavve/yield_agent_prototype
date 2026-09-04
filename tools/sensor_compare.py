@@ -73,6 +73,9 @@ def compare_sensor_distribution(step_seq: str, group_ids: list[str],
         # 경계에서 "효과크기 0.8 < 0.8" 이라는 자기모순이 나가고(d=0.7996), 근거 줄도
         # 0.8 을 찍어 왜 떨어졌는지 읽을 수 없다. 숫자는 하나여야 한다.
         d = round(_effect_size(t_vals, c_vals), 3)
+        # 반올림한 값으로 거른다 - 0 < d < 0.0005 인 센서는 여기서 사라진다.
+        # 판별선(0.8)을 넘을 리 없는 값이라 근거는 달라지지 않고, truncated 와
+        # refetch_key["sensors"] 만 미세하게 달라진다.
         if d <= 0:
             continue
         candidates.append({

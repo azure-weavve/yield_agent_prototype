@@ -730,7 +730,7 @@ def test_axis_specific_fields_survive_in_extra():
     assert "score" not in claim.extra and "target_wafers" not in claim.extra
 
 
-def test_folded_sensor_branch_omits_the_2x2_and_the_kind_field():
+def test_folded_sensor_branch_omits_the_2x2_but_keeps_the_discriminator():
     """`group_to_dict` 의 `folded()` 센서 분기는 지금 도달 불가다 - 센서는
     target_wafers 가 비어 있어 `ranked_groups()` 가 늘 혼자만의 묶음을 만들고,
     그래서 `group.claims[1:]` 가 항상 비어 `folded()` 가 센서로 호출되지 않는다.
@@ -750,9 +750,10 @@ def test_folded_sensor_branch_omits_the_2x2_and_the_kind_field():
     d = evidence.group_to_dict(evidence.ClaimGroup(claims=(lead, other)))
     assert len(d["confounded_with"]) == 1
     folded = d["confounded_with"][0]
-    for missing in ("target_pass", "target_total", "control_pass", "control_total",
-                    "kind"):
+    for missing in ("target_pass", "target_total", "control_pass", "control_total"):
         assert missing not in folded
+    # kind 는 남긴다 - 2x2 를 뺀 항목이 왜 비어 있는지 읽을 유일한 판별자다.
+    assert folded["kind"] == "sensor"
 
 
 def test_sensor_lead_does_not_ship_a_pass_count_to_the_report():

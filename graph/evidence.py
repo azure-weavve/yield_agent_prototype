@@ -358,7 +358,7 @@ def group_to_dict(group: ClaimGroup, picked: bool = False) -> dict:
     def folded(c: Claim) -> dict:
         base = {"claim_id": c.claim_id, "hypothesis_id": c.hypothesis_id,
                 "level": c.level, "key": c.key, "step_seq": c.step_seq,
-                "score": c.score}
+                "score": c.score, "kind": c.kind}
         if c.kind == "sensor":
             # 2x2 키를 아예 안 싣는다. target_total 자리에는 n_target(예: 12) 이
             # 온다 - 0 을 그대로 실으면 "타깃 0/0" 이 아니라 "타깃 0/12" 같은
