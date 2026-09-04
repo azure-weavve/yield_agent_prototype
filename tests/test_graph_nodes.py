@@ -2521,3 +2521,47 @@ def test_gate_does_not_offer_sensors_as_pickable_candidates():
         {"claim_id": "지어낸:claim:id", "hypothesis": "h", "confidence": 0.9},
         loop=2, update=update, findings=[EQP_CH_SILENT, SENSOR_FINDING])
     assert "sensor:CC002000:TEMP_1" not in verdict
+
+
+# 1단이 후보를 냈으나 판별선을 못 넘은 상태. status 는 ok 다 - no_signal 로 두면
+# 게이트 (2)가 열려 반려가 아니라 종료를 시험하게 된다.
+EQP_CH_BELOW_LINE = {
+    "loop": 2, "tool": "hyp_eqp_ch_commonality", "args": {},
+    "result": {"hypothesis_id": "eqp_ch_commonality", "status": "ok", "candidates": [
+        {"claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH9_B", "step_seq": "CC002000",
+         "key": "ETCH9_B", "level": "chamber", "passes": False,
+         "reject_reason": "분리 점수 0.4 < 0.5", "score": 0.4,
+         "target_pass": 4, "target_total": 4, "control_pass": 3, "control_total": 5},
+    ]},
+    "thought": "약한 후보",
+}
+
+
+def test_a_below_the_line_pick_is_not_told_to_pick_when_only_a_sensor_passed():
+    """미통과 1단을 정직하게 지목했는데 통과한 것이 **센서뿐**인 상태.
+
+    `passing()` 으로 보면 통과 후보가 있으니 "통과한 후보를 지목하라" 가 나가는데,
+    통과한 것은 지목할 수 없는 센서뿐이라 실행할 수 없는 지시다 - 게이트 (2)의
+    하한을 `statistical_passing()` 으로 옮겨 막은 라이브락이 이 한 문장으로
+    되살아난다. 이 자리는 훼손 실험에서 빠져 있어 되돌려도 스위트가 초록이었다.
+    """
+    verdict = nodes._finalize_gate(
+        {"claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH9_B",
+         "hypothesis": "h", "confidence": 0.9},
+        loop=2, update={}, findings=[EQP_CH_BELOW_LINE, SENSOR_FINDING])
+    assert "판별선을 넘지 못했다" in verdict, verdict
+    assert "통과한 후보를 지목하라" not in verdict, verdict
+    assert "아직 안 돌린 가설 도구" in verdict, verdict      # 다음 행동을 안내한다
+
+
+def test_a_missing_claim_id_is_not_offered_a_sensor_either():
+    """claim_id 미제출 반려도 지목 불가한 것을 목록에 넣으면 안 된다.
+
+    지어낸 claim_id 쪽(`test_gate_does_not_offer_sensors_as_pickable_candidates`)만
+    잠그면 문구가 거의 같은 이 자리가 조용히 되돌아가도 안 보인다.
+    """
+    verdict = nodes._finalize_gate(
+        {"claim_id": "", "hypothesis": "h", "confidence": 0.9},
+        loop=2, update={}, findings=[EQP_CH_BELOW_LINE, SENSOR_FINDING])
+    assert "sensor:CC002000:TEMP_1" not in verdict, verdict
+    assert "claim_id 를 제출하지 않았다" not in verdict, verdict   # 지목할 것이 없다
