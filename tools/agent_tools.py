@@ -46,6 +46,8 @@ def compare_sensor_distribution(step_seq: str,
     후보에 실린 claim_id 는 **리포트에서 근거로 인용하기 위한 것이며 finalize 의
     지목 대상이 아니다** - 다중비교 보정을 하지 않는 도구라 단독 승인 근거로 쓰면
     거짓 양성이 나간다. 원인 확정은 가설 도구(hyp_*)의 claim_id 로 지목하라.
+    후보에는 passes 와 reject_reason 이 실린다 - 효과크기가 판별선을 넘은
+    (passes=true) 후보만 게이트가 리포트에 근거로 싣는다.
     reason: 이 tool 을 호출하는 판단 이유를 한 문장으로 기술한다 (감사 기록에 남는다)."""
     return sc.compare_sensor_distribution(step_seq, group_ids, control_ids)
 

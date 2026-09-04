@@ -89,8 +89,11 @@ def test_every_hypothesis_says_sensor_claims_are_not_pickable():
         assert "2단 센서" in d, spec["id"]
         assert "지목 대상이 아니다" in d, spec["id"]
         # 근거로는 실린다는 반쪽도 함께 적혀야 한다 - "쓸모없다" 로 읽으면 LLM 이
-        # 2단을 아예 안 돌려 '왜' 가 리포트에서 사라진다.
+        # 2단을 아예 안 돌려 '왜' 가 리포트에서 사라진다. 다만 "전부 실린다" 도
+        # 거짓이다(판별선을 넘은 것만 실린다). "근거" 만 세면 설명 어디에나 있어
+        # 공허하므로, 규칙의 나머지 반쪽인 판별선 쪽을 단언한다.
         assert "근거" in d, spec["id"]
+        assert "판별선을 넘은(passes=true)" in d, spec["id"]
 
 
 def test_every_hypothesis_tells_the_llm_that_p_is_read_with_its_floor():
