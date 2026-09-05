@@ -1272,3 +1272,84 @@ def test_a_folded_name_carries_its_own_numbers_into_the_line():
         evidence.build_bundle([_finding("hyp_a", "a", "ok", [a]),
                                _finding("hyp_b", "b", "ok", [b])]).ranked_groups()[0]))
     assert "타깃 2/4" in line and "대조군 0/3" in line
+
+
+def _weak_finding(tool="hyp_eqp_ch_commonality", hid="eqp_ch_commonality",
+                  status="ok", score=0.4, target_pass=4, key="ETCH9_B"):
+    """판별선(0.5)을 못 넘은 1단 후보 하나를 담은 finding."""
+    return {
+        "loop": 2, "tool": tool, "args": {},
+        "result": {"hypothesis_id": hid, "status": status,
+                   "legend": [{"level": "chamber", "columns": ["eqp_id", "ch_id"]}],
+                   "candidates": [
+                       {"claim_id": f"{hid}:chamber:CC002000:{key}", "step_seq": "CC002000",
+                        "key": key, "level": "chamber", "passes": False,
+                        "reject_reason": f"분리 점수 {score} < 0.5", "score": score,
+                        "target_pass": target_pass, "target_total": 4,
+                        "control_pass": 3, "control_total": 5},
+                   ]},
+        "thought": "약한 후보",
+    }
+
+
+def test_a_weak_candidate_becomes_a_residual():
+    """판별선 아래 후보가 번들 밖으로 나가는 유일한 문 - 없으면 통째로 소각된다."""
+    b = evidence.build_bundle([_weak_finding()])
+    assert [c.claim_id for c in b.residuals()] == \
+        ["eqp_ch_commonality:chamber:CC002000:ETCH9_B"]
+    assert b.passing() == []            # passing 의 정의는 그대로다
+
+
+def test_a_residual_is_not_a_passing_claim():
+    """`passing()` 을 넓히면 statistical_passing(지목 가능)과 ranked_groups(1등 층 =
+    승인 조건) 두 경로로 새어 **잔차로 confirmed 가 나간다.** 정의가 갈린 것을 잠근다."""
+    b = evidence.build_bundle([_weak_finding()])
+    assert b.statistical_passing() == []
+    assert b.ranked_groups() == []
+
+
+def test_a_candidate_below_the_residual_floor_is_not_a_residual():
+    """0.05 짜리를 '근거' 란에 찍으면 엔지니어가 그것으로 설비를 세운다."""
+    b = evidence.build_bundle([_weak_finding(score=0.05)])
+    assert b.residuals() == []
+
+
+def test_a_candidate_with_too_few_target_wafers_is_not_a_residual():
+    """타깃 1장짜리는 신호가 아니라 표본 문제다 (판별선의 두 번째 조건과 같은 값을 쓴다)."""
+    b = evidence.build_bundle([_weak_finding(target_pass=1)])
+    assert b.residuals() == []
+
+
+def test_a_candidate_from_a_non_ok_run_is_not_a_residual():
+    """`no_paired_stratum` 은 '약한 신호' 가 아니라 '볼 것이 없었다' 다 - 조치가 다르다.
+
+    status 는 후보가 아니라 **그 실행**의 성질이라 `Bundle.statuses[tool]` 로 본다.
+    `reject_reason` 문자열을 파싱하는 것은 claim_id 에서 금지한 것과 같은 짓이다.
+    """
+    b = evidence.build_bundle([_weak_finding(status="no_paired_stratum")])
+    assert b.residuals() == []
+
+
+def test_a_failing_sensor_is_not_a_residual():
+    """센서는 자기 판별선(0.8)을 갖고 이미 근거 전용이다 - 미통과분까지 실으면
+    '왜' 후보가 두 겹이 된다."""
+    finding = {
+        "loop": 3, "tool": "compare_sensor_distribution",
+        "args": {"step_seq": "CC002000"},
+        "result": {"kind": "sensor", "status": "ok", "candidates": [
+            {"claim_id": "sensor:CC002000:TEMP_1", "sensor_name": "TEMP_1",
+             "effect_size": 0.4, "passes": False, "reject_reason": "효과크기 0.4 < 0.8",
+             "target_mean": 1.0, "control_mean": 1.0, "target_std": 0.1,
+             "control_std": 0.1, "n_target": 12, "n_control": 40}]},
+        "thought": "2단",
+    }
+    assert evidence.build_bundle([finding]).residuals() == []
+
+
+def test_ranked_groups_can_rank_a_given_list():
+    """잔차도 **같은** 접기·순위 함수를 탄다 - 여기서 규칙을 다시 구현하면 순위 규칙이
+    두 곳에 살게 되고, 그것이 C(축 간 순위)가 없앤 결함이다."""
+    b = evidence.build_bundle([_weak_finding()])
+    groups = b.ranked_groups(b.residuals())
+    assert [g.lead.claim_id for g in groups] == \
+        ["eqp_ch_commonality:chamber:CC002000:ETCH9_B"]

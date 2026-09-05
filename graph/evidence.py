@@ -11,6 +11,8 @@
 상태를 저장하지 않는 순수 함수이므로 감사 기록(findings)이 유일한 출처로 남는다.
 """
 
+import ya_config
+
 from dataclasses import asdict, dataclass, field
 
 
@@ -286,7 +288,26 @@ class Bundle:
         """
         return [c for c in self.passing() if c.kind != "sensor"]
 
-    def ranked_groups(self) -> list[ClaimGroup]:
+    def residuals(self) -> list[Claim]:
+        """판별선 아래의 1단 후보 중 '약한 신호' 라고 부를 수 있는 것.
+
+        `passing()` 을 넓히지 않고 문을 따로 내는 이유: `statistical_passing()`
+        (지목 가능한 것)과 `ranked_groups()`(1등 층 = 게이트 승인 조건)가 둘 다
+        `passing()` 을 타므로, 넓히는 순간 **잔차로 confirmed 가 나간다.**
+
+        status 를 `statuses[c.tool]` 로 보는 이유: status 는 후보가 아니라 그 실행의
+        성질이고, `reject_reason` 문자열을 파싱하는 것은 claim_id 에서 금지한 짓이다.
+        """
+        return [c for c in self.claims.values()
+                if not c.passes
+                # 센서는 자기 판별선(0.8)을 갖고 이미 근거 전용이다
+                and c.kind != "sensor"
+                # "볼 것이 없었다"(no_paired_stratum 등)는 약한 신호가 아니다
+                and self.statuses.get(c.tool) == "ok"
+                and c.target_pass >= ya_config.COMMONALITY_PASS_MIN_TARGET
+                and c.score >= ya_config.RESIDUAL_MIN_SCORE]
+
+    def ranked_groups(self, claims: list[Claim] | None = None) -> list[ClaimGroup]:
         """통과 후보를 wafer 집합으로 접고 순위를 매긴다 — **코드가 하는 판단.**
 
         예전에는 게이트가 "도구 안 최고 점수" 하나만 승인해서, 축이 여럿일 때 나머지
@@ -294,9 +315,13 @@ class Bundle:
 
         wafer 목록이 없는 claim 은 접지 않는다 - 빈 집합끼리 같다고 묶으면 서로
         무관한 후보가 한 덩어리가 된다. 그런 claim 은 각자 홀로 선다.
+
+        `claims` 를 주면 그 목록을 대신 줄 세운다 - 잔차 경로가 **같은 접기·순위
+        규칙**을 타게 하려는 것이다. 기본값은 통과 후보(`passing()`)이며, 기본값을
+        바꾸면 확정 경로가 조용히 달라진다.
         """
         buckets: dict = {}
-        for claim in self.passing():
+        for claim in (self.passing() if claims is None else claims):
             # 목록이 없으면 claim_id 로 스스로만의 버킷을 만든다 (접기 대상 아님)
             if not claim.target_wafers:
                 key = ("__unfoldable__", claim.claim_id)

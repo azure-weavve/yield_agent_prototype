@@ -67,6 +67,11 @@ COMMONALITY_TOP_K = int(os.getenv("COMMONALITY_TOP_K", "20"))
 COMMONALITY_MIN_SCORE = float(os.getenv("COMMONALITY_MIN_SCORE", "0.0"))
 COMMONALITY_PASS_MIN_SCORE = float(os.getenv("COMMONALITY_PASS_MIN_SCORE", "0.5"))
 COMMONALITY_PASS_MIN_TARGET = int(os.getenv("COMMONALITY_PASS_MIN_TARGET", "2"))
+
+# 잔차 아랫선 - 판별선(COMMONALITY_PASS_MIN_SCORE)을 못 넘은 후보 중 이 값 이상만
+# '약한 신호' 로 싣는다. 0.25 는 판별선의 절반이며 실데이터를 본 값이 아니다 -
+# COMMONALITY_PASS_* · SENSOR_PASS_MIN_EFFECT 와 같은 성격의 조정 노브다.
+RESIDUAL_MIN_SCORE = float(os.getenv("RESIDUAL_MIN_SCORE", "0.25"))
 COMMONALITY_PERMUTATIONS = int(os.getenv("COMMONALITY_PERMUTATIONS", "1000"))
 
 # 리포트/LLM 프롬프트에 싣는 근거 묶음의 상한. 후보는 도구마다 COMMONALITY_TOP_K
