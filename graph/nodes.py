@@ -350,6 +350,8 @@ def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) ->
     판정은 위에서부터 처음 걸리는 줄로 결정된다:
       (1) 지목한 claim 이 통과 + **가설 도구 발급** + 1등 묶음 + 확신도 충족 -> confirmed
           (2단 센서 claim 은 근거로 실리되 지목 대상이 아니다.)
+      (2a) 지목 없이 물러섰는데 통과 후보 0 + 아랫선을 넘은 잔차 있음 -> weak_signal
+           ((2)보다 앞이다. 두 조건이 동시에 참일 때 정보가 더 많은 쪽이 이긴다.)
       (2) 지목 없이 물러섰는데 통과 후보 0 + no_signal 있음 -> no_signal
           (전축 실행은 전제 조건이 아니다. 어디까지 봤는지는 coverage 로 나간다.)
       (3) 지목 없이 물러섰고 등록 가설을 다 돌렸는데 전부 '계산 불가' -> no_comparable_data

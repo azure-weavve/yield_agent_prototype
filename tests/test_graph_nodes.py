@@ -2599,6 +2599,10 @@ def test_a_weak_only_state_ends_as_weak_signal():
     ids = [c["claim_id"] for c in update["final_claims"]]
     assert ids == ["eqp_ch_commonality:chamber:CC002000:ETCH9_B"]
     assert "잔차" in verdict
+    # 커버리지 고백도 잠근다 - 안 붙이면 "어디까지 봤는가" 가 이 종료 경로에서만
+    # 조용히 빠져도 스위트가 초록이다.
+    assert "hyp_metro_commonality" in update["coverage"]["unrun"]
+    assert "안 돌린 축 3개" in verdict
 
 
 def test_weak_signal_wins_over_no_signal():
@@ -2641,6 +2645,7 @@ def test_a_submitted_claim_id_does_not_open_weak_signal():
         {"claim_id": "지어낸:claim:id", "hypothesis": "h", "confidence": 0.9},
         loop=2, update=update, findings=[EQP_CH_BELOW_LINE])
     assert update.get("finalize_status") != "weak_signal"
+    assert "finalize_accepted" not in update    # 반려 경로를 실제로 탔다
 
 
 def test_a_weak_only_state_is_told_it_can_step_back():
