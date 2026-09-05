@@ -1135,6 +1135,51 @@ def test_report_node_appends_evidence_line_for_approved_claim():
     assert out["report"].count("[근거 1]") == 1   # 클라이언트가 또 붙이면 중복된다
 
 
+def test_report_labels_a_residual_as_residual_not_as_evidence():
+    """라벨이 없으면 미통과 후보가 통과 근거와 글자 하나 다르지 않다.
+
+    엔지니어는 그 줄을 보고 설비를 세운다. 왜 약한지(reject_reason)도 같은 줄에 남긴다 -
+    수치만 있으면 '분리 점수 0.4' 가 강한 근거인지 약한 근거인지 읽을 수 없다.
+    """
+    state = {
+        "final_claims": [{
+            "claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH9_B",
+            "level": "chamber", "key": "ETCH9_B", "step_seq": "CC002000",
+            "score": 0.4, "passes": False, "reject_reason": "분리 점수 0.4 < 0.5",
+            "target_pass": 4, "target_total": 4, "control_pass": 3, "control_total": 5,
+            "rank": 1, "kind": "statistical", "target_wafers": [], "control_wafers": [],
+            "confounded_with": [], "rolled_up_as": [],
+        }],
+        "finalize_status": "weak_signal", "final_hypothesis": "h",
+        "final_confidence": 0.3, "status_summary": "s", "findings": [],
+        "target_wafers": ["W1"], "target_group": ["W1"], "messages": [],
+    }
+    report = nodes.report_node(state)["report"]
+    assert "[잔차 1]" in report
+    assert "[근거 1]" not in report
+    assert "분리 점수 0.4 < 0.5" in report
+
+
+def test_report_still_labels_a_passing_claim_as_evidence():
+    """확정 경로의 라벨은 그대로다 - 잔차 분기를 넣다가 통과 근거까지 바꾸면 안 된다."""
+    state = {
+        "final_claims": [{
+            "claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH9_B",
+            "level": "chamber", "key": "ETCH9_B", "step_seq": "CC002000",
+            "score": 1.0, "passes": True, "reject_reason": None,
+            "target_pass": 3, "target_total": 3, "control_pass": 0, "control_total": 3,
+            "rank": 1, "kind": "statistical", "target_wafers": [], "control_wafers": [],
+            "confounded_with": [], "rolled_up_as": [],
+        }],
+        "finalize_status": "confirmed", "final_hypothesis": "h",
+        "final_confidence": 0.9, "status_summary": "s", "findings": [],
+        "target_wafers": ["W1"], "target_group": ["W1"], "messages": [],
+    }
+    report = nodes.report_node(state)["report"]
+    assert "[근거 1]" in report
+    assert "[잔차" not in report
+
+
 def test_report_node_appends_a_coverage_line():
     """커버리지 줄도 report_node 가 코드로 붙인다 - [근거] 와 같은 이유다.
 

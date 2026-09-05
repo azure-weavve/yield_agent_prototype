@@ -839,10 +839,19 @@ def report_node(state: dict) -> dict:
     # 고치려던 문제다. 순서는 코드가 매긴 순위이며 LLM 이 고른 것은 표시된다.
     for group in claims:
         mark = " ←서술 기준" if group.get("picked_by_llm") else ""
+        # **잔차는 다른 이름으로 찍는다.** 판별선을 못 넘은 후보를 `[근거]` 로 찍으면
+        # 통과한 것과 글자 하나 다르지 않아, 엔지니어가 그 줄을 보고 설비를 세운다.
+        # 기본값이 True 인 이유: 이 자리를 지나는 dict 는 전부 게이트가 만든 것이라
+        # `passes` 가 늘 있지만, 없으면 '근거' 로 읽는 쪽이 옛 동작과 같다.
+        label = "근거" if group.get("passes", True) else "잔차"
         # 번호는 위치가 아니라 **등수**다. 동점이 1·2 로 찍히면 앞선 것이 더 강해
         # 보이는데, 그 오독을 막으려고 등수를 따로 계산해 둔 것이다.
-        report += (f"\n[근거 {group.get('rank', '?')}]{mark} "
+        report += (f"\n[{label} {group.get('rank', '?')}]{mark} "
                    f"{evidence.format_group_line(group)}")
+        # 왜 약한지를 같은 줄에 남긴다 - 수치만 보면 0.4 가 강한지 약한지 못 읽는다.
+        # 문구를 새로 짓지 않는다: `_passes` 가 만든 문장이 이미 정확하다.
+        if not group.get("passes", True) and group.get("reject_reason"):
+            report += f" (판별선 미달: {group['reject_reason']})"
         if group.get("more_below"):
             report += (f"\n[근거 ...] 순위 밖 {group['more_below']}건은 생략했다 "
                        f"(전체는 분석 과정 기록에 있다)")
