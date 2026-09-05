@@ -406,6 +406,32 @@ def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) ->
                 if len(groups) > 1 else "")
         return f"승인 (근거 확인): {head}.{more} 리포팅으로 진행한다."
 
+    # (2a) 약한 신호 - 판별선은 못 넘었지만 아랫선을 넘은 후보가 있다.
+    #      "봤고 후보도 났는데 이 표본으로는 확정할 만큼 갈리지 않았다" 는 (2)의
+    #      "대조한 축에서 갈리는 것이 없었다" 와 **다른 사실**이고 조치도 다르다 -
+    #      잔차는 표본을 늘리거나 대조군을 바꾸면 갈릴 수 있다. 그래서 no_signal 로
+    #      뭉개지 않고 이름을 따로 준다.
+    #
+    #      **(2)보다 앞이다.** 한 축은 침묵하고 다른 축은 ok + 약한 후보를 낸 상태에서
+    #      두 조건이 동시에 참인데, 정보가 더 많은 쪽이 이겨야 한다. 뒤에 두면 그 상태가
+    #      no_signal 로 먼저 빠져나가 잔차가 또 소각된다.
+    residuals = bundle.residuals()
+    if (not bundle.statistical_passing() and not claim_id and residuals):
+        update["finalize_accepted"] = True
+        update["finalize_status"] = "weak_signal"
+        update["final_hypothesis"] = hypothesis
+        update["final_confidence"] = conf
+        update["coverage"] = coverage
+        # **통과 근거를 밀어내지 않는다.** 이 분기의 하한은 statistical_passing()
+        # 이라 센서만 통과한 상태에서도 열린다 - 잔차만 실으면 판별선을 넘은 센서
+        # 근거가 리포트에서 사라진다. picked 는 넘기지 않는다(`not claim_id` 가
+        # 하한이므로 지목이 없다는 것이 이 분기의 전제다).
+        _record_evidence(update, bundle.ranked_groups(bundle.passing() + residuals), None)
+        return (f"약한 신호 ({_coverage_phrase(coverage)}): 판별선을 넘은 원인 후보는 "
+                f"없고, 아랫선을 넘은 잔차 {len(residuals)}건을 근거로 싣는다. "
+                f"확정이 아니라 '이 표본으로는 갈리지 않았다' 는 뜻이다. "
+                f"리포팅으로 진행한다.")
+
     # (2) 신호 없음 - 돌린 축에서 통과 후보가 하나도 없다.
     #     확신도를 보지 않는다: 물러섬 선언에 높은 확신도를 요구하면 모순이다.
     #     루프 한계(3)보다 **먼저** 판정해야 사유가 정확해진다.
@@ -713,11 +739,13 @@ def _no_candidate_action(bundle, coverage) -> str:
     failed = coverage["failed"]
     uncomputable = ran_statuses <= cm.NO_DATA_STATUSES
     opens_no_signal = "no_signal" in ran_statuses                       # (2)
+    opens_weak = bool(bundle.residuals())                                # (2a)
     opens_no_data = (bool(ran_statuses) and not unrun                    # (3)
                      and not failed and uncomputable)
     opens_tool_failure = bool(failed) and not unrun and uncomputable     # (3b)
     step_back = (" 지목할 것이 없어 물러설 때는 claim_id 를 비우고 finalize 하라."
-                 if opens_no_signal or opens_no_data or opens_tool_failure else "")
+                 if opens_no_signal or opens_weak or opens_no_data or opens_tool_failure
+                 else "")
     # 축이 0개 돌아간 상태를 **먼저** 가른다. 아래 "하나를 더 보거나" 는 사실과 안 맞고,
     # 2단 센서는 step_seq 를 요구하는데 그 값을 낼 근거가 아직 없다. (이 분기가 맨
     # 아래에 있을 때는 unrun 이 항상 비어 있지 않아 도달할 수 없는 죽은 코드였다.)

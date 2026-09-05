@@ -653,10 +653,13 @@ def test_gate_offers_narrowing_instead_of_ordering_the_unrun_axes():
     weak = {
         "loop": 2, "tool": "hyp_eqp_ch_commonality", "args": {},
         "result": {"hypothesis_id": "eqp_ch_commonality", "status": "ok", "candidates": [
+            # 점수는 아랫선(RESIDUAL_MIN_SCORE) **아래**여야 한다. 0.4 로 올리면 (2a)가
+            # 열려 물러설 길이 실제로 생기고, 이 테스트가 잠그려는 '길이 없다' 상태가
+            # 아니게 된다.
             {"claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH9_B", "step_seq": "CC002000",
              "key": "ETCH9_B", "level": "chamber", "passes": False,
-             "reject_reason": "분리 점수 0.4 < 0.5", "score": 0.4,
-             "target_pass": 4, "target_total": 4, "control_pass": 3, "control_total": 5},
+             "reject_reason": "분리 점수 0.2 < 0.5", "score": 0.2,
+             "target_pass": 4, "target_total": 4, "control_pass": 4, "control_total": 5},
         ]},
         "thought": "판별선을 못 넘은 후보",
     }
@@ -710,7 +713,7 @@ def test_gate_does_not_declare_no_signal_while_a_passing_claim_exists():
 
 
 def test_gate_does_not_declare_no_signal_when_candidates_only_missed_the_line():
-    """가설이 후보를 냈지만 문턱을 못 넘은 것(status ok)은 no_signal 이 아니라 반려다.
+    """가설이 후보를 냈지만 문턱을 못 넘은 것(status ok)은 no_signal 이 아니라 weak_signal 이다.
 
     no_signal 은 도구가 후보 자체를 못 낸(status no_signal) 구조적 부재를 뜻한다.
     후보는 있는데 판별선만 못 넘은 경우는 조치가 다르므로(더 좁힐 여지가 있다)
@@ -718,6 +721,10 @@ def test_gate_does_not_declare_no_signal_when_candidates_only_missed_the_line():
 
     등록 가설을 **전부 status ok 로** 채운다. 하나라도 no_signal 로 채우면 statuses
     에 no_signal 이 섞여 (2)번이 열려 버려 다른 케이스(혼합 상태)를 시험하게 된다.
+
+    4축 전부 판별선 미달인 이 상태가 (2a) 의 동기 그 자체다 - 그중 아랫선(0.25)을
+    넘은 것은 score 0.4 인 eqp_ch 하나뿐이고(나머지 셋은 0.2 로 잔차가 아니다),
+    그래서 weak_signal 로 끝나고 final_claims 에도 그 하나만 실린다.
     """
     weak_eqp_ch = {
         "loop": 2, "tool": "hyp_eqp_ch_commonality", "args": {},
@@ -768,7 +775,10 @@ def test_gate_does_not_declare_no_signal_when_candidates_only_missed_the_line():
     _assert_covers_every_hypothesis(findings)
     ai = _ai_finalize(0.2, hypothesis="약한 후보뿐", claim_id="")
     out = nodes.tools_node({"messages": [ai], "loop_count": 3, "findings": findings})
-    assert "finalize_accepted" not in out
+    assert out["finalize_status"] == "weak_signal"
+    assert out["finalize_status"] != "no_signal"   # 이 테스트의 본래 주장
+    ids = [c["claim_id"] for c in out["final_claims"]]
+    assert ids == ["eqp_ch_commonality:chamber:CC002000:ETCH9_B"]
 
 
 def test_gate_declares_no_comparable_data_when_every_axis_is_uncomputable():
@@ -2189,8 +2199,15 @@ def test_gate_does_not_claim_every_axis_ran_when_some_of_them_crashed():
     """
     # status 는 no_signal 이 아니라 ok 다 - no_signal 이면 (2)가 열려 승인으로 빠져
     # 나가고, 이 테스트는 반려 안내를 한 글자도 못 본 채 초록이 된다.
+    # 후보 score 도 이 테스트 안에서 아랫선(RESIDUAL_MIN_SCORE) 아래로 덮어쓴다
+    # (원본 `_WEAK_IN_SILENCE` 는 다른 테스트가 쓰므로 건드리지 않는다) - 원본 점수
+    # 0.4 그대로면 (2a)가 열려 반려 경로 자체를 안 타 이 테스트가 잠그려는 "실패
+    # 축을 안 돌렸다고 거짓말하지 않는다" 를 시험할 수 없게 된다.
     weak_ok = {**_WEAK_IN_SILENCE,
-               "result": {**_WEAK_IN_SILENCE["result"], "status": "ok"}}
+               "result": {**_WEAK_IN_SILENCE["result"], "status": "ok",
+                          "candidates": [{**_WEAK_IN_SILENCE["result"]["candidates"][0],
+                                          "score": 0.2, "reject_reason": "분리 점수 0.2 < 0.5",
+                                          "control_pass": 4}]}}
     findings = [weak_ok, _crashed("hyp_ppid_commonality"),
                 _crashed("hyp_step_passage_commonality"),
                 _crashed("hyp_metro_commonality")]
@@ -2565,3 +2582,74 @@ def test_a_missing_claim_id_is_not_offered_a_sensor_either():
         loop=2, update={}, findings=[EQP_CH_BELOW_LINE, SENSOR_FINDING])
     assert "sensor:CC002000:TEMP_1" not in verdict, verdict
     assert "claim_id 를 제출하지 않았다" not in verdict, verdict   # 지목할 것이 없다
+
+
+def test_a_weak_only_state_ends_as_weak_signal():
+    """약한 신호와 무신호가 같은 출력이던 것을 가른다.
+
+    지금은 (2)(3)(3b) 어느 것도 안 열려 루프 한계까지 왕복하다 inconclusive 로 끝나고
+    final_claims 는 빈 목록이다 - '봤고 후보도 났는데 약하다' 가 통째로 소각된다.
+    """
+    update = {}
+    verdict = nodes._finalize_gate(
+        {"claim_id": "", "hypothesis": "h", "confidence": 0.3},
+        loop=2, update=update, findings=[EQP_CH_BELOW_LINE])
+    assert update["finalize_status"] == "weak_signal"
+    assert update["finalize_accepted"] is True
+    ids = [c["claim_id"] for c in update["final_claims"]]
+    assert ids == ["eqp_ch_commonality:chamber:CC002000:ETCH9_B"]
+    assert "잔차" in verdict
+
+
+def test_weak_signal_wins_over_no_signal():
+    """한 축은 침묵하고 다른 축은 약한 후보를 낸 상태에서 두 조건이 동시에 참이다.
+
+    '봤고 후보도 났는데 약하다' 가 더 많은 정보를 담은 사실이므로 그쪽이 이겨야 한다.
+    뒤에 두면 같은 상태가 no_signal 로 먼저 빠져나가 잔차가 또 소각된다.
+    """
+    update = {}
+    nodes._finalize_gate({"claim_id": "", "hypothesis": "h", "confidence": 0.3},
+                         loop=2, update=update,
+                         findings=[EQP_CH_BELOW_LINE, PPID_SILENT])
+    assert update["finalize_status"] == "weak_signal"
+
+
+def test_weak_signal_does_not_drop_a_passing_sensor():
+    """(2a)의 하한은 statistical_passing() 이라 **센서만 통과한 상태에서도 열린다.**
+
+    그때 잔차만 실으면 판별선을 넘은 센서 근거가 리포트에서 사라진다 - 잔차는 근거를
+    밀어내는 것이 아니라 더하는 것이다.
+    """
+    update = {}
+    nodes._finalize_gate({"claim_id": "", "hypothesis": "h", "confidence": 0.3},
+                         loop=3, update=update,
+                         findings=[EQP_CH_BELOW_LINE, SENSOR_FINDING])
+    assert update["finalize_status"] == "weak_signal"
+    ids = {c["claim_id"] for c in update["final_claims"]}
+    assert "sensor:CC002000:TEMP_1" in ids
+    assert "eqp_ch_commonality:chamber:CC002000:ETCH9_B" in ids
+
+
+def test_a_submitted_claim_id_does_not_open_weak_signal():
+    """지목을 제출한 것은 물러선 것이 아니다 - (2)(3)과 같은 하한이다.
+
+    없으면 '확신도 0.9 로 없는 근거를 지목한' 제출이 곧바로 종료로 빠져나가
+    환각이 물러섬으로 둔갑한다.
+    """
+    update = {}
+    nodes._finalize_gate(
+        {"claim_id": "지어낸:claim:id", "hypothesis": "h", "confidence": 0.9},
+        loop=2, update=update, findings=[EQP_CH_BELOW_LINE])
+    assert update.get("finalize_status") != "weak_signal"
+
+
+def test_a_weak_only_state_is_told_it_can_step_back():
+    """잔차가 있으면 물러설 길이 실제로 열려 있으므로 안내해야 한다.
+
+    안 붙이면 LLM 은 종료할 길을 못 찾아 MAX_LOOPS 까지 왕복한다 - 예산 낭비 경로다.
+    """
+    verdict = nodes._finalize_gate(
+        {"claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH9_B",
+         "hypothesis": "h", "confidence": 0.9},
+        loop=2, update={}, findings=[EQP_CH_BELOW_LINE])
+    assert "claim_id 를 비우고" in verdict

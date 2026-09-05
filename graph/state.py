@@ -22,7 +22,7 @@ class AgentState(TypedDict, total=False):
     status_summary: str                             # 현황파악 요약 (리포트 재료)
     loop_count: int                                 # 순환 횟수 (가드레일)
     finalize_accepted: bool                         # 게이트 승인 여부
-    finalize_status: str    # confirmed | no_signal | no_comparable_data | tool_failure | inconclusive | no_anomaly | unknown_target | isolated | control_insufficient | eds_lookup_failed | llm_call_failed
+    finalize_status: str    # confirmed | weak_signal | no_signal | no_comparable_data | tool_failure | inconclusive | no_anomaly | unknown_target | isolated | control_insufficient | eds_lookup_failed | llm_call_failed
     final_hypothesis: str                           # 승인된 원인 가설 (LLM 서술)
     final_confidence: float                         # 승인 시 확신도
     # 승인된 근거 **목록** (게이트가 접고 줄 세운 것). 예전에는 dict 하나였고, 그래서
