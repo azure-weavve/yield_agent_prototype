@@ -1180,6 +1180,31 @@ def test_report_still_labels_a_passing_claim_as_evidence():
     assert "[잔차" not in report
 
 
+def test_report_more_below_summary_is_not_labeled_as_evidence():
+    """생략 요약 줄은 `근거` 도 `잔차` 도 아니다.
+
+    잘려 나간 꼬리는 `_order_key` 로 줄 세운 목록의 뒤쪽이라 구조상 가장 약한
+    후보들이다. `[근거 ...]` 로 찍으면 통과 근거가 한 줄도 없는 weak_signal
+    리포트가 "근거 N건 생략" 이라는 거짓을 말하게 된다.
+    """
+    state = {
+        "final_claims": [{
+            "claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH9_B",
+            "level": "chamber", "key": "ETCH9_B", "step_seq": "CC002000",
+            "score": 0.4, "passes": False, "reject_reason": "분리 점수 0.4 < 0.5",
+            "target_pass": 4, "target_total": 4, "control_pass": 3, "control_total": 5,
+            "rank": 1, "kind": "statistical", "target_wafers": [], "control_wafers": [],
+            "confounded_with": [], "rolled_up_as": [], "more_below": 3,
+        }],
+        "finalize_status": "weak_signal", "final_hypothesis": "h",
+        "final_confidence": 0.3, "status_summary": "s", "findings": [],
+        "target_wafers": ["W1"], "target_group": ["W1"], "messages": [],
+    }
+    report = nodes.report_node(state)["report"]
+    assert "3건은 생략했다" in report
+    assert "[근거" not in report
+
+
 def test_report_node_appends_a_coverage_line():
     """커버리지 줄도 report_node 가 코드로 붙인다 - [근거] 와 같은 이유다.
 

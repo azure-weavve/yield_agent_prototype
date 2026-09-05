@@ -853,7 +853,12 @@ def report_node(state: dict) -> dict:
         if not group.get("passes", True) and group.get("reject_reason"):
             report += f" (판별선 미달: {group['reject_reason']})"
         if group.get("more_below"):
-            report += (f"\n[근거 ...] 순위 밖 {group['more_below']}건은 생략했다 "
+            # 중립어를 쓴다 - `_order_key` 로 줄 세운 목록에서 잘려 나간 꼬리는
+            # 구조상 가장 약한 후보들이라 `근거` 도 `잔차` 도 아니고, 마지막 표시
+            # 항목의 label 을 재사용하면 숨겨진 것들이 그것과 같은 종류라는 근거
+            # 없는 보증을 하게 된다. `[근거 ...]` 로 찍으면 근거가 0건인 리포트가
+            # "근거 N건 생략" 이라 말하는 거짓이 생긴다.
+            report += (f"\n[생략] 순위 밖 {group['more_below']}건은 생략했다 "
                        f"(전체는 분석 과정 기록에 있다)")
     # [커버리지] 줄도 여기서 코드로 붙인다 - [근거] 와 같은 이유다. 클라이언트에
     # 맡기면 운영 경로에서만 조용히 사라진다.
