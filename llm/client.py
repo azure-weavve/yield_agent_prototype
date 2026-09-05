@@ -254,6 +254,11 @@ class ScriptedMockLLMClient(LLMClient):
                 lines.append(f"     - 게이트: {f['result']}")
         if finalize_status == "inconclusive":
             conclusion = f"미확정 (루프 한계 도달) - 유력 가설: {hypothesis or '없음'}"
+        elif finalize_status == "weak_signal":
+            conclusion = ("약한 신호 - 후보는 나왔으나 판별선을 넘지 못했다. "
+                          "원인 없음이 아니라 이 표본으로는 확정할 만큼 갈리지 않았다는 "
+                          "뜻이며, 타깃/대조군을 넓히면 갈릴 수 있다. "
+                          "아래 [잔차] 줄이 그 후보들이다.")
         elif finalize_status == "no_signal":
             # "설비/챔버/PPID 가 없다" 로 단정하지 않는다 - 전축 실행이 전제 조건이
             # 아니게 되면서 부분 커버리지로 끝나는 분석이 정상이 됐다. 무엇을 봤고
@@ -411,6 +416,9 @@ class OpenAILLMClient(LLMClient):
             "구성: 분석 대상/현황 → 분석 과정 요약 → 결론(원인 가설과 근거). "
             "판정이 inconclusive 면 결론을 확정하지 말고 '미확정(루프 한계 도달)'과 "
             "유력 후보·추가 조사 필요 항목으로 서술하라. "
+            "판정이 weak_signal 이면 '약한 신호'로 서술하라 - 후보는 나왔으나 "
+            "판별선을 넘지 못한 것이니 원인으로 단정하지 말고, 무엇을 하면 갈리는지"
+            "(타깃/대조군 표본을 넓히기)를 후속 조치로 적어라. 확정 결론을 쓰지 마라. "
             "판정이 no_signal 이면 '신호 없음'으로 서술하라 - 원인 없음이 아니라 "
             "대조한 축에서는 보이지 않는다는 뜻이며 lot 밖 대조군이 필요하다는 "
             "후속 조치를 명시하고, 확정 결론을 쓰지 마라. "

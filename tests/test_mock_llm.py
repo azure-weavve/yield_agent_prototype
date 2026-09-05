@@ -655,3 +655,39 @@ def test_operational_client_repeats_the_roll_up_instruction_beside_the_claims():
         status_summary="s", hypothesis="h", confidence=0.9,
         finalize_status="confirmed", claims=_rolled_up_claims(), findings=[])
     assert "대조군 범위의 한계로 적어라" in client.llm.seen
+
+
+def test_mock_report_has_a_sentence_for_weak_signal():
+    """판정 어휘를 늘리면 mock 결론문도 같이 늘려야 한다 - 안 그러면 새 판정이
+    `else` 로 떨어져 LLM 이 쓴 가설이 확정처럼 찍힌다."""
+    from llm.client import ScriptedMockLLMClient
+    report = ScriptedMockLLMClient().generate_report(
+        target_wafers=["W1"], target_source="manual", target_group=["W1"],
+        status_summary="s", findings=[], hypothesis="ETCH9_B 편중", confidence=0.3,
+        finalize_status="weak_signal")
+    assert "약한 신호" in report
+    assert "판별선" in report
+
+
+def test_operational_prompt_tells_the_report_what_weak_signal_means():
+    """운영 리포트 LLM 은 판정 이름만 받는다 - 무엇인지 안 알려주면 잔차를 원인으로
+    단정하거나, 반대로 신호 없음으로 뭉갠다. 다음 행동(표본·대조군)까지 적게 한다."""
+    client = _openai_client()
+    client.generate_report(
+        target_wafers=["W1"], target_source="manual", target_group=["W1"],
+        status_summary="s", findings=[], hypothesis="h", confidence=0.3,
+        finalize_status="weak_signal", coverage=None, claims=[])
+    assert "weak_signal" in client.llm.seen_sys
+    assert "판별선" in client.llm.seen_sys
+    assert "확정 결론을 쓰지 마라" in client.llm.seen_sys
+
+
+def test_analyze_prompt_tells_the_llm_to_step_back_on_weak_candidates():
+    """게이트가 받아 주지 않는 것을 계속 지목하게 두면 왕복만 남는다.
+
+    반려 문구(`_gate_rejection`)에도 안내가 있지만, 이 저장소는 규칙을 판정과 프롬프트
+    양쪽에 적는다 - 한쪽만 있으면 LLM 은 체크리스트를 소화하러 간다.
+    """
+    from graph import nodes
+    assert "판별선을 넘지 못한 후보만" in nodes.ANALYZE_SYSTEM_PROMPT
+    assert "잔차" in nodes.ANALYZE_SYSTEM_PROMPT
