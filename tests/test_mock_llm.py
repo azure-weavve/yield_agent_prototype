@@ -666,7 +666,7 @@ def test_mock_report_has_a_sentence_for_weak_signal():
         status_summary="s", findings=[], hypothesis="ETCH9_B 편중", confidence=0.3,
         finalize_status="weak_signal")
     assert "약한 신호" in report
-    assert "판별선" in report
+    assert "[잔차] 줄" in report
 
 
 def test_operational_prompt_tells_the_report_what_weak_signal_means():
@@ -678,8 +678,29 @@ def test_operational_prompt_tells_the_report_what_weak_signal_means():
         status_summary="s", findings=[], hypothesis="h", confidence=0.3,
         finalize_status="weak_signal", coverage=None, claims=[])
     assert "weak_signal" in client.llm.seen_sys
-    assert "판별선" in client.llm.seen_sys
-    assert "확정 결론을 쓰지 마라" in client.llm.seen_sys
+    assert "'약한 신호'로 서술하라" in client.llm.seen_sys
+    assert "타깃/대조군 표본을 넓히기" in client.llm.seen_sys
+
+
+def test_operational_client_tells_the_report_what_a_residual_claim_is():
+    """(2a) 는 잔차를 `passes: false` 로 claims 목록에 실어 보낸다.
+
+    claims 블록은 `confounded_with`·`rolled_up_as`·`kind == sensor` 는 설명하면서
+    잔차만 빠지면, weak_signal 리포트에서 코드는 `[잔차 1]` 로 찍는데 그 위 산문은
+    같은 항목을 "게이트가 확인한 근거" 로 부를 수 있다 - 판별선을 못 넘은 후보가
+    근거로 단정되는 것이다.
+    """
+    client = _openai_client()
+    client.generate_report(
+        target_wafers=["W1"], target_source="manual", target_group=["W1"],
+        status_summary="s", findings=[], hypothesis="h", confidence=0.3,
+        finalize_status="weak_signal", coverage=None,
+        claims=[{"claim_id": "a", "passes": False, "rank": 1,
+                 "reject_reason": "score below threshold"}])
+    # claims JSON 에 "passes": false 가 이미 있으므로 문자열 'passes' 만 세면 공허하다 -
+    # **지시 문장**을 찾는다.
+    assert "판별선을 넘지 못한 잔차다" in client.llm.seen
+    assert "아직 갈리지 않은 후보" in client.llm.seen
 
 
 def test_analyze_prompt_tells_the_llm_to_step_back_on_weak_candidates():

@@ -484,7 +484,10 @@ class OpenAILLMClient(LLMClient):
                      f"of) 경합하는 근거로 쓰지 말고 대조군 범위의 한계로 적어라. "
                      f"kind 가 sensor 인 항목은 2단 센서 근거다 - 2x2 도 순열 p 도 없고 "
                      f"효과크기와 두 분포뿐이며 다중비교 보정을 하지 않은 후보다. "
-                     f"'왜' 를 채우는 근거로 인용하되 확정 결론의 주어로 쓰지 마라): "
+                     f"'왜' 를 채우는 근거로 인용하되 확정 결론의 주어로 쓰지 마라. "
+                     f"passes 가 false 인 항목은 판별선을 넘지 못한 잔차다(reject_reason 이 "
+                     f"왜 약한지를 말한다) - 근거로 세지 말고 '아직 갈리지 않은 후보' 로 "
+                     f"적어라): "
                      f"{json.dumps(claims, ensure_ascii=False)}")
         resp = self.llm.invoke([SystemMessage(content=sys), HumanMessage(content=user)])
         return resp.content.strip()
