@@ -11,9 +11,9 @@
 상태를 저장하지 않는 순수 함수이므로 감사 기록(findings)이 유일한 출처로 남는다.
 """
 
-import ya_config
-
 from dataclasses import asdict, dataclass, field
+
+import ya_config
 
 
 @dataclass(frozen=True)
