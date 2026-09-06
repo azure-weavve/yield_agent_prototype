@@ -422,7 +422,7 @@ class OpenAILLMClient(LLMClient):
             "판정이 no_signal 이면 '신호 없음'으로 서술하라 - 원인 없음이 아니라 "
             "대조한 축에서는 보이지 않는다는 뜻이며 lot 밖 대조군이 필요하다는 "
             "후속 조치를 명시하고, 확정 결론을 쓰지 마라. "
-            "판정이 no_signal 이거나 inconclusive 인데 커버리지에 안 돌린 축(unrun)이나 "
+            "판정이 weak_signal 이거나 no_signal 이거나 inconclusive 인데 커버리지에 안 돌린 축(unrun)이나 "
             "도구 실패로 못 돈 축(failed)이 있으면 그 사실과 그 축 이름을 반드시 적어라 - "
             "안 본 축까지 없다고 쓰면 사유가 틀린 보고다. 둘은 다르게 적어라: unrun 은 "
             "'안 돌렸다', failed 는 '도구 실패로 못 돌렸다'. "
@@ -475,7 +475,7 @@ class OpenAILLMClient(LLMClient):
                      f"세면 안 된다. failed 는 도구가 터져 아예 못 돈 축이다 - "
                      f"'안 돌린 축' 이 아니라 '실패한 축' 으로 적어라.")
         if claims:
-            user += (f"\n게이트가 확인한 근거 {len(claims)}건 "
+            user += (f"\n게이트가 확인한 항목 {len(claims)}건 "
                      f"(순위는 코드가 매겼다. 수치를 그대로 인용하고, 하나만 고르지 말고 "
                      f"전부 서술하라. rank 가 같은 항목은 우열을 가릴 수 없다는 뜻이고, "
                      f"confounded_with 가 있으면 같은 wafer 를 다른 이름으로도 설명할 수 "

@@ -62,6 +62,12 @@ CONFIDENCE_THRESHOLD = 0.8 # finalize 승인 임계 확신도
 #      domain/engine.py 가 읽어 후보의 passes 를 정한다. 미통과 후보도 목록에는 남는다.
 #
 # 둘 다 후보≠결론 철학상 못 박지 않고 실데이터 보며 조정한다.
+#
+# 아래 COMMONALITY_PASS_MIN_TARGET 다음 줄의 RESIDUAL_MIN_SCORE 는 이 두 종류에
+# 속하지 않는 **제3의 임계**다 - tools/commonality.py 도 domain/engine.py 도
+# 안 읽고 graph/evidence.py(게이트)가 읽는다. 이 블록 옆에 있어 위 두 종류 중
+# 하나로 오해하기 쉬워 적어 둔다. 자리를 옮기지 않는 이유는 계획서에서 이미
+# 두 번 확정됐기 때문이다.
 COMMONALITY_MIN_TARGET = int(os.getenv("COMMONALITY_MIN_TARGET", "2"))
 COMMONALITY_TOP_K = int(os.getenv("COMMONALITY_TOP_K", "20"))
 COMMONALITY_MIN_SCORE = float(os.getenv("COMMONALITY_MIN_SCORE", "0.0"))

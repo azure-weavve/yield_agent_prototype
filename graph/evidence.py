@@ -231,6 +231,18 @@ def _fold_key(claim: Claim) -> tuple:
     대표는 리포트가 지목하는 이름이고 곧 의뢰 대상이다. 설비와 챔버가 접혔을 때 굵은
     쪽을 지목하면 조사 범위를 쓸데없이 넓힌다. 지금까지 챔버가 앞선 것은 claim_id
     문자열에서 'c' < 'e' 였기 때문일 뿐이라 이름이 바뀌면 뒤집힌다.
+
+    ⚠️ **이 키는 `passes` 를 안 본다.** 안전한 이유는 현재 어떤 호출부도 통과
+    claim 과 미통과(통계) claim 을 한 목록에 섞지 않기 때문이다 - (2a)는
+    `not statistical_passing()` 이 하한이라 `passing() + residuals` 안의 비센서
+    claim 은 전부 `passes=False` 이고, 센서는 `build_bundle` 이 `target_wafers` 를
+    안 실어(위 `__unfoldable__` 분기) 항상 자기 혼자만의 묶음에 남는다 - 통과
+    claim 과 미통과(통계) claim 이 지금은 같은 버킷에 들어올 길이 없다. 이 전제가
+    깨지는 순간(통계적 claim 이 통과할 수 있는 목록으로 `ranked_groups(passing() +
+    residuals)` 류를 부르는 새 호출부가 생기면) 잔차가 대표(`_fold_key` 가 더
+    작은 p 를 우선하므로)가 되고 통과 claim 은 `confounded_with`/`rolled_up_as`
+    로 밀려나는데, 그 자리는 `passes` 키 자체가 없어(`group_to_dict::folded`)
+    묶음 전체가 `[잔차]` 로 찍힌다 - 통과 근거가 있는데도.
     """
     return (*_order_key(claim), -len(claim.level_columns), claim.claim_id)
 

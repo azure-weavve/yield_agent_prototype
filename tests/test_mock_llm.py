@@ -407,7 +407,9 @@ def test_operational_client_passes_every_claim_to_the_prompt():
         claims=[{"claim_id": "chamber-a", "rank": 1}, {"claim_id": "ppid-b", "rank": 1}])
     prompt = client.llm.seen
     assert "chamber-a" in prompt and "ppid-b" in prompt
-    assert "근거 2건" in prompt
+    # weak_signal 에서는 이 목록의 전부가 잔차일 수 있어 "근거" 로 고정해 부르면
+    # 안 된다(리뷰 지적) - 그래서 "항목" 으로 부른다.
+    assert "항목 2건" in prompt
     # 하나만 고르지 말라는 지시가 함께 가야 한다
     assert "전부 서술" in prompt
 
@@ -445,6 +447,30 @@ def test_operational_client_system_prompt_scopes_a_partial_coverage_conclusion()
         coverage={"ran": ["hyp_eqp_ch_commonality"],
                   "unrun": ["hyp_metro_commonality"], "no_data": []})
     assert "안 본 축" in client.llm.seen_sys
+
+
+def test_operational_client_scopes_a_partial_coverage_conclusion_for_weak_signal_too():
+    """weak_signal 도 커버리지 고백 지시를 받아야 한다.
+
+    (2a) 는 loop 2 에도 열리도록 설계됐다(설계 §13) - `weak_signal` 로 끝나는 분석은
+    등록 축 4개 중 3개가 안 돌린 채로 끝나는 것이 흔하다. 그런데 이 지시 문장은
+    `no_signal` 이거나 `inconclusive` 일 때만 걸려 있었다 - 가장 필요한 판정에
+    커버리지 고백을 안 시키는 구멍이었다.
+
+    'weak_signal' 이라는 문자열만 세면 공허하다 - 시스템 프롬프트에는 이미
+    "판정이 weak_signal 이면 '약한 신호'로 서술하라" 문장이 따로 있다
+    (grep 으로 이 사실을 먼저 확인했다: 커버리지 고백 문장과 이어붙인 새 문자열
+    "weak_signal 이거나 no_signal 이거나 inconclusive" 는 고치기 전에는 파일
+    어디에도 없었다). 그래서 **이어붙은 문자열**을 찾는다.
+    """
+    client = _openai_client()
+    client.generate_report(
+        target_wafers=["W1"], target_source="manual", target_group=["W1"],
+        status_summary="s", findings=[], hypothesis="h", confidence=0.3,
+        finalize_status="weak_signal", claims=[],
+        coverage={"ran": ["hyp_eqp_ch_commonality"],
+                  "unrun": ["hyp_metro_commonality"], "no_data": []})
+    assert "weak_signal 이거나 no_signal 이거나 inconclusive" in client.llm.seen_sys
 
 
 def test_operational_client_tells_the_report_what_a_sensor_claim_is():

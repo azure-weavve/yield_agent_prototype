@@ -876,6 +876,49 @@ def test_the_picked_group_is_never_truncated_away(monkeypatch):
     assert claims[-1]["more_below"] == 3
 
 
+def test_passing_evidence_survives_the_cap_when_residuals_outnumber_it(monkeypatch):
+    """상한을 넘겨도 통과 근거는 밀려나지 않는다 - 잔차가 순위상 앞서더라도.
+
+    잔차(통계 등급)는 통과한 센서(비통계 등급)보다 `dominates` 에서 위 등수를
+    받는다 - 통계 등급이 비통계 등급을 이긴다는 규칙 그대로다. 상한을 앞에서부터
+    그대로 자르면 등수가 높은 잔차가 상한을 다 차지해 등수가 낮은 통과 근거가
+    밀려난다. 설계 §5 의 약속("잔차는 근거를 밀어내는 것이 아니라 더하는 것이다")
+    이 `REPORT_MAX_EVIDENCE` 를 넘는 규모에서 깨지는 자리다.
+
+    이 fixture 는 그 조건 하나로만 성패가 갈리게 만든다: 잔차 6건(전부 등수 1) +
+    통과 센서 5건(전부 등수 2), 상한 8. 잔차가 통과 근거를 밀어내지 않는 한
+    통과 근거 5건은 등수와 무관하게 전부 생존해야 한다.
+    """
+    import ya_config
+    from graph import nodes
+
+    monkeypatch.setattr(ya_config, "REPORT_MAX_EVIDENCE", 8)
+    residual_findings = [
+        _finding(f"hyp_r{i}", f"hr{i}", "ok",
+                 [{"claim_id": f"r{i}:1", "level": "chamber", "step_seq": "CC002000",
+                   "key": f"R{i}", "passes": False, "reject_reason": "분리 점수 0.4 < 0.5",
+                   "score": 0.4, "target_pass": 4, "target_total": 4,
+                   "control_pass": 3, "control_total": 5,
+                   "p_permutation": 0.05, "p_min_possible": 0.01}])
+        for i in range(6)
+    ]
+    sensor_finding = _sensor_finding(
+        "CC003000", [_sensor_cand("CC003000", f"S{i}", 1.5 + i * 0.1) for i in range(5)])
+    bundle = evidence.build_bundle(residual_findings + [sensor_finding])
+    groups = bundle.ranked_groups(bundle.passing() + bundle.residuals())
+    assert len(groups) == 11, "이 fixture 는 상한(8)을 실제로 넘겨야 시험이 성립한다"
+    assert {g.lead.kind for g in groups} == {"statistical", "sensor"}
+
+    update = {}
+    nodes._record_evidence(update, groups, None)
+
+    claims = update["final_claims"]
+    assert len(claims) == 8                                    # 상한은 지켜진다
+    passing_ids = {c["claim_id"] for c in claims if c["passes"]}
+    assert passing_ids == {f"sensor:CC003000:S{i}" for i in range(5)}   # 통과 근거 5건 전부 생존
+    assert claims[-1]["more_below"] == 3     # 잘린 3건은 등수가 밀린 잔차뿐이다
+
+
 def test_bundle_reports_which_findings_the_rerun_superseded():
     """버린 사실을 밖으로 내보낸다 - 안 내보내면 감사 기록만 그 후보를 계속 들고 있다.
 

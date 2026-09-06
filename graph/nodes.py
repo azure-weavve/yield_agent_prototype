@@ -534,7 +534,9 @@ def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) ->
 
 
 def _record_evidence(update: dict, groups, picked) -> None:
-    """판별선을 넘은 근거를 상태에 싣는다. **모든 종료 경로에서 부른다.**
+    """판별선을 넘은 근거를 상태에 싣는다 - (2a)에서는 판별선을 못 넘은 잔차도
+    함께 실린다(`groups` 에 `bundle.passing() + residuals` 가 들어온다). **모든
+    종료 경로에서 부른다.**
 
     예전에는 승인(confirmed) 경로에서만 실었다. 그런데 루프 한계로 끝나는
     inconclusive 는 "확정은 못 했지만 판별선을 넘은 후보는 있다" 는 상태라,
@@ -549,16 +551,30 @@ def _record_evidence(update: dict, groups, picked) -> None:
     계측 축은 무신호에서도 절반 가까이가 판별선을 넘는다. 상한이 없으면 리포트와
     운영 LLM 프롬프트에 근거 블록이 수십 개 쏟아져, 근거를 살리려던 변경이
     보고서를 오히려 못 읽게 만든다. 잘린 수는 마지막 항목에 남겨 숨기지 않는다.
+
+    **통과 근거는 상한에 밀려나지 않는다.** 순위는 통계 등급을 비통계 등급보다
+    위에 두므로(`dominates`), 잔차(통계적이나 미통과)가 통과한 센서(비통계)보다
+    앞설 수 있다 - 상한을 앞에서부터 그대로 자르면 그 잔차들이 통과 근거를 밀어내,
+    "잔차는 근거를 밀어내는 것이 아니라 더하는 것이다" (설계 §5) 는 약속이
+    `REPORT_MAX_EVIDENCE` 를 넘는 규모에서 깨진다. `picked` 예약과 같은 모양으로,
+    통과 근거를 전부 먼저 예약하고 남는 자리만 잔차로 채운다 - 표시 순서는 원래
+    순위 순서를 그대로 따른다(어느 것이 잘렸는지만 바뀐다).
     """
     limit = ya_config.REPORT_MAX_EVIDENCE
     dicts = evidence.groups_to_dicts(groups, picked)
     if len(dicts) > limit:
-        kept = dicts[:limit]
-        if picked is not None and not any(d.get("picked_by_llm") for d in kept):
+        passing = [d for d in dicts if d["passes"]]
+        keep = set(map(id, passing[:limit]))
+        if len(passing) < limit:
+            residual = [d for d in dicts if not d["passes"]]
+            keep |= set(map(id, residual[:limit - len(passing)]))
+        elif picked is not None and not any(d.get("picked_by_llm") for d in passing[:limit]):
             # **지목한 묶음은 잘라 내지 않는다.** 1등이 동점으로 여럿일 때 LLM 이
             # 정렬상 뒤쪽을 지목하면 그것이 상한 밖으로 밀려날 수 있는데, 그러면
             # 리포트에 서술의 축이 없어지고 승인 문구가 참조할 대상도 사라진다.
-            kept = kept[:limit - 1] + [d for d in dicts if d.get("picked_by_llm")]
+            keep = set(map(id, passing[:limit - 1]))
+            keep |= {id(d) for d in passing if d.get("picked_by_llm")}
+        kept = [d for d in dicts if id(d) in keep]
         dicts, hidden = kept, len(dicts) - len(kept)
         if hidden:
             dicts[-1]["more_below"] = hidden
