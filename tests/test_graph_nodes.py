@@ -2802,6 +2802,9 @@ def test_a_made_up_claim_id_is_still_rejected_not_absorbed():
     assert "finalize_status" not in update
     assert "finalize_accepted" not in update
     assert "도구 결과에 없다" in verdict, verdict
+    # 지어낸 이름을 되풀이 제출하는 것이 설계 §9 가 남긴 잔여다 - 물러설 길 안내가
+    # 그 왕복을 끊는 유일한 자리이고, 이 상태에서는 (2a)만 그 안내를 연다.
+    assert "claim_id 를 비우고" in verdict, verdict
 
 
 def test_weak_signal_wins_over_no_signal():
@@ -2866,7 +2869,7 @@ def test_a_passing_candidate_does_not_open_weak_signal():
     assert "claim_id 를 제출하지 않았다" in verdict, verdict
 
 
-def test_a_weak_only_state_is_told_it_can_step_back():
+def test_a_weak_only_pick_is_not_told_to_empty_its_claim_id():
     """REWRITTEN(규칙이 뒤집혔다): 잔차를 지목하면 이제 곧장 weak_signal 로 물러선다.
 
     (2a) 하한이 `not claim_id` 이던 동안에는 이 지목이 반려로 갔고, 반려 문구가
