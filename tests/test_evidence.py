@@ -843,7 +843,9 @@ def test_evidence_list_is_capped_and_says_how_many_were_hidden(monkeypatch):
         "final_confidence": 0.9, "finalize_status": "confirmed",
         "final_claims": update["final_claims"],
     })["report"]
-    assert "순위 밖 3건은 생략" in report
+    # "순위 밖" 이 아니라 "상한 밖" 이다 - 상한이 통과 근거를 예약한 뒤로는 잘린
+    # 항목이 늘 최하위 등수라고 말할 수 없다(리뷰 지적, 문구 수정).
+    assert "상한 밖 3건은 생략" in report
 
 
 def test_the_picked_group_is_never_truncated_away(monkeypatch):
