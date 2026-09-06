@@ -2685,11 +2685,28 @@ def test_a_below_the_line_pick_is_not_told_to_pick_when_only_a_sensor_passed():
     통과한 것은 지목할 수 없는 센서뿐이라 실행할 수 없는 지시다 - 게이트 (2)의
     하한을 `statistical_passing()` 으로 옮겨 막은 라이브락이 이 한 문장으로
     되살아난다. 이 자리는 훼손 실험에서 빠져 있어 되돌려도 스위트가 초록이었다.
+
+    잠그는 규칙은 "반려 안내가 거짓말(실행 불가능한 지시)을 하지 않는다" 로 (2a)
+    하한 확장과 무관하다. 그런데 공용 픽스처 `EQP_CH_BELOW_LINE` 의 점수(0.4)가
+    잔차 자격(>=0.25)을 만족해, 하한이 넓어진 뒤로는 이 지목이 반려를 거치지 않고
+    바로 weak_signal 로 빠진다 - 원래 경로를 잠그려면 여기만 점수를 잔차 하한
+    아래로 낮춘 사본을 쓴다(공용 픽스처는 그대로 둔다 - 다른 테스트가 잔차 존재를
+    전제한다).
     """
+    below_line_no_residual = {
+        "loop": 2, "tool": "hyp_eqp_ch_commonality", "args": {},
+        "result": {"hypothesis_id": "eqp_ch_commonality", "status": "ok", "candidates": [
+            {"claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH9_B", "step_seq": "CC002000",
+             "key": "ETCH9_B", "level": "chamber", "passes": False,
+             "reject_reason": "분리 점수 0.1 < 0.5", "score": 0.1,
+             "target_pass": 4, "target_total": 4, "control_pass": 3, "control_total": 5},
+        ]},
+        "thought": "약한 후보",
+    }
     verdict = nodes._finalize_gate(
         {"claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH9_B",
          "hypothesis": "h", "confidence": 0.9},
-        loop=2, update={}, findings=[EQP_CH_BELOW_LINE, SENSOR_FINDING])
+        loop=2, update={}, findings=[below_line_no_residual, SENSOR_FINDING])
     assert "판별선을 넘지 못했다" in verdict, verdict
     assert "통과한 후보를 지목하라" not in verdict, verdict
     assert "아직 안 돌린 가설 도구" in verdict, verdict      # 다음 행동을 안내한다
@@ -2727,6 +2744,64 @@ def test_a_weak_only_state_ends_as_weak_signal():
     # 조용히 빠져도 스위트가 초록이다.
     assert "hyp_metro_commonality" in update["coverage"]["unrun"]
     assert "안 돌린 축 3개" in verdict
+
+
+def test_a_named_residual_still_ends_as_weak_signal():
+    """지목했다는 이유만으로 잔차를 태우지 않는다.
+
+    (2a)의 하한이 `not claim_id` 이던 동안에는, LLM 이 약한 후보를 지목하는 순간
+    이 문이 닫혀 (5) 반려로 갔다. 반려를 되풀이하면 루프 한계에서 inconclusive +
+    final_claims=[] 로 끝나 잔차가 소각된다 - 이 기능이 없애려던 바로 그 상태다.
+    """
+    update = {}
+    verdict = nodes._finalize_gate(
+        {"claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH9_B",
+         "hypothesis": "ETCH9_B 편중", "confidence": 0.9},
+        loop=2, update=update, findings=[EQP_CH_BELOW_LINE])
+    assert update["finalize_status"] == "weak_signal"
+    assert update["finalize_accepted"] is True
+    ids = [c["claim_id"] for c in update["final_claims"]]
+    assert ids == ["eqp_ch_commonality:chamber:CC002000:ETCH9_B"]
+    # 지목을 받아준 것이지 원인으로 확정한 것이 아니다 - 판정문이 그렇게 말해야
+    # LLM 이 서술에서 그 후보를 단정하지 않는다.
+    assert "원인으로 확정하지 않았다" in verdict, verdict
+    # 확정하지 않기로 했으므로 picked 표시를 안 붙인다.
+    assert not any(c.get("picked_by_llm") for c in update["final_claims"])
+
+
+def test_a_named_passing_sensor_ends_as_weak_signal():
+    """지목할 수 있는 것이 하나도 없는 상태에서 반려는 왕복만 만든다.
+
+    1단이 아무것도 못 갈랐고 2단 센서만 통과한 상태다. 여기서 "센서는 지목 대상이
+    아니다" 를 돌려줘도 LLM 이 대신 고를 것이 없다.
+    """
+    update = {}
+    verdict = nodes._finalize_gate(
+        {"claim_id": "sensor:CC002000:TEMP_1",
+         "hypothesis": "TEMP_1 이상", "confidence": 0.9},
+        loop=2, update=update, findings=[EQP_CH_BELOW_LINE, SENSOR_FINDING])
+    assert update["finalize_status"] == "weak_signal"
+    # 센서는 판별선을 **넘었다** - "판별선을 넘지 못해" 라고 쓰면 거짓말이다.
+    assert "2단 센서라 원인으로 확정하지 않았다" in verdict, verdict
+    ids = [c["claim_id"] for c in update["final_claims"]]
+    assert "sensor:CC002000:TEMP_1" in ids
+    assert "eqp_ch_commonality:chamber:CC002000:ETCH9_B" in ids
+
+
+def test_a_made_up_claim_id_is_still_rejected_not_absorbed():
+    """지어낸 이름은 '이 표본으로는 갈리지 않았다' 와 다른 사실이다.
+
+    문을 claim_id 무관하게 열면 환각이 weak_signal 로 조용히 흡수돼, 엔지니어도
+    모르고 다음에 모델을 바꿀 때 품질 저하를 못 본다.
+    """
+    update = {}
+    verdict = nodes._finalize_gate(
+        {"claim_id": "eqp_ch_commonality:chamber:CC002000:NOPE",
+         "hypothesis": "지어낸 것", "confidence": 0.9},
+        loop=2, update=update, findings=[EQP_CH_BELOW_LINE])
+    assert "finalize_status" not in update
+    assert "finalize_accepted" not in update
+    assert "도구 결과에 없다" in verdict, verdict
 
 
 def test_weak_signal_wins_over_no_signal():
@@ -2792,12 +2867,17 @@ def test_a_passing_candidate_does_not_open_weak_signal():
 
 
 def test_a_weak_only_state_is_told_it_can_step_back():
-    """잔차가 있으면 물러설 길이 실제로 열려 있으므로 안내해야 한다.
+    """REWRITTEN(규칙이 뒤집혔다): 잔차를 지목하면 이제 곧장 weak_signal 로 물러선다.
 
-    안 붙이면 LLM 은 종료할 길을 못 찾아 MAX_LOOPS 까지 왕복한다 - 예산 낭비 경로다.
+    (2a) 하한이 `not claim_id` 이던 동안에는 이 지목이 반려로 갔고, 반려 문구가
+    "claim_id 를 비우고 finalize 하라" 고 안내해야 라이브락을 피할 수 있었다.
+    하한이 "정직한 제출" 로 넓어진 지금은 지목 자체가 곧장 (2a) 를 여니, 비우라는
+    안내는 더 이상 나갈 일이 없다 - 나가면 오히려 이미 받아준 지목을 취소하라는
+    모순된 지시가 된다.
     """
     verdict = nodes._finalize_gate(
         {"claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH9_B",
          "hypothesis": "h", "confidence": 0.9},
         loop=2, update={}, findings=[EQP_CH_BELOW_LINE])
-    assert "claim_id 를 비우고" in verdict
+    assert "약한 신호" in verdict, verdict
+    assert "claim_id 를 비우고" not in verdict, verdict

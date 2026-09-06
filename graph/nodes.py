@@ -351,7 +351,8 @@ def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) ->
     판정은 위에서부터 처음 걸리는 줄로 결정된다:
       (1) 지목한 claim 이 통과 + **가설 도구 발급** + 1등 묶음 + 확신도 충족 -> confirmed
           (2단 센서 claim 은 근거로 실리되 지목 대상이 아니다.)
-      (2a) 지목 없이 물러섰는데 통과 후보 0 + 아랫선을 넘은 잔차 있음 -> weak_signal
+      (2a) 통과 후보 0 + 아랫선을 넘은 잔차 있음 + 제출이 정직함(빈손이거나 실재하는
+           claim_id) -> weak_signal
            ((2)보다 앞이다. 두 조건이 동시에 참일 때 정보가 더 많은 쪽이 이긴다.)
       (2) 지목 없이 물러섰는데 통과 후보 0 + no_signal 있음 -> no_signal
           (전축 실행은 전제 조건이 아니다. 어디까지 봤는지는 coverage 로 나간다.)
@@ -418,8 +419,19 @@ def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) ->
     #      **(2)보다 앞이다.** 한 축은 침묵하고 다른 축은 ok + 약한 후보를 낸 상태에서
     #      두 조건이 동시에 참인데, 정보가 더 많은 쪽이 이겨야 한다. 뒤에 두면 그 상태가
     #      no_signal 로 먼저 빠져나가 잔차가 또 소각된다.
+    #
+    #      **하한은 `not claim_id` 가 아니라 "정직한 제출" 이다.** 빈손일 때만 열면
+    #      이 문이 LLM 의 협조에만 열린다 - 약한 후보를 지목하는 순간 닫혀 (5) 반려로
+    #      가고, 반려를 되풀이하면 루프 한계에서 잔차가 그대로 소각된다(이 기능이
+    #      없애려던 상태). `claim is not None` 은 번들 전체 조회라 잔차도 센서도
+    #      포함하고, **지어낸 이름만** 걸러 낸다 - 환각은 "이 표본으로는 갈리지
+    #      않았다" 와 다른 사실이라 같은 이름을 주면 안 된다.
+    #      `not bundle.statistical_passing()` 은 **그대로 둔다.** 이것이 남아 있어야
+    #      `passing() + residuals` 의 비센서 claim 이 전부 미통과라 `_fold_key` 가
+    #      통과 claim 과 잔차를 한 묶음에 섞지 않는다(설계 §4).
     residuals = bundle.residuals()
-    if (not bundle.statistical_passing() and not claim_id and residuals):
+    if (not bundle.statistical_passing() and residuals
+            and (not claim_id or claim is not None)):
         update["finalize_accepted"] = True
         update["finalize_status"] = "weak_signal"
         update["final_hypothesis"] = hypothesis
@@ -427,12 +439,21 @@ def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) ->
         update["coverage"] = coverage
         # **통과 근거를 밀어내지 않는다.** 이 분기의 하한은 statistical_passing()
         # 이라 센서만 통과한 상태에서도 열린다 - 잔차만 실으면 판별선을 넘은 센서
-        # 근거가 리포트에서 사라진다. picked 는 넘기지 않는다(`not claim_id` 가
-        # 하한이므로 지목이 없다는 것이 이 분기의 전제다).
+        # 근거가 리포트에서 사라진다. picked 는 넘기지 않는다 - 지목이 있을 수
+        # 있지만(하한이 "정직한 제출" 로 넓어졌다) 그것을 **원인으로 확정하지
+        # 않기로** 했기 때문이다. picked_by_llm 을 붙이면 리포트가 그 후보를
+        # 서술의 축으로 삼아 단정하게 된다.
         _record_evidence(update, bundle.ranked_groups(bundle.passing() + residuals), None)
-        return (f"약한 신호 ({_coverage_phrase(coverage)}): 판별선을 넘은 원인 후보는 "
-                f"없고, 아랫선을 넘은 잔차 {len(residuals)}건을 근거로 싣는다. "
-                f"확정이 아니라 '이 표본으로는 갈리지 않았다' 는 뜻이다. "
+        if not claim_id:
+            picked_note = ""
+        elif claim.kind == "sensor":
+            picked_note = f"네가 지목한 {claim_id} 는 2단 센서라 원인으로 확정하지 않았다. "
+        else:
+            picked_note = (f"네가 지목한 {claim_id} 는 판별선을 넘지 못해 "
+                           f"원인으로 확정하지 않았다. ")
+        return (f"약한 신호 ({_coverage_phrase(coverage)}): {picked_note}"
+                f"판별선을 넘은 원인 후보는 없고, 아랫선을 넘은 잔차 {len(residuals)}건을 "
+                f"근거로 싣는다. 확정이 아니라 '이 표본으로는 갈리지 않았다' 는 뜻이다. "
                 f"리포팅으로 진행한다.")
 
     # (2) 신호 없음 - 돌린 축에서 통과 후보가 하나도 없다.
