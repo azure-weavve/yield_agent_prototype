@@ -708,6 +708,23 @@ def test_operational_prompt_tells_the_report_what_weak_signal_means():
     assert "타깃/대조군 표본을 넓히기" in client.llm.seen_sys
 
 
+def test_operational_prompt_says_a_submitted_hypothesis_may_name_a_weak_candidate():
+    """하한이 넓어져 '지목한 제출'도 weak_signal 로 온다.
+
+    그 제출의 hypothesis 는 후보 하나를 원인으로 지목하는 문장이다. 리포트
+    작성자가 그것을 그대로 옮기면 판정("확정이 아니다")과 서술("X가 원인")이
+    한 리포트 안에서 어긋난다. 기존 절은 **claims 목록**을 단정하지 말라고만
+    했지 **제출된 가설 문장**을 어떻게 다루라고는 말하지 않는다.
+    """
+    client = _openai_client()
+    client.generate_report(
+        target_wafers=["W1"], target_source="manual", target_group=["W1"],
+        status_summary="s", findings=[], hypothesis="ETCH9_B 편중이 원인",
+        confidence=0.9, finalize_status="weak_signal", coverage=None, claims=[])
+    assert ("제출된 가설이 특정 후보를 원인으로 지목하고 있어도"
+            in client.llm.seen_sys), client.llm.seen_sys
+
+
 def test_operational_client_tells_the_report_what_a_residual_claim_is():
     """(2a) 는 잔차를 `passes: false` 로 claims 목록에 실어 보낸다.
 
