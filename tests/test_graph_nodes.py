@@ -1161,14 +1161,49 @@ def test_report_labels_a_residual_as_residual_not_as_evidence():
 
 
 def test_report_still_labels_a_passing_claim_as_evidence():
-    """확정 경로의 라벨은 그대로다 - 잔차 분기를 넣다가 통과 근거까지 바꾸면 안 된다."""
+    """확정 경로의 라벨은 그대로다 - 잔차 분기를 넣다가 통과 근거까지 바꾸면 안 된다.
+
+    `reject_reason` 을 (실제로는 안 생기지만) 일부러 채워 둔다 - reject_reason 출력
+    가드는 `not passes and reject_reason` 두 항인데, `passes` 항이 없으면 통과
+    claim 도 reject_reason 이 있기만 하면 "(판별선 미달: ...)" 이 찍힌다. 이 값이
+    없으면 그 조건이 참이든 거짓이든 결과가 같아 `passes` 항을 잠그지 못한다.
+    """
     state = {
         "final_claims": [{
             "claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH9_B",
             "level": "chamber", "key": "ETCH9_B", "step_seq": "CC002000",
-            "score": 1.0, "passes": True, "reject_reason": None,
+            "score": 1.0, "passes": True, "reject_reason": "분리 점수 0.4 < 0.5",
             "target_pass": 3, "target_total": 3, "control_pass": 0, "control_total": 3,
             "rank": 1, "kind": "statistical", "target_wafers": [], "control_wafers": [],
+            "confounded_with": [], "rolled_up_as": [],
+        }],
+        "finalize_status": "confirmed", "final_hypothesis": "h",
+        "final_confidence": 0.9, "status_summary": "s", "findings": [],
+        "target_wafers": ["W1"], "target_group": ["W1"], "messages": [],
+    }
+    report = nodes.report_node(state)["report"]
+    assert "[근거 1]" in report
+    assert "[잔차" not in report
+    assert "판별선 미달" not in report
+
+
+def test_report_labels_a_passing_sensor_as_evidence():
+    """통과한 센서 근거도 `[근거]` 로 찍혀야 한다 - `[잔차]` 로 새면 안 된다.
+
+    센서는 자기 판별선(0.8)을 갖고 이미 통과/미통과가 갈린 뒤 근거로 실린다. 라벨은
+    `passes` 만 보고 정해야 한다 - `kind` 까지 함께 보는 조건이 섞여 들어오면 통과한
+    센서가 잔차로 오분류될 수 있다. 이 자리를 실제로 지나는 것은 `report_node` 이고,
+    `main.py` 더미 실행에서도 이런 줄이 여러 개 나간다.
+    """
+    state = {
+        "final_claims": [{
+            "claim_id": "sensor:CC002000:TEMP_1", "kind": "sensor",
+            "level": "sensor", "key": "TEMP_1", "step_seq": "CC002000",
+            "score": 2.31, "passes": True, "reject_reason": None,
+            "target_total": 12, "control_total": 40,
+            "extra": {"target_mean": 812.4, "control_mean": 799.1,
+                      "target_std": 3.0, "control_std": 2.8},
+            "rank": 1, "target_wafers": [], "control_wafers": [],
             "confounded_with": [], "rolled_up_as": [],
         }],
         "finalize_status": "confirmed", "final_hypothesis": "h",
@@ -2623,6 +2658,25 @@ EQP_CH_BELOW_LINE = {
     "thought": "약한 후보",
 }
 
+# 같은 축(같은 tool 실행)이 통과 후보와 잔차 자격을 갖춘 미통과 후보를 함께 낸 상태.
+# (2a)의 첫 조건 `not bundle.statistical_passing()` 을 시험하려면 통과 후보가
+# **실재해야** 한다 - 없으면 그 조건이 참이든 거짓이든 결과가 같아 무엇을 잠그는지
+# 알 수 없다.
+EQP_CH_PASSING_AND_RESIDUAL = {
+    "loop": 2, "tool": "hyp_eqp_ch_commonality", "args": {},
+    "result": {"hypothesis_id": "eqp_ch_commonality", "status": "ok", "candidates": [
+        {"claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH9_B", "step_seq": "CC002000",
+         "key": "ETCH9_B", "level": "chamber", "passes": True,
+         "reject_reason": None, "score": 1.0,
+         "target_pass": 3, "target_total": 3, "control_pass": 0, "control_total": 3},
+        {"claim_id": "eqp_ch_commonality:chamber:CD004000:PHOTO1_A", "step_seq": "CD004000",
+         "key": "PHOTO1_A", "level": "chamber", "passes": False,
+         "reject_reason": "분리 점수 0.4 < 0.5", "score": 0.4,
+         "target_pass": 4, "target_total": 4, "control_pass": 3, "control_total": 5},
+    ]},
+    "thought": "챔버 편중 + 약한 후보",
+}
+
 
 def test_a_below_the_line_pick_is_not_told_to_pick_when_only_a_sensor_passed():
     """미통과 1단을 정직하게 지목했는데 통과한 것이 **센서뿐**인 상태.
@@ -2716,6 +2770,25 @@ def test_a_submitted_claim_id_does_not_open_weak_signal():
         loop=2, update=update, findings=[EQP_CH_BELOW_LINE])
     assert update.get("finalize_status") != "weak_signal"
     assert "finalize_accepted" not in update    # 반려 경로를 실제로 탔다
+
+
+def test_a_passing_candidate_does_not_open_weak_signal():
+    """(2a)의 첫 조건은 `not bundle.statistical_passing()` 이다 - 통과 후보가 있으면
+    잔차만 있어도 (2a)는 안 열려야 한다.
+
+    이 조건이 없으면, 판별선을 넘은 후보(score 1.0)가 실재하는데도 claim_id 를 안 낸
+    제출이 '약한 신호' 로 조용히 종료돼 "판별선을 넘은 원인 후보는 없고" 라는 거짓
+    문장을 내보내고, final_claims 에는 그 통과 후보가 `[근거 1]` 로 실린다. #8·#9 는
+    이 3항 조건의 나머지 두 항(순서·`not claim_id`)만 잠갔고 이 항은 훼손 실험에서
+    빠져 있어 되돌려도 스위트가 초록이었다.
+    """
+    update = {}
+    verdict = nodes._finalize_gate(
+        {"claim_id": "", "hypothesis": "h", "confidence": 0.3},
+        loop=2, update=update, findings=[EQP_CH_PASSING_AND_RESIDUAL])
+    assert update.get("finalize_status") != "weak_signal"
+    assert "finalize_accepted" not in update
+    assert "claim_id 를 제출하지 않았다" in verdict, verdict
 
 
 def test_a_weak_only_state_is_told_it_can_step_back():
