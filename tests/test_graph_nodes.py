@@ -383,6 +383,34 @@ def test_analyze_prompt_says_a_sensor_claim_id_is_not_pickable():
     assert "지목" in prompt
 
 
+def test_analyze_prompt_warns_that_naming_a_sensor_over_a_passing_hyp_tool_is_rejected():
+    """반려는 한 바퀴를 버린 뒤에야 읽힌다. 계약은 미리 말해야 한다.
+
+    위 테스트가 잠그는 "2단 센서"·"지목" 은 같은 불릿의 **다른 문장**(claim_id 가
+    근거 인용용이라는 문장)에도 있는 느슨한 부분 문자열이라, 센서 지목이 통과한
+    가설 도구 앞에서는 반려된다는 **사전 경고 문장**을 지워도 안 잡힌다. (2a) 하한이
+    "정직한 제출" 로 넓어져도 통과 후보가 있는 상태의 센서 지목은 여전히 (1)에서
+    막혀 (5) 반려로 간다 - LLM 이 그걸 미리 알아야 반려를 한 바퀴 버리지 않는다.
+    """
+    prompt = nodes.ANALYZE_SYSTEM_PROMPT
+    assert "지목해도 원인으로 확정되지 않는다" in prompt, prompt
+    assert "통과한 가설 도구(hyp_*) 후보가 있는데도 센서를 지목하면 그 이유로 반려된다" in prompt, prompt
+
+
+def test_analyze_prompt_tells_the_llm_the_two_outcomes_of_naming_a_weak_candidate():
+    """물러설 길 안내가 두 상태를 다 말해야 한다 - 조건부로만 참인 문장은 반쪽이 거짓이 된다.
+
+    기존 가드(`test_analyze_prompt_tells_the_llm_to_step_back_on_weak_candidates`)는
+    같은 불릿의 다른 곳에 있는 "판별선을 넘지 못한 후보만"·"잔차" 만 보므로, 이
+    불릿을 통째로 예전 문구(하한이 `not claim_id` 이던 시절의 것)로 되돌려도 안
+    잡힌다. 지금 계약은 두 상태를 가른다: 잔차가 있으면(지어낸 이름이 아닌 한)
+    지목해도 받아 주고, 잔차마저 없으면 반려된다.
+    """
+    prompt = nodes.ANALYZE_SYSTEM_PROMPT
+    assert "지어낸 이름이 아닌 한" in prompt, prompt
+    assert "잔차마저 없는 상태에서 지목하면 반려되고" in prompt, prompt
+
+
 def test_gate_declares_no_signal_without_running_every_axis():
     """축 하나만 돌리고 물러서도 게이트가 막지 않는다 - 전축 실행은 전제 조건이 아니다.
 
@@ -2740,6 +2768,9 @@ def test_a_weak_only_state_ends_as_weak_signal():
     ids = [c["claim_id"] for c in update["final_claims"]]
     assert ids == ["eqp_ch_commonality:chamber:CC002000:ETCH9_B"]
     assert "잔차" in verdict
+    # 건수 자체를 잠근다 - "잔차" 라는 단어만 있고 몇 건인지는 안 세면, 개수를
+    # 지워도(예: "아랫선을 넘은 잔차를 근거로 싣는다") 스위트가 초록이다.
+    assert "잔차 1건" in verdict, verdict
     # 커버리지 고백도 잠근다 - 안 붙이면 "어디까지 봤는가" 가 이 종료 경로에서만
     # 조용히 빠져도 스위트가 초록이다.
     assert "hyp_metro_commonality" in update["coverage"]["unrun"]
@@ -2765,6 +2796,10 @@ def test_a_named_residual_still_ends_as_weak_signal():
     # 지목을 받아준 것이지 원인으로 확정한 것이 아니다 - 판정문이 그렇게 말해야
     # LLM 이 서술에서 그 후보를 단정하지 않는다.
     assert "원인으로 확정하지 않았다" in verdict, verdict
+    # 이 갈래(미통과)만의 문구를 잠근다 - "원인으로 확정하지 않았다" 는 센서
+    # 갈래에도 그대로 나오므로, 그것만 걸면 이 갈래가 "판별선을 넘어" 로 뒤집혀도
+    # (통과했다는 거짓말) 스위트가 초록이다.
+    assert "판별선을 넘지 못해" in verdict, verdict
     # 확정하지 않기로 했으므로 picked 표시를 안 붙인다.
     assert not any(c.get("picked_by_llm") for c in update["final_claims"])
 
@@ -2786,6 +2821,11 @@ def test_a_named_passing_sensor_ends_as_weak_signal():
     ids = [c["claim_id"] for c in update["final_claims"]]
     assert "sensor:CC002000:TEMP_1" in ids
     assert "eqp_ch_commonality:chamber:CC002000:ETCH9_B" in ids
+    # 통과한 센서를 지목했으므로 최상단 `picked`(ranked_groups(passing())에서
+    # 찾은 묶음)가 실제로 채워지는 유일한 자리다 - 잔차 지목이면 애초에 통과
+    # 목록에 없어 `picked` 가 원래 None 이라 이 단언이 아무것도 못 잠근다.
+    # 확정하지 않기로 했으므로 여기서도 picked 표시를 안 붙인다.
+    assert not any(c.get("picked_by_llm") for c in update["final_claims"])
 
 
 def test_a_made_up_claim_id_is_still_rejected_not_absorbed():
