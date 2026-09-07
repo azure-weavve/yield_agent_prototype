@@ -723,6 +723,8 @@ def test_operational_prompt_says_a_submitted_hypothesis_may_name_a_weak_candidat
         confidence=0.9, finalize_status="weak_signal", coverage=None, claims=[])
     assert ("제출된 가설이 특정 후보를 원인으로 지목하고 있어도"
             in client.llm.seen_sys), client.llm.seen_sys
+    assert ("게이트는 그 후보를 원인으로 확정하지 않았다"
+            in client.llm.seen_sys), client.llm.seen_sys
 
 
 def test_operational_client_tells_the_report_what_a_residual_claim_is():
