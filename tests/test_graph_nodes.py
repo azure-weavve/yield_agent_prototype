@@ -2821,10 +2821,25 @@ def test_a_named_passing_sensor_ends_as_weak_signal():
     ids = [c["claim_id"] for c in update["final_claims"]]
     assert "sensor:CC002000:TEMP_1" in ids
     assert "eqp_ch_commonality:chamber:CC002000:ETCH9_B" in ids
-    # 통과한 센서를 지목했으므로 최상단 `picked`(ranked_groups(passing())에서
-    # 찾은 묶음)가 실제로 채워지는 유일한 자리다 - 잔차 지목이면 애초에 통과
-    # 목록에 없어 `picked` 가 원래 None 이라 이 단언이 아무것도 못 잠근다.
     # 확정하지 않기로 했으므로 여기서도 picked 표시를 안 붙인다.
+    #
+    # 이 단언이 실제로 잠그는 것: (2a)가 `_record_evidence` 에 넘기는 `picked`
+    # 자리에, **지목한 claim_id 를 그 호출이 쓰는 목록(`bundle.ranked_groups(
+    # bundle.passing() + residuals)`)에서 다시 찾아** 넘기게 바꾸는 훼손이다.
+    # 그렇게 바꾸면 잔차 지목 쪽(`test_a_named_residual_still_ends_as_weak_signal`)
+    # 과 이 센서 지목 쪽 둘 다 이 단언이 잡는다(실측 확인됨).
+    #
+    # 잠그지 못하는 것: 표에 적힌 문자 그대로("None 대신 picked 전달" - 여기서
+    # `picked` 는 함수 맨 위, **인자 없는** `bundle.ranked_groups()` 호출이 만든
+    # 객체)는 다르다. `groups_to_dicts` 가 `group is picked` 로 식별하는데
+    # (`evidence.py:520`), (2a)가 넘기는 목록은 `bundle.ranked_groups(bundle.
+    # passing() + residuals)` 라는 **별도** 호출이 매번 새로 만든 객체들이라
+    # (`ranked_groups()` 는 호출마다 새 `ClaimGroup` 을 만든다 - `find_group`
+    # 자체 docstring 의 경고), 그 stale `picked` 를 그대로 넘겨도 `is` 비교가
+    # 항상 거짓이라 아무 claim 에도 `picked_by_llm` 이 안 붙는다. 표 문자
+    # 그대로의 훼손은 이 저장소 어떤 테스트로도 관측할 수 없다(직접 재현해
+    # 확인됨) - 다만 이는 그 정확한 형태에만 해당하고, 위의 "다시 찾아 넘기는"
+    # 형태(같은 위험을 더 정확히 대표한다)는 이 단언이 잡는다.
     assert not any(c.get("picked_by_llm") for c in update["final_claims"])
 
 
