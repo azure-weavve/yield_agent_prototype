@@ -403,11 +403,15 @@ def test_analyze_prompt_tells_the_llm_the_two_outcomes_of_naming_a_weak_candidat
     기존 가드(`test_analyze_prompt_tells_the_llm_to_step_back_on_weak_candidates`)는
     같은 불릿의 다른 곳에 있는 "판별선을 넘지 못한 후보만"·"잔차" 만 보므로, 이
     불릿을 통째로 예전 문구(하한이 `not claim_id` 이던 시절의 것)로 되돌려도 안
-    잡힌다. 지금 계약은 두 상태를 가른다: 잔차가 있으면(지어낸 이름이 아닌 한)
-    지목해도 받아 주고, 잔차마저 없으면 반려된다.
+    잡힌다. 지금 계약은 두 상태를 가른다: 잔차가 있으면(최신 도구 결과에 실재하는
+    이름을 지목한 한) 지목해도 받아 주고, 잔차마저 없으면 반려된다.
+
+    "지어낸 이름이 아닌 한" 이 아니라 "실재하는 이름인 한" 이다 - 하한
+    `claim is not None` 은 `bundle.claims` 조회이고 그 dict 는 **대체(superseded)된
+    앞 실행의 후보를 안 담으므로**, 환각뿐 아니라 폐기된 지목도 함께 걸린다.
     """
     prompt = nodes.ANALYZE_SYSTEM_PROMPT
-    assert "지어낸 이름이 아닌 한" in prompt, prompt
+    assert "최신 도구 결과에 실재하는 이름을 지목한 한" in prompt, prompt
     assert "잔차마저 없는 상태에서 지목하면 반려되고" in prompt, prompt
 
 
@@ -2891,11 +2895,20 @@ def test_weak_signal_does_not_drop_a_passing_sensor():
     assert "eqp_ch_commonality:chamber:CC002000:ETCH9_B" in ids
 
 
-def test_a_submitted_claim_id_does_not_open_weak_signal():
-    """지목을 제출한 것은 물러선 것이 아니다 - (2)(3)과 같은 하한이다.
+def test_a_hallucinated_claim_id_does_not_open_weak_signal():
+    """REWRITTEN(규칙이 뒤집혔다): 하한은 "지목했는가" 가 아니라 "실재하는가" 다.
 
-    없으면 '확신도 0.9 로 없는 근거를 지목한' 제출이 곧바로 종료로 빠져나가
-    환각이 물러섬으로 둔갑한다.
+    옛 이름(`test_a_submitted_claim_id_does_not_open_weak_signal`)과 독스트링은
+    "지목을 제출한 것은 물러선 것이 아니다" 를 단언했는데, 그것이 이 브랜치가
+    `(2a)` 에서 뒤집은 규칙이다 - 잔차를 지목한 제출은 이제 곧장 열린다
+    (`test_a_named_residual_still_ends_as_weak_signal`). 이 테스트가 초록이던
+    이유는 하한이 좁아서가 아니라 claim_id 가 **환각**이라서였다.
+
+    지금 잠그는 것: 하한 `(not claim_id or claim is not None)` 의 뒷항이 살아 있어
+    번들에 없는 이름은 `(2a)` 를 못 연다. 없으면 '확신도 0.9 로 없는 근거를 지목한'
+    제출이 곧바로 종료로 빠져나가 환각이 물러섬으로 둔갑한다.
+    위 `test_a_made_up_claim_id_is_still_rejected_not_absorbed` 는 같은 상태에서
+    **반려 문구**를 잠근다 - 이쪽은 `(2a)` 문이 안 열린다는 사실만 본다.
     """
     update = {}
     nodes._finalize_gate(
@@ -2929,9 +2942,15 @@ def test_a_weak_only_pick_is_not_told_to_empty_its_claim_id():
 
     (2a) 하한이 `not claim_id` 이던 동안에는 이 지목이 반려로 갔고, 반려 문구가
     "claim_id 를 비우고 finalize 하라" 고 안내해야 라이브락을 피할 수 있었다.
-    하한이 "정직한 제출" 로 넓어진 지금은 지목 자체가 곧장 (2a) 를 여니, 비우라는
-    안내는 더 이상 나갈 일이 없다 - 나가면 오히려 이미 받아준 지목을 취소하라는
-    모순된 지시가 된다.
+    하한이 "정직한 제출" 로 넓어진 지금은 **실재하는** 잔차를 지목하면 그것이 곧장
+    (2a) 를 여니, 이 상태에서 비우라는 안내가 나가면 오히려 이미 받아준 지목을
+    취소하라는 모순된 지시가 된다.
+
+    안내 자체가 없어진 것은 아니다 - 환각이나 대체(superseded)된 이름을 지목하면
+    `(2a)` 가 안 열려 반려로 가고, 위
+    `test_a_made_up_claim_id_is_still_rejected_not_absorbed` 가 그 상태에서
+    "claim_id 를 비우고" 가 **나온다**고 단언한다. 두 테스트는 같은 문구의
+    나가는 상태와 안 나가는 상태를 각각 잠근다.
     """
     verdict = nodes._finalize_gate(
         {"claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH9_B",
