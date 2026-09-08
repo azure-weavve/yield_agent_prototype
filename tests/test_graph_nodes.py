@@ -2616,6 +2616,13 @@ def test_gate_rejects_a_picked_sensor_by_name_not_by_confidence():
     나간다. 판정 (2)·(3)·(3b)는 전부 `not claim_id` 를 요구하므로 종료도 안 열리고,
     LLM 은 고칠 것이 없는 반려를 받아 루프 한계까지 왕복하다 inconclusive 로 끝난다 -
     `statistical_passing()` 이 막으려던 라이브락이 claim_id 를 **낸** 경로로 되살아난다.
+
+    **(2a) 는 예외이므로 픽스처가 잔차를 안 남긴다.** 하한이 "정직한 제출" 로
+    넓어진 뒤로는, 통과 후보가 없고 아랫선을 넘은 잔차가 있으면 센서 지목이
+    `(2a) weak_signal` 로 먼저 받아져 이 반려 분기에 **도달조차 하지 않는다**.
+    `EQP_CH_SILENT` 는 candidates 가 비어 있어 `residuals()` 가 0건이고, 그래서
+    이 테스트가 겨누는 반려 경로가 실제로 돈다. 픽스처를 잔차 있는 것으로 바꾸면
+    이 테스트는 겨누던 자리를 잃는다.
     """
     update = {}
     verdict = nodes._finalize_gate(
