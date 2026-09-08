@@ -706,6 +706,11 @@ def test_operational_prompt_tells_the_report_what_weak_signal_means():
     assert "weak_signal" in client.llm.seen_sys
     assert "'약한 신호'로 서술하라" in client.llm.seen_sys
     assert "타깃/대조군 표본을 넓히기" in client.llm.seen_sys
+    # (2a) 는 **통과한 2단 센서가 있는 상태에서도** 열린다(하한은 statistical_passing()
+    # = 비센서 통과 claim 뿐이다). 그래서 이 절이 "후보는 나왔으나 판별선을 넘지
+    # 못한 것" 이라고 한 갈래만 말하면 그 상태에서 거짓이 되고, 리포트가 [근거] 로
+    # 실려 나간 통과 센서를 "아무것도 안 나왔다" 로 뭉갠다.
+    assert "2단 센서 근거는 통과했을 수 있으니" in client.llm.seen_sys
 
 
 def test_operational_prompt_says_a_submitted_hypothesis_may_name_a_weak_candidate():
@@ -724,6 +729,12 @@ def test_operational_prompt_says_a_submitted_hypothesis_may_name_a_weak_candidat
     assert ("제출된 가설이 특정 후보를 원인으로 지목하고 있어도"
             in client.llm.seen_sys), client.llm.seen_sys
     assert ("게이트는 그 후보를 원인으로 확정하지 않았다"
+            in client.llm.seen_sys), client.llm.seen_sys
+    # **판정 가드까지 잠근다.** 이 sys 리터럴은 조건 없는 단일 문자열이라, 가드를
+    # 빼도 문장은 그대로 남아 위 두 단언이 초록이다 - 실제로 그렇게 나가 있었고
+    # confirmed 판정에서 거짓이었다(9줄 뒤 "확정된 근거를 유보 톤으로 낮추지 마라"
+    # 와 충돌). 주변의 조건부 지시는 예외 없이 "판정이 X 면" 접두를 달고 있다.
+    assert ("판정이 weak_signal 인데 제출된 가설이"
             in client.llm.seen_sys), client.llm.seen_sys
 
 
