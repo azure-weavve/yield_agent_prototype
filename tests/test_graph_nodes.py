@@ -3031,3 +3031,26 @@ def test_loop_limit_without_residuals_keeps_the_old_sentence():
     assert update["finalize_status"] == "inconclusive"
     assert "확정 근거 없이" in verdict, verdict
     assert "잔차" not in verdict, verdict
+
+
+def test_loop_limit_with_a_passing_candidate_does_not_deny_the_evidence_it_carries():
+    """통과 후보를 실어 놓고 "확정 근거 없이" 라고 말하면 안 된다.
+
+    `EQP_CH_PASSING_AND_RESIDUAL` 에는 판별선을 넘은 후보가 실재한다. 그것을
+    확신도 0.3(문턱 0.8 아래)으로 지목하면 (1)이 안 걸리고, `statistical_passing()`
+    이 참이라 (2a)·(2)도 안 걸리고, uncomputable 도 아니라 (3)·(3b)도 안 걸려
+    루프 한계 (4)로 떨어진다. 이때 `carried is groups`(잔차를 안 더함)라 옛 문장이
+    나가는데, `_record_evidence` 는 이미 그 통과 묶음을 `final_claims` 에 실었다 -
+    근거를 실어 놓고 없다고 말하면 리포트 LLM 이 "확정 근거 없이" 를 그대로
+    인용해 거짓 리포트가 나간다.
+    """
+    update = {}
+    verdict = nodes._finalize_gate(
+        {"claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH9_B",
+         "hypothesis": "h", "confidence": 0.3},
+        loop=ya_config.MAX_LOOPS, update=update,
+        findings=[EQP_CH_PASSING_AND_RESIDUAL])
+    assert update["finalize_status"] == "inconclusive"
+    assert update["final_claims"]
+    assert "확정 근거 없이" not in verdict, verdict
+    assert f"{len(update['final_claims'])}건" in verdict, verdict
