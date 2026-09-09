@@ -768,3 +768,52 @@ def test_analyze_prompt_tells_the_llm_to_step_back_on_weak_candidates():
     from graph import nodes
     assert "판별선을 넘지 못한 후보만" in nodes.ANALYZE_SYSTEM_PROMPT
     assert "잔차" in nodes.ANALYZE_SYSTEM_PROMPT
+
+
+def test_mock_report_has_a_sentence_for_no_separation():
+    """판정 어휘를 늘리면 mock 결론문도 같이 늘려야 한다 - 안 그러면 새 판정이
+    else 로 떨어져 LLM 이 쓴 가설이 확정처럼 찍힌다."""
+    from llm.client import ScriptedMockLLMClient
+    report = ScriptedMockLLMClient().generate_report(
+        target_wafers=["W1"], target_source="manual", target_group=["W1"],
+        status_summary="s", findings=[], hypothesis="h", confidence=0.3,
+        finalize_status="no_separation")
+    assert "갈리는 항목 없음" in report
+    assert "lot 밖 대조군" in report
+
+
+def test_operational_prompt_tells_the_report_what_no_separation_means():
+    """운영 리포트 LLM 은 판정 이름만 받는다 - 무엇인지 안 알려주면 '분석 미수행'
+    으로 뭉개거나 반대로 '원인 없음' 으로 단정한다. 둘 다 조치가 틀려진다."""
+    client = _openai_client()
+    client.generate_report(
+        target_wafers=["W1"], target_source="manual", target_group=["W1"],
+        status_summary="s", findings=[], hypothesis="h", confidence=0.3,
+        finalize_status="no_separation", claims=[])
+    assert "판정이 no_separation 이면" in client.llm.seen_sys
+    assert "분석 미수행이 아니다" in client.llm.seen_sys
+    assert "다른 관측축" in client.llm.seen_sys
+
+
+def test_operational_prompt_says_inconclusive_can_carry_residuals():
+    """(4)가 잔차를 싣게 됐으므로 inconclusive 도 [잔차] 줄을 받을 수 있다.
+
+    '확정 근거가 없다' 로만 지시하면 LLM 이 실제로 실린 잔차 줄을 근거 없음과
+    모순되는 것으로 보고 지우거나, 반대로 근거로 승격시킨다.
+    """
+    client = _openai_client()
+    client.generate_report(
+        target_wafers=["W1"], target_source="manual", target_group=["W1"],
+        status_summary="s", findings=[], hypothesis="h", confidence=0.3,
+        finalize_status="inconclusive", claims=[])
+    assert "inconclusive 에도 잔차가 실릴 수 있다" in client.llm.seen_sys
+
+
+def test_analyze_prompt_knows_the_full_axis_case_is_received_not_rejected():
+    """분석 프롬프트가 '잔차마저 없으면 반려된다' 로만 말하면 이제 반만 참이다.
+
+    등록 축을 다 돌린 뒤라면 게이트가 '갈리는 항목 없음' 으로 받는다. 반쪽짜리
+    문장을 남겨 두면 LLM 이 물러설 수 있는 자리에서 축을 더 부르며 예산을 태운다.
+    """
+    from graph import nodes
+    assert "갈리는 항목 없음" in nodes.ANALYZE_SYSTEM_PROMPT

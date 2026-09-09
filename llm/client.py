@@ -253,7 +253,13 @@ class ScriptedMockLLMClient(LLMClient):
             if f["tool"] == "finalize":
                 lines.append(f"     - 게이트: {f['result']}")
         if finalize_status == "inconclusive":
-            conclusion = f"미확정 (루프 한계 도달) - 유력 가설: {hypothesis or '없음'}"
+            conclusion = f"미확정 (루프 한계 도달) - 유력 가설: {hypothesis or '없음'}."
+            # weak_signal 과 달리 inconclusive 는 잔차가 실려 있다는 보장이 없다
+            # (통과 후보가 이미 있으면 `_evidence_groups` 하한이 잔차를 안 더한다) -
+            # 무조건 이 문장을 붙이면 실제로 [잔차] 줄이 없는 리포트에도 "[잔차]" 라는
+            # 글자가 찍혀, "잔차를 안 섞는다" 는 하한을 문장으로 어긴다.
+            if any(not c.get("passes", True) for c in (claims or [])):
+                conclusion += " 아래 [잔차] 줄이 있으면 판별선을 넘지 못한 후보다."
         elif finalize_status == "weak_signal":
             conclusion = ("약한 신호 - 후보는 나왔으나 판별선을 넘지 못했다. "
                           "원인 없음이 아니라 이 표본으로는 확정할 만큼 갈리지 않았다는 "
@@ -266,6 +272,11 @@ class ScriptedMockLLMClient(LLMClient):
             conclusion = ("신호 없음 - 대조한 축에서는 타깃만 거친 항목이 없다. "
                           "원인 없음이 아니라 원인이 root_lot 전체에 걸렸을 수 있다는 뜻이며, "
                           "lot 밖 대조군이 필요하다.")
+        elif finalize_status == "no_separation":
+            conclusion = ("갈리는 항목 없음 - 등록 축을 다 대조했으나 타깃과 대조군을 "
+                          "가르는 항목이 없다. 분석이 안 돌은 것도 근거가 약한 것도 "
+                          "아니라 lot 내부 대조로는 갈리지 않는다는 뜻이며, "
+                          "lot 밖 대조군 또는 다른 관측축이 필요하다.")
         elif finalize_status == "llm_call_failed":
             conclusion = ("분석 미수행 - LLM 분석 호출이 실패해 루프를 돌지 못했다. "
                           "원인을 못 찾은 것이 아니라 분석 자체가 안 돌았다는 뜻이며, "
@@ -440,6 +451,13 @@ class OpenAILLMClient(LLMClient):
             "볼 데이터가 없는 것(no_comparable_data)이 아니라 조회 자체가 실패한 것이니 "
             "적재 범위가 아니라 DB/서비스 상태 확인과 재실행을 후속 조치로 적고, "
             "확정 결론을 쓰지 마라. "
+            "판정이 no_separation 이면 '갈리는 항목 없음'으로 서술하라 - "
+            "분석 미수행이 아니다. 등록 축을 다 대조했는데 타깃과 대조군을 가르는 "
+            "항목이 없었다는 관측이며, 원인이 없다고 단정하지 말고 lot 밖 대조군이나 "
+            "다른 관측축이 필요하다고 적어라. "
+            "판정이 inconclusive 에도 잔차가 실릴 수 있다 - 확정 근거가 아니라는 "
+            "뜻이지 근거가 한 줄도 없다는 뜻이 아니니, [잔차] 항목을 지우지도 "
+            "근거로 승격시키지도 마라. "
             "판정이 llm_call_failed 면 '분석 미수행 - LLM 분석 호출 실패'로 서술하라 - "
             "분석 루프가 아예 안 돌았으니 확정 결론을 쓰지 말고 재실행을 권하라. "
             "판정이 no_anomaly 면 '이상 없음'으로 서술하라. "
