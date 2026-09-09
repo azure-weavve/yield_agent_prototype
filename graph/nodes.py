@@ -335,6 +335,29 @@ def _tool_error_message(name: str, tool, e: Exception) -> tuple[str, bool]:
     return head + _PIPELINE_ARG_ADVICE, False
 
 
+def _evidence_groups(bundle, passing_groups: list) -> list:
+    """근거로 실을 묶음. **지목 가능한 통과 후보가 없을 때만 잔차를 더한다.**
+
+    이 하한이 곧 접기 계약의 전제다 - 합집합의 비센서 claim 이 전부 미통과라야
+    `_fold_key` 가 통과 claim 과 잔차를 한 묶음에 섞지 않는다(B 설계 §4 · C 계약).
+    하한을 지우면 p 가 작은 잔차가 lead 를 뺏어, 통과 근거가 `passes` 키도 없는
+    `confounded_with` 로 강등돼 묶음 전체가 `[잔차]` 로 찍힌다 - 통과 근거가
+    있는데도.
+
+    **잔차를 안 더할 때는 받은 목록을 그대로 돌려준다.** `ranked_groups()` 는
+    호출마다 새 `ClaimGroup` 을 만들어(`find_group` docstring 의 경고) 다시
+    만들면 호출부의 `picked` 와 `is` 비교가 항상 거짓이 되고, 아무 claim 에도
+    `picked_by_llm` 이 안 붙는다.
+
+    세 자리((2a)·(4)·백스톱)가 같은 규칙을 쓴다. 규칙을 세 번 적으면 한 자리를
+    빠뜨리는 것이 이 저장소의 반복 결함이다.
+    """
+    residuals = bundle.residuals()
+    if bundle.statistical_passing() or not residuals:
+        return passing_groups
+    return bundle.ranked_groups(bundle.passing() + residuals)
+
+
 def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) -> str:
     """LLM 의 종료 제안을 코드가 최종 판정한다 (부품 4b).
 
@@ -447,7 +470,7 @@ def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) ->
         # 있지만(하한이 "정직한 제출" 로 넓어졌다) 그것을 **원인으로 확정하지
         # 않기로** 했기 때문이다. picked_by_llm 을 붙이면 리포트가 그 후보를
         # 서술의 축으로 삼아 단정하게 된다.
-        _record_evidence(update, bundle.ranked_groups(bundle.passing() + residuals), None)
+        _record_evidence(update, _evidence_groups(bundle, groups), None)
         if not claim_id:
             picked_note = ""
         elif claim.kind == "sensor":

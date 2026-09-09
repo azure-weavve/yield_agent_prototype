@@ -2965,3 +2965,33 @@ def test_a_weak_only_pick_is_not_told_to_empty_its_claim_id():
         loop=2, update={}, findings=[EQP_CH_BELOW_LINE])
     assert "약한 신호" in verdict, verdict
     assert "claim_id 를 비우고" not in verdict, verdict
+
+
+def test_evidence_groups_adds_residuals_when_nothing_passes():
+    """지목 가능한 통과 후보가 없으면 잔차를 더한 목록을 돌려준다."""
+    from graph import evidence
+
+    bundle = evidence.build_bundle([EQP_CH_BELOW_LINE, SENSOR_FINDING])
+    passing = bundle.ranked_groups()
+    out = nodes._evidence_groups(bundle, passing)
+    ids = {c.claim_id for g in out for c in g.claims}
+    assert "eqp_ch_commonality:chamber:CC002000:ETCH9_B" in ids   # 잔차
+    assert "sensor:CC002000:TEMP_1" in ids                        # 통과 센서도 남는다
+
+
+def test_evidence_groups_keeps_passing_only_when_a_statistical_claim_passed():
+    """통과 후보가 있으면 잔차를 안 더한다 - 접기 계약(_fold_key)의 전제다.
+
+    같은 목록에 통과 claim 과 잔차가 섞이면 p 가 작은 잔차가 lead 를 뺏어
+    통과 근거가 `passes` 키도 없는 `confounded_with` 로 강등되고 묶음 전체가
+    `[잔차]` 로 찍힌다. 그리고 **같은 객체**를 돌려줘야 호출부의 `picked` 가
+    `is` 로 맞는다 - 새로 만들면 아무 claim 에도 picked_by_llm 이 안 붙는다.
+    """
+    from graph import evidence
+
+    bundle = evidence.build_bundle([EQP_CH_PASSING_AND_RESIDUAL])
+    passing = bundle.ranked_groups()
+    out = nodes._evidence_groups(bundle, passing)
+    assert out is passing
+    ids = {c.claim_id for g in out for c in g.claims}
+    assert "eqp_ch_commonality:chamber:CD004000:PHOTO1_A" not in ids
