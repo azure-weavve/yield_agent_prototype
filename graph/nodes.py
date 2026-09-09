@@ -573,7 +573,18 @@ def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) ->
         update["final_hypothesis"] = hypothesis
         update["final_confidence"] = conf
         update["coverage"] = coverage
-        _record_evidence(update, groups, picked)
+        # **잔차도 싣는다.** 이 경로는 `(2a)` 가 환각·대체 이름을 안 받아 줄 때
+        # 열리므로 게이트 협조로는 못 막는다 - 여기서 안 실으면 "봤고 후보도
+        # 났는데 약하다" 가 통째로 소각된다(실측 재현).
+        # `picked` 는 잔차를 실은 목록에서는 안 붙인다: 그 상태에서 지목할 수
+        # 있는 것은 센서나 잔차뿐이고, 그것을 서술의 축으로 삼으면 리포트가 약한
+        # 후보를 단정한다((2a)와 같은 이유). 목록이 바뀌면 `is` 비교도 어차피
+        # 안 맞는다.
+        carried = _evidence_groups(bundle, groups)
+        _record_evidence(update, carried, picked if carried is groups else None)
+        if carried is not groups:
+            return (f"미확정 (루프 한계 도달): 판별선을 넘은 후보를 확정하지 못했다. "
+                    f"아랫선을 넘은 잔차 {len(residuals)}건을 근거로 싣는다.")
         return "미확정 (루프 한계 도달): 확정 근거 없이 리포팅으로 진행한다."
 
     # (5) 반려

@@ -2995,3 +2995,39 @@ def test_evidence_groups_keeps_passing_only_when_a_statistical_claim_passed():
     assert out is passing
     ids = {c.claim_id for g in out for c in g.claims}
     assert "eqp_ch_commonality:chamber:CD004000:PHOTO1_A" not in ids
+
+
+def test_loop_limit_still_carries_residuals():
+    """루프 한계로 끝나도 아랫선을 넘은 잔차는 리포트에 남아야 한다.
+
+    실측(2026-09-08): 잔차 2건이 있는데 환각 지목을 되풀이해 loop 7 에 닿으면
+    `inconclusive` · `final_claims=0` 으로 끝나 증거가 통째로 소각됐다.
+    이 경로는 `(2a)` 가 환각을 안 받아 주기 때문에 열린다 - 프롬프트로는 못 막는다.
+    """
+    update = {}
+    verdict = nodes._finalize_gate(
+        {"claim_id": "eqp_ch_commonality:chamber:CC002000:NOPE",
+         "hypothesis": "지어낸 것", "confidence": 0.9},
+        loop=ya_config.MAX_LOOPS, update=update, findings=[EQP_CH_BELOW_LINE])
+    assert update["finalize_status"] == "inconclusive"
+    ids = [c["claim_id"] for c in update["final_claims"]]
+    assert ids == ["eqp_ch_commonality:chamber:CC002000:ETCH9_B"]
+    # 판정문이 "확정 근거 없이" 라고 말하면 잔차를 싣고도 거짓이다.
+    assert "확정 근거 없이" not in verdict, verdict
+    assert "잔차 1건" in verdict, verdict
+
+
+def test_loop_limit_without_residuals_keeps_the_old_sentence():
+    """잔차가 없으면 옛 판정문 그대로다 - 없는 잔차를 말하면 안 된다."""
+    update = {}
+    verdict = nodes._finalize_gate(
+        {"claim_id": "", "hypothesis": "h", "confidence": 0.3},
+        loop=ya_config.MAX_LOOPS, update=update, findings=[EQP_CH_SILENT])
+    assert update["finalize_status"] == "no_signal"       # (2)가 먼저 받는다
+    update = {}
+    verdict = nodes._finalize_gate(
+        {"claim_id": "지어낸:claim:id", "hypothesis": "h", "confidence": 0.9},
+        loop=ya_config.MAX_LOOPS, update=update, findings=[EQP_CH_SILENT])
+    assert update["finalize_status"] == "inconclusive"
+    assert "확정 근거 없이" in verdict, verdict
+    assert "잔차" not in verdict, verdict
