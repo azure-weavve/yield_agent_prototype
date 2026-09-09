@@ -358,6 +358,28 @@ def _evidence_groups(bundle, passing_groups: list) -> list:
     return bundle.ranked_groups(bundle.passing() + residuals)
 
 
+def _no_separation_state(bundle, coverage: dict) -> bool:
+    """(2b) '갈리는 항목 없음' 이 성립하는 상태인가 - **claim_id 하한은 빼고**.
+
+    게이트 판정과 물러섬 안내(`_no_candidate_action`)가 **같은 것을 봐야 한다.**
+    판정만 만들고 안내를 안 고치면 그 상태에서 "claim_id 를 비우고 finalize
+    하라" 가 안 붙어 문이 열려 있는 줄도 모르고 루프 한계까지 왕복한다 -
+    (3)이 실제로 겪었던 라이브락이다.
+
+    `not unrun and not failed`: "더 볼 것이 없었다" 는 (3)과 같은 성격의 주장이라
+    전축을 봐야 참이다. 부분 커버리지로 열면 근거 0건짜리 리포트로 조기 종료해
+    있을지 모를 신호를 스스로 달아난다.
+
+    `any(kind != "sensor")`: **후보가 하나도 안 난 상태(전축 no_signal)는 (2)다.**
+    `status: "ok" if candidates else "no_signal"` 이므로 이 조건은 "1단 후보가
+    실제로 났다" 와 같은 뜻이고, 판정문의 최고 점수를 쓸 수 있다는 보장도 된다.
+    """
+    return (not coverage["unrun"] and not coverage["failed"]
+            and not bundle.statistical_passing()
+            and not bundle.residuals()
+            and any(c.kind != "sensor" for c in bundle.claims.values()))
+
+
 def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) -> str:
     """LLM 의 종료 제안을 코드가 최종 판정한다 (부품 4b).
 
@@ -377,6 +399,8 @@ def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) ->
       (2a) 통과 후보 0 + 아랫선을 넘은 잔차 있음 + 제출이 정직함(빈손이거나 실재하는
            claim_id) -> weak_signal
            ((2)보다 앞이다. 두 조건이 동시에 참일 때 정보가 더 많은 쪽이 이긴다.)
+      (2b) 전축 대조 + 통과 0 + 잔차 0 + 후보는 났음 + 제출이 정직함 -> no_separation
+           ((2)보다 앞이다. "볼 것이 안 났다"(2)와 "봤는데 안 갈렸다"는 다른 사실이다.)
       (2) 지목 없이 물러섰는데 통과 후보 0 + no_signal 있음 -> no_signal
           (전축 실행은 전제 조건이 아니다. 어디까지 봤는지는 coverage 로 나간다.)
       (3) 지목 없이 물러섰고 등록 가설을 다 돌렸는데 전부 '계산 불가' -> no_comparable_data
@@ -482,6 +506,40 @@ def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) ->
                 f"판별선을 넘은 원인 후보는 없고, 아랫선을 넘은 잔차 {len(residuals)}건을 "
                 f"근거로 싣는다. 확정이 아니라 '이 표본으로는 갈리지 않았다' 는 뜻이다. "
                 f"리포팅으로 진행한다.")
+
+    # (2b) 갈리는 항목 없음 - 전축을 대조했는데 후보가 전부 아랫선 미만이다.
+    #      "봤는데 아무것도 안 갈렸다" 를 말하는 판정이 없어서, 이 상태는 출구가
+    #      루프 한계뿐이었다 - 엔지니어는 실제로 일어난 일과 다른 사유("미확정 -
+    #      루프 한계 도달")를 본다(실측 재현, 조사 §2.2).
+    #
+    #      **(2)보다 앞이다.** 한 축은 no_signal, 다른 축은 ok + 약한 후보인 상태에서
+    #      두 조건이 동시에 참인데, (2) 뒤에 두면 빈손 제출은 no_signal 이고 지목한
+    #      제출은 no_separation 이라 **같은 증거가 제출 형태에 따라 다른 판정**을
+    #      받는다. (2a)를 (2) 앞에 둔 것과 같은 원칙이다.
+    #      (3)과는 배타적이다 - (3)은 status 가 전부 NO_DATA 일 때만 열리는데
+    #      여기는 ok 인 축을 요구한다. 그래서 (3) 앞뒤는 아무 효과가 없다.
+    #
+    #      하한이 "정직한 제출" 인 이유는 (2a)와 같다 - 약한 후보를 지목했다고 문을
+    #      닫으면 반려를 되풀이하다 루프 한계로 빠져 이 판정이 없애려는 상태가 그대로
+    #      재발한다. 환각만 반려한다.
+    if _no_separation_state(bundle, coverage) and (not claim_id or claim is not None):
+        update["finalize_accepted"] = True
+        update["finalize_status"] = "no_separation"
+        update["final_hypothesis"] = hypothesis
+        update["final_confidence"] = conf
+        update["coverage"] = coverage
+        # 정의상 통과 후보도 잔차도 없어 목록은 비거나 통과 센서만 남는다.
+        # picked 는 안 붙인다 - (2a)와 같은 이유로 원인으로 확정하지 않는다.
+        _record_evidence(update, _evidence_groups(bundle, groups), None)
+        # 최고 점수는 **비센서에서만** 뽑는다. 센서는 자기 판별선을 쓰는 다른
+        # 눈금이라 같은 줄에 놓으면 "더 센데 졌다" 로 읽힌다.
+        top = max(c.score for c in bundle.claims.values() if c.kind != "sensor")
+        return (f"갈리는 항목 없음 ({_coverage_phrase(coverage)}): 타깃과 대조군을 "
+                f"가르는 항목이 없다. 최고 분리 점수 {top:.2f} 로 잔차 "
+                f"아랫선({ya_config.RESIDUAL_MIN_SCORE})에도 미달한다. 분석이 안 돌은 "
+                f"것도 근거가 약한 것도 아니라 lot 내부 대조로는 갈리지 않는다는 "
+                f"뜻이다. lot 밖 대조군 또는 다른 관측축이 필요하다. 리포팅으로 "
+                f"진행한다.")
 
     # (2) 신호 없음 - 돌린 축에서 통과 후보가 하나도 없다.
     #     확신도를 보지 않는다: 물러섬 선언에 높은 확신도를 요구하면 모순이다.
@@ -749,11 +807,13 @@ def _gate_rejection(claim_id, claim, bundle, coverage, conf, conf_note,
         # 미통과 분기도 순위 분기도 안 걸린다). 판정 (2)·(3)·(3b)는 전부
         # `not claim_id` 를 요구하므로 종료도 안 열려, `statistical_passing()` 으로
         # 막은 라이브락이 claim_id 를 낸 경로로 되살아난다.
-        # **단 (2a) 는 예외다.** 하한이 "정직한 제출" 이라 통과 후보가 없고 잔차가
-        # 있으면 지목한 센서는 (2a) 가 먼저 받아 여기에 도달조차 하지 않는다.
-        # 이 분기가 실제로 도는 것은 그 문이 닫힌 상태 - 통과 후보가 있거나
-        # 잔차가 하나도 없을 때다. "claim_id 를 낸 제출을 받아 주는 종료 경로는
-        # 없다" 로 읽으면 안 된다.
+        # **단 (2a)·(2b) 는 예외다.** 둘 다 하한이 "정직한 제출" 이라, 통과 후보가
+        # 없고 잔차가 있으면 지목한 센서는 (2a) 가, 잔차가 없어도 전축을 다
+        # 대조했고 다른 비센서 claim 이 하나라도 있으면 (2b) 가 먼저 받아 여기에
+        # 도달조차 하지 않는다. 이 분기가 실제로 도는 것은 두 문이 다 닫힌 상태 -
+        # 통과 후보가 있거나, 잔차가 없고 전축도 못 봤거나 비센서 claim 이 하나도
+        # 없을 때다. "claim_id 를 낸 제출을 받아 주는 종료 경로는 없다" 로 읽으면
+        # 안 된다.
         # 순위 문구로 흘려보내도 안 된다 - 센서는 p 를 안 내므로 "p None" 을
         # 인용하게 되고, 효과크기가 분리 점수와 같은 "점수" 이름으로 나란히 놓여
         # **더 센데 규칙 때문에 졌다**로 읽힌다.

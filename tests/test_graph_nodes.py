@@ -481,19 +481,19 @@ _ALL_NO_PAIR = [{
 
 
 def test_gate_tells_how_to_step_back_when_the_named_claim_missed_the_line():
-    """통과 후보가 0개면, 지목한 claim 이 실재하든 아니든 물러설 길을 알려 줘야 한다.
+    """통과 후보가 0개고 지목한 claim 이 실재하는 판별선 미달 후보면, (2b)가 곧바로
+    받아준다 - 더는 반려해 물러서게 만들 필요가 없다 (M4).
 
-    '판별선 미달' 분기는 `_no_candidate_action` 을 안 거쳐 "통과한 후보를 지목하라"
-    만 돌려준다 - 지목할 통과 후보가 **하나도 없는데도**. 그래서 지어낸 claim_id 를
-    낸 LLM 은 물러설 길을 안내받고, 실재하는 미통과 claim 을 정직하게 지목한 LLM 은
-    막다른 길에 몰려 루프 한계까지 왕복하다 inconclusive 로 끝난다(조치가 다르다:
-    재시도 vs lot 밖 대조군).
+    이 테스트가 잡던 결함은 M4 이전에는 없앨 자리가 없었다: '판별선 미달' 분기는
+    지목할 통과 후보가 하나도 없는데도 `_no_candidate_action` 을 안 거쳐 "통과한
+    후보를 지목하라" 만 돌려줬고, 정직하게 지목한 LLM 은 막다른 길에 몰려 claim_id
+    를 비우고 다시 제출해야 (2)로 종료됐다. 그 왕복이 곧 (2a)가 없애려던 것과 같은
+    종류의 라이브락이라 M4 는 반려 대신 직접 받아준다.
     """
     findings = [_WEAK_IN_SILENCE, PPID_SILENT, STEP_PASSAGE_SILENT, METRO_SILENT]
     ai = _ai_finalize(0.9, claim_id="eqp_ch_commonality:chamber:CC002000:ETCH9_B")
     out = nodes.tools_node({"messages": [ai], "loop_count": 3, "findings": findings})
-    assert "finalize_accepted" not in out
-    assert "claim_id 를 비우" in out["messages"][0].content
+    assert out["finalize_status"] == "no_separation"
 
 
 def test_gate_tells_how_to_step_back_when_every_axis_is_uncomputable():
@@ -2752,6 +2752,39 @@ EQP_CH_PASSING_AND_RESIDUAL = {
 }
 
 
+def _weak_finding(tool, hyp, claim_id, loop, score):
+    """status 는 ok 인데 점수가 잔차 아랫선(0.25) 아래인 후보 하나짜리 실행.
+
+    `status: "ok" if candidates else "no_signal"`(tools/commonality.py) 이므로
+    ok 는 곧 "후보가 났다" 이고, 점수가 아랫선 아래라 잔차 자격은 없다.
+    """
+    return {
+        "loop": loop, "tool": tool, "args": {},
+        "result": {"hypothesis_id": hyp, "status": "ok", "candidates": [
+            {"claim_id": claim_id, "step_seq": "CC002000", "key": "K",
+             "level": "chamber", "passes": False,
+             "reject_reason": f"분리 점수 {score} < 0.5", "score": score,
+             "target_pass": 4, "target_total": 4,
+             "control_pass": 3, "control_total": 5},
+        ]},
+        "thought": "약한 후보",
+    }
+
+
+# 전축을 다 돌렸는데 후보가 전부 아랫선 미만인 상태 (M4). 최고 점수는 0.18 이다 -
+# 하나만 다른 값을 주어야 판정문이 '최고' 를 실제로 고르는지 잠글 수 있다.
+ALL_WEAK = [
+    _weak_finding("hyp_eqp_ch_commonality", "eqp_ch_commonality",
+                  "eqp_ch_commonality:chamber:CC002000:ETCH9_B", 2, 0.18),
+    _weak_finding("hyp_ppid_commonality", "ppid_commonality",
+                  "ppid_commonality:ppid:CC002000:P1", 3, 0.10),
+    _weak_finding("hyp_step_passage_commonality", "step_passage_commonality",
+                  "step_passage_commonality:step:CC002000:S1", 4, 0.10),
+    _weak_finding("hyp_metro_commonality", "metro_commonality",
+                  "metro_commonality:item:CC002000:M1", 5, 0.10),
+]
+
+
 def test_a_below_the_line_pick_is_not_told_to_pick_when_only_a_sensor_passed():
     """미통과 1단을 정직하게 지목했는데 통과한 것이 **센서뿐**인 상태.
 
@@ -3089,3 +3122,86 @@ def test_loop_limit_with_a_passing_candidate_does_not_deny_the_evidence_it_carri
     assert update["final_claims"]
     assert "확정 근거 없이" not in verdict, verdict
     assert f"{len(update['final_claims'])}건" in verdict, verdict
+
+
+def test_all_axes_run_but_nothing_separates_ends_as_no_separation():
+    """전축을 다 봤는데 아무것도 안 갈리면 출구가 루프 한계뿐이던 것을 고친다 (M4).
+
+    실측(2026-09-08): 전축 ok · 통과 0 · 잔차 0 이면 (2)(3)(3b) 어느 것도 안 열려
+    loop 7 까지 왕복하다 inconclusive 로 끝났다 - 엔지니어는 "미확정(루프 한계
+    도달)" 을 보는데 실제로 일어난 일은 "다 봤고 아무것도 안 갈렸다" 다.
+    """
+    update = {}
+    verdict = nodes._finalize_gate(
+        {"claim_id": "", "hypothesis": "h", "confidence": 0.3},
+        loop=2, update=update, findings=ALL_WEAK)
+    assert update["finalize_status"] == "no_separation"
+    assert update["finalize_accepted"] is True
+    assert "갈리는 항목 없음" in verdict, verdict
+    # 최고 점수를 수치로 싣는다 - "아깝게 몰랐다" 와 "흔적도 없다" 를 엔지니어가
+    # 스스로 가르는 재료다. 건수만 세면 지워도 스위트가 초록이다.
+    assert "최고 분리 점수 0.18" in verdict, verdict
+    assert "잔차 아랫선(0.25)" in verdict, verdict
+    assert "등록 축 4개 중 4개 대조" in verdict, verdict
+    assert "lot 밖 대조군" in verdict, verdict
+
+
+def test_no_separation_wins_over_no_signal():
+    """한 축은 침묵하고 다른 축은 약한 후보를 낸 상태에서 둘 다 참이다.
+
+    (2) 뒤에 두면 **빈손 제출은 no_signal, 지목한 제출은 no_separation** 으로
+    같은 증거가 제출 형태에 따라 다른 판정을 받는다. (2a)를 (2) 앞에 둔 것과
+    같은 원칙 - 정보가 더 많고 조건이 더 좁은 쪽이 이긴다.
+    """
+    update = {}
+    nodes._finalize_gate({"claim_id": "", "hypothesis": "h", "confidence": 0.3},
+                         loop=2, update=update,
+                         findings=[ALL_WEAK[0], PPID_SILENT,
+                                   STEP_PASSAGE_SILENT, METRO_SILENT])
+    assert update["finalize_status"] == "no_separation"
+
+
+def test_all_silent_is_still_no_signal():
+    """후보가 하나도 안 난 상태는 M4 가 아니다 - '갈리지 않았다' 가 아니라
+    '볼 것이 안 났다' 이고, 그것을 말하는 판정은 이미 (2)다."""
+    update = {}
+    nodes._finalize_gate({"claim_id": "", "hypothesis": "h", "confidence": 0.3},
+                         loop=2, update=update, findings=ALL_SILENT)
+    assert update["finalize_status"] == "no_signal"
+
+
+def test_no_separation_requires_every_axis():
+    """부분 커버리지로 열면 근거 0건짜리 리포트로 조기 종료한다.
+
+    '더 볼 것이 없었다' 는 (3)과 같은 성격의 **주장**이라 전축을 봐야 참이다.
+    """
+    update = {}
+    verdict = nodes._finalize_gate(
+        {"claim_id": "", "hypothesis": "h", "confidence": 0.3},
+        loop=2, update=update, findings=[ALL_WEAK[0]])
+    assert "finalize_status" not in update
+    assert "반려" in verdict, verdict
+
+
+def test_no_separation_accepts_an_honest_pick():
+    """약한 후보를 지목했다고 문을 닫으면 반려를 되풀이하다 루프 한계로 빠져
+    이번에 고치는 결함이 그대로 재발한다((2a)와 같은 규칙)."""
+    update = {}
+    nodes._finalize_gate(
+        {"claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH9_B",
+         "hypothesis": "ETCH9_B 편중", "confidence": 0.9},
+        loop=2, update=update, findings=ALL_WEAK)
+    assert update["finalize_status"] == "no_separation"
+    # 받아준 것이지 원인으로 확정한 것이 아니다.
+    assert not any(c.get("picked_by_llm") for c in update["final_claims"])
+
+
+def test_a_made_up_claim_id_does_not_open_no_separation():
+    """환각은 '갈리지 않았다' 와 다른 사실이라 같은 이름을 주면 안 된다."""
+    update = {}
+    verdict = nodes._finalize_gate(
+        {"claim_id": "eqp_ch_commonality:chamber:CC002000:NOPE",
+         "hypothesis": "지어낸 것", "confidence": 0.9},
+        loop=2, update=update, findings=ALL_WEAK)
+    assert "finalize_status" not in update
+    assert "도구 결과에 없다" in verdict, verdict
