@@ -883,14 +883,18 @@ def report_node(state: dict) -> dict:
     # **게이트를 안 거치고 끝나는 종료를 여기서 메운다** (루프 한계 강제 종료, tool 없는
     # 텍스트 응답). 그 경로에는 판정도 근거도 안 실려서, 판정이 '미상' 이면 운영
     # 프롬프트의 "확정 결론을 쓰지 마라" 가드가 하나도 안 붙고, 감사 기록에 판별선을
-    # 넘은 후보가 있어도 리포트 근거가 0줄이 된다 - 게이트 안에만 있던 계약이라
-    # 게이트를 안 타면 통째로 빠졌다. 사유는 inconclusive 다: 코드가 결론을 지어내지
-    # 않으면서 "확정 근거 없이 끝났다" 를 정직하게 말하는 자리.
+    # 넘은 후보나 잔차가 있어도 리포트 근거가 0줄이 된다 - 게이트 안에만 있던 계약이라
+    # 게이트를 안 타면 통째로 빠졌다. 사유는 그래도 inconclusive 다: 이 근거는 **게이트가
+    # 승인한 것이 아니다** - 판별선을 넘은 통과 후보든 그 아래 잔차든, 지목·승인 절차를
+    # 안 거친 채 감사 기록에서 그대로 실렸을 뿐이라 "확정 근거 없이 끝났다" 는 판정과
+    # 모순되지 않는다.
     verdict = state.get("finalize_status")
     if not verdict:
         verdict = "inconclusive"
         gateless = {}
-        _record_evidence(gateless, bundle.ranked_groups(), None)
+        # (4)와 같은 이유로 잔차도 싣는다. 이 경로는 게이트 협조와 무관해
+        # 프롬프트로는 못 막는 유일한 자리다.
+        _record_evidence(gateless, _evidence_groups(bundle, bundle.ranked_groups()), None)
         claims = gateless["final_claims"]
     # **대체된 실행에 표시를 붙여 넘긴다.** 같은 축을 다시 돌리면 build_bundle 이 앞
     # 후보를 버리는데(그룹이 바뀌면 분모가 달라 거짓이므로 옳다), findings 는 그대로

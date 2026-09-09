@@ -590,6 +590,21 @@ def test_report_node_keeps_evidence_when_the_gate_never_judged():
     assert "eqp_ch_commonality:chamber:CC002000:ETCH9_B" in out["report"]
 
 
+def test_report_node_keeps_residuals_when_the_gate_never_judged():
+    """게이트를 아예 안 타는 종료(finalize 미호출)에서도 잔차는 남아야 한다.
+
+    이 경로는 **게이트 협조와 무관하다** - LLM 이 finalize 를 안 부르면 여기로
+    오므로 프롬프트로는 못 막는다. `[잔차]` 라벨은 항목의 passes 로 갈리므로
+    싣기만 하면 옳게 찍힌다.
+    """
+    out = nodes.report_node({"target_wafers": ["W1"], "target_source": "manual",
+                             "target_group": ["W1"], "status_summary": "s",
+                             "findings": [EQP_CH_BELOW_LINE]})
+    assert out["finalize_status"] == "inconclusive"
+    assert "[잔차 1]" in out["report"], out["report"]
+    assert "eqp_ch_commonality:chamber:CC002000:ETCH9_B" in out["report"]
+
+
 def test_gate_records_which_axes_it_did_not_run():
     """부분 커버리지로 물러설 때 '무엇을 안 봤는지'가 결론과 함께 나간다.
 
