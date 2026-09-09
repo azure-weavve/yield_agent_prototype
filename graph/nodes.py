@@ -892,10 +892,10 @@ def report_node(state: dict) -> dict:
     if not verdict:
         verdict = "inconclusive"
         gateless = {}
-        # **이 종료에는 finalize 판정이 실린 적이 없다** - `(4)` 는 게이트 안에서
-        # 열리는 경로라 판정(반려 포함)이 있었지만, 여기는 게이트가 한 번도
-        # 판정을 낸 적이 없다. 잔차를 싣는 이유·하한 규칙은 `_evidence_groups` 를
-        # 본다.
+        # **이 종료에는 finalize 판정이 실린 적이 없다** - 앞 루프에서 반려를
+        # 받았을 수는 있지만 그 반려는 `finalize_status` 를 안 찍는다(`(4)` 는
+        # 그 필드가 찍힌 상태로도 올 수 있는 경로라 다르다). 잔차를 싣는
+        # 이유·하한 규칙은 `_evidence_groups` 를 본다.
         _record_evidence(gateless, _evidence_groups(bundle, bundle.ranked_groups()), None)
         claims = gateless["final_claims"]
     # **대체된 실행에 표시를 붙여 넘긴다.** 같은 축을 다시 돌리면 build_bundle 이 앞
