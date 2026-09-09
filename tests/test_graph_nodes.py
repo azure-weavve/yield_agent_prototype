@@ -605,6 +605,24 @@ def test_report_node_keeps_residuals_when_the_gate_never_judged():
     assert "eqp_ch_commonality:chamber:CC002000:ETCH9_B" in out["report"]
 
 
+def test_report_node_does_not_mix_residuals_into_a_passing_backstop():
+    """게이트 미경유 종료에도 (2a)·(4)와 같은 하한이 걸려야 한다.
+
+    통과 후보가 실재하면 잔차를 더하지 않는다 - 안 더하면(하한을 지우면) p 가
+    작은 잔차가 `ranked_groups` 의 lead 를 뺏어, 통과 근거가 `passes` 키도 없는
+    `confounded_with` 로 강등돼 묶음 전체가 `[잔차]` 로 찍힌다(`_evidence_groups`
+    독스트링). 이 테스트가 없으면 백스톱 구현이 헬퍼 대신
+    `bundle.ranked_groups(bundle.passing() + bundle.residuals())` 를 직접 적어도
+    통과해, "세 자리가 같은 규칙을 쓴다" 가 테스트로는 안 잠긴다.
+    """
+    out = nodes.report_node({"target_wafers": ["W1"], "target_source": "manual",
+                             "target_group": ["W1"], "status_summary": "s",
+                             "findings": [EQP_CH_PASSING_AND_RESIDUAL]})
+    assert "[잔차" not in out["report"], out["report"]
+    assert "[근거 1]" in out["report"], out["report"]
+    assert "eqp_ch_commonality:chamber:CC002000:ETCH9_B" in out["report"]
+
+
 def test_gate_records_which_axes_it_did_not_run():
     """부분 커버리지로 물러설 때 '무엇을 안 봤는지'가 결론과 함께 나간다.
 
