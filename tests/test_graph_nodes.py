@@ -608,10 +608,12 @@ def test_report_node_keeps_residuals_when_the_gate_never_judged():
 def test_report_node_does_not_mix_residuals_into_a_passing_backstop():
     """게이트 미경유 종료에도 (2a)·(4)와 같은 하한이 걸려야 한다.
 
-    통과 후보가 실재하면 잔차를 더하지 않는다 - 안 더하면(하한을 지우면) p 가
-    작은 잔차가 `ranked_groups` 의 lead 를 뺏어, 통과 근거가 `passes` 키도 없는
-    `confounded_with` 로 강등돼 묶음 전체가 `[잔차]` 로 찍힌다(`_evidence_groups`
-    독스트링). 이 테스트가 없으면 백스톱 구현이 헬퍼 대신
+    통과 후보가 실재하면 잔차를 더하지 않는다 - 더하면(하한을 지우면) p 가 작은
+    잔차가 `ranked_groups` 의 lead 를 뺏을 수 있다(`_evidence_groups` 독스트링).
+    이 테스트가 잠그는 것은 그 하한 자체 - "잔차 미혼입" - 이고, 하한이 무너지는
+    극단(통과 근거가 `confounded_with` 로 강등돼 묶음 전체가 `[잔차]` 로 찍히는
+    것)까지는 이 픽스처(스텝이 달라 안 접힌다)로는 재현하지 않는다. 이 테스트가
+    없으면 백스톱 구현이 헬퍼 대신
     `bundle.ranked_groups(bundle.passing() + bundle.residuals())` 를 직접 적어도
     통과해, "세 자리가 같은 규칙을 쓴다" 가 테스트로는 안 잠긴다.
     """

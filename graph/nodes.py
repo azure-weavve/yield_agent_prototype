@@ -886,15 +886,16 @@ def report_node(state: dict) -> dict:
     # 넘은 후보나 잔차가 있어도 리포트 근거가 0줄이 된다 - 게이트 안에만 있던 계약이라
     # 게이트를 안 타면 통째로 빠졌다. 사유는 그래도 inconclusive 다: 이 근거는 **게이트가
     # 승인한 것이 아니다** - 판별선을 넘은 통과 후보든 그 아래 잔차든, 지목·승인 절차를
-    # 거친 적이 없다(`:588` 과 같은 이유로, 근거가 있다는 것과 승인 판정을 받았다는
+    # 거친 적이 없다((4)와 같은 이유로, 근거가 있다는 것과 승인 판정을 받았다는
     # 것은 다른 사실이다).
     verdict = state.get("finalize_status")
     if not verdict:
         verdict = "inconclusive"
         gateless = {}
-        # **finalize 호출 자체가 없어 게이트에 닿지도 않는 경로다** - `(4)` 는
-        # 게이트 안에서(반려를 되풀이하다 루프 한계로) 열리지만 여기는 게이트
-        # 진입 전이다. 잔차를 싣는 이유·하한 규칙은 `_evidence_groups` 를 본다.
+        # **이 종료에는 finalize 판정이 실린 적이 없다** - `(4)` 는 게이트 안에서
+        # 열리는 경로라 판정(반려 포함)이 있었지만, 여기는 게이트가 한 번도
+        # 판정을 낸 적이 없다. 잔차를 싣는 이유·하한 규칙은 `_evidence_groups` 를
+        # 본다.
         _record_evidence(gateless, _evidence_groups(bundle, bundle.ranked_groups()), None)
         claims = gateless["final_claims"]
     # **대체된 실행에 표시를 붙여 넘긴다.** 같은 축을 다시 돌리면 build_bundle 이 앞
