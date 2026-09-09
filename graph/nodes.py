@@ -349,7 +349,7 @@ def _evidence_groups(bundle, passing_groups: list) -> list:
     만들면 호출부의 `picked` 와 `is` 비교가 항상 거짓이 되고, 아무 claim 에도
     `picked_by_llm` 이 안 붙는다.
 
-    세 자리((2a)·(4)·백스톱)가 같은 규칙을 쓴다. 규칙을 세 번 적으면 한 자리를
+    네 자리((2a)·(2b)·(4)·백스톱)가 같은 규칙을 쓴다. 규칙을 네 번 적으면 한 자리를
     빠뜨리는 것이 이 저장소의 반복 결함이다.
     """
     residuals = bundle.residuals()
@@ -364,20 +364,44 @@ def _no_separation_state(bundle, coverage: dict) -> bool:
     게이트 판정과 물러섬 안내(`_no_candidate_action`)가 **같은 것을 봐야 한다.**
     판정만 만들고 안내를 안 고치면 그 상태에서 "claim_id 를 비우고 finalize
     하라" 가 안 붙어 문이 열려 있는 줄도 모르고 루프 한계까지 왕복한다 -
-    (3)이 실제로 겪었던 라이브락이다.
+    (3)이 실제로 겪었던 라이브락이다. 이 함수는 게이트 안이 아니라도(Task 5 가
+    물러섬 안내에서 재사용한다) 참이어야 하므로, `_finalize_gate` 안의 분기
+    순서(예: (2a)가 먼저 걸러 준다는 것)에 기대지 않고 조건 하나하나가 스스로
+    성립해야 한다.
 
     `not unrun and not failed`: "더 볼 것이 없었다" 는 (3)과 같은 성격의 주장이라
     전축을 봐야 참이다. 부분 커버리지로 열면 근거 0건짜리 리포트로 조기 종료해
     있을지 모를 신호를 스스로 달아난다.
 
+    `not statistical_passing()`: 통과 후보가 있으면 "안 갈렸다" 가 거짓이다.
+    아래 점수 조건(`all(score < RESIDUAL_MIN_SCORE)`)이 통상적으로는 이것을
+    함의한다 - 통과는 `COMMONALITY_PASS_MIN_SCORE`(기본 0.5) 이상을 요구하고
+    그 값은 `RESIDUAL_MIN_SCORE`(0.25)보다 크게 설계됐다. 하지만 둘은 각각
+    독립된 환경변수라 코드가 그 대소를 강제하지 않는다 - 설정이 어긋나면
+    점수 조건만으로는 통과 후보를 걸러내지 못하므로, 이 조건을 별도로 남겨
+    둔다.
+
     `any(kind != "sensor")`: **후보가 하나도 안 난 상태(전축 no_signal)는 (2)다.**
     `status: "ok" if candidates else "no_signal"` 이므로 이 조건은 "1단 후보가
     실제로 났다" 와 같은 뜻이고, 판정문의 최고 점수를 쓸 수 있다는 보장도 된다.
+
+    `all(score < RESIDUAL_MIN_SCORE for kind != "sensor")`: **"안 갈렸다" 를
+    말하는 진짜 사실.** `bundle.residuals()`(그래서 `not residuals()`)는 이
+    대용이 못 된다 - `residuals()` 는 `status == "ok"` · `target_pass >=
+    COMMONALITY_PASS_MIN_TARGET` 까지 함께 요구하는 5조건 연언이라, 표본이
+    얇아 반려된 완전 분리 후보(예: score 1.0 인데 target_pass 1 < 2)는
+    `residuals()` 에도 안 잡혀 `not residuals()` 가 참이 된다. 그 상태로
+    "갈리는 항목 없음" 을 내보내면 실제로는 완전히 갈린 챔버를 안 갈렸다고
+    말하는 거짓 판정문이 나간다 - 그래서 점수를 직접 본다. 점수 조건이
+    `residuals()` 의 점수 조건(`score >= RESIDUAL_MIN_SCORE`)을 논리적으로
+    함의하므로 `not bundle.residuals()` 는 더 이상 따로 적지 않는다(같은
+    규칙을 두 자리에 적지 않는다).
     """
     return (not coverage["unrun"] and not coverage["failed"]
             and not bundle.statistical_passing()
-            and not bundle.residuals()
-            and any(c.kind != "sensor" for c in bundle.claims.values()))
+            and any(c.kind != "sensor" for c in bundle.claims.values())
+            and all(c.score < ya_config.RESIDUAL_MIN_SCORE
+                    for c in bundle.claims.values() if c.kind != "sensor"))
 
 
 def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) -> str:
@@ -399,8 +423,11 @@ def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) ->
       (2a) 통과 후보 0 + 아랫선을 넘은 잔차 있음 + 제출이 정직함(빈손이거나 실재하는
            claim_id) -> weak_signal
            ((2)보다 앞이다. 두 조건이 동시에 참일 때 정보가 더 많은 쪽이 이긴다.)
-      (2b) 전축 대조 + 통과 0 + 잔차 0 + 후보는 났음 + 제출이 정직함 -> no_separation
-           ((2)보다 앞이다. "볼 것이 안 났다"(2)와 "봤는데 안 갈렸다"는 다른 사실이다.)
+      (2b) 전축 대조 + 통과 0 + 비센서 후보 점수 전부 아랫선 미만 + 제출이 정직함
+           -> no_separation
+           ((2)보다 앞이다. "볼 것이 안 났다"(2)와 "봤는데 안 갈렸다"는 다른 사실이다.
+           "잔차 0" 이 아니다 - 표본이 얇아 미통과인 완전 분리 후보도 잔차에는 안
+           잡히지만 점수로 보면 갈린 것이다.)
       (2) 지목 없이 물러섰는데 통과 후보 0 + no_signal 있음 -> no_signal
           (전축 실행은 전제 조건이 아니다. 어디까지 봤는지는 coverage 로 나간다.)
       (3) 지목 없이 물러섰고 등록 가설을 다 돌렸는데 전부 '계산 불가' -> no_comparable_data
@@ -517,7 +544,8 @@ def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) ->
     #      제출은 no_separation 이라 **같은 증거가 제출 형태에 따라 다른 판정**을
     #      받는다. (2a)를 (2) 앞에 둔 것과 같은 원칙이다.
     #      (3)과는 배타적이다 - (3)은 status 가 전부 NO_DATA 일 때만 열리는데
-    #      여기는 ok 인 축을 요구한다. 그래서 (3) 앞뒤는 아무 효과가 없다.
+    #      여기는 비센서 claim 이 있어야 한다(= 1단 후보가 실제로 났다). 그래서
+    #      (3) 앞뒤는 아무 효과가 없다.
     #
     #      하한이 "정직한 제출" 인 이유는 (2a)와 같다 - 약한 후보를 지목했다고 문을
     #      닫으면 반려를 되풀이하다 루프 한계로 빠져 이 판정이 없애려는 상태가 그대로
@@ -534,8 +562,18 @@ def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) ->
         # 최고 점수는 **비센서에서만** 뽑는다. 센서는 자기 판별선을 쓰는 다른
         # 눈금이라 같은 줄에 놓으면 "더 센데 졌다" 로 읽힌다.
         top = max(c.score for c in bundle.claims.values() if c.kind != "sensor")
-        return (f"갈리는 항목 없음 ({_coverage_phrase(coverage)}): 타깃과 대조군을 "
-                f"가르는 항목이 없다. 최고 분리 점수 {top:.2f} 로 잔차 "
+        # (2a)와 같은 이유로 지목 사실을 판정문에 남긴다 - 하한이 똑같이 "정직한
+        # 제출" 인데 이름을 안 부르면, 정직하게 지목한 LLM 이 자기 제출이 무시된
+        # 승인을 받는다.
+        if not claim_id:
+            picked_note = ""
+        elif claim.kind == "sensor":
+            picked_note = f"네가 지목한 {claim_id} 는 2단 센서라 원인으로 확정하지 않았다. "
+        else:
+            picked_note = (f"네가 지목한 {claim_id} 는 아랫선({ya_config.RESIDUAL_MIN_SCORE})"
+                           f"에도 못 미쳐 원인으로 확정하지 않았다. ")
+        return (f"갈리는 항목 없음 ({_coverage_phrase(coverage)}): {picked_note}"
+                f"타깃과 대조군을 가르는 항목이 없다. 최고 분리 점수 {top:.2f} 로 잔차 "
                 f"아랫선({ya_config.RESIDUAL_MIN_SCORE})에도 미달한다. 분석이 안 돌은 "
                 f"것도 근거가 약한 것도 아니라 lot 내부 대조로는 갈리지 않는다는 "
                 f"뜻이다. lot 밖 대조군 또는 다른 관측축이 필요하다. 리포팅으로 "
@@ -809,11 +847,12 @@ def _gate_rejection(claim_id, claim, bundle, coverage, conf, conf_note,
         # 막은 라이브락이 claim_id 를 낸 경로로 되살아난다.
         # **단 (2a)·(2b) 는 예외다.** 둘 다 하한이 "정직한 제출" 이라, 통과 후보가
         # 없고 잔차가 있으면 지목한 센서는 (2a) 가, 잔차가 없어도 전축을 다
-        # 대조했고 다른 비센서 claim 이 하나라도 있으면 (2b) 가 먼저 받아 여기에
-        # 도달조차 하지 않는다. 이 분기가 실제로 도는 것은 두 문이 다 닫힌 상태 -
-        # 통과 후보가 있거나, 잔차가 없고 전축도 못 봤거나 비센서 claim 이 하나도
-        # 없을 때다. "claim_id 를 낸 제출을 받아 주는 종료 경로는 없다" 로 읽으면
-        # 안 된다.
+        # 대조했고 비센서 claim 이 있는데 **그 점수가 전부 아랫선(0.25) 미만**이면
+        # (2b) 가 먼저 받아 여기에 도달조차 하지 않는다. 이 분기가 실제로 도는
+        # 것은 두 문이 다 닫힌 상태다 - 통과 후보가 있거나, (잔차가 없고 (전축을
+        # 못 봤거나 비센서 claim 이 없거나 그중 점수가 아랫선 이상인 것이 하나라도
+        # 있을 때))다. "claim_id 를 낸 제출을 받아 주는 종료 경로는 없다" 로
+        # 읽으면 안 된다.
         # 순위 문구로 흘려보내도 안 된다 - 센서는 p 를 안 내므로 "p None" 을
         # 인용하게 되고, 효과크기가 분리 점수와 같은 "점수" 이름으로 나란히 놓여
         # **더 센데 규칙 때문에 졌다**로 읽힌다.

@@ -481,19 +481,25 @@ _ALL_NO_PAIR = [{
 
 
 def test_gate_tells_how_to_step_back_when_the_named_claim_missed_the_line():
-    """통과 후보가 0개고 지목한 claim 이 실재하는 판별선 미달 후보면, (2b)가 곧바로
-    받아준다 - 더는 반려해 물러서게 만들 필요가 없다 (M4).
+    """통과 후보가 0개면, 지목한 claim 이 실재하든 아니든 물러설 길을 알려 줘야 한다.
 
-    이 테스트가 잡던 결함은 M4 이전에는 없앨 자리가 없었다: '판별선 미달' 분기는
-    지목할 통과 후보가 하나도 없는데도 `_no_candidate_action` 을 안 거쳐 "통과한
-    후보를 지목하라" 만 돌려줬고, 정직하게 지목한 LLM 은 막다른 길에 몰려 claim_id
-    를 비우고 다시 제출해야 (2)로 종료됐다. 그 왕복이 곧 (2a)가 없애려던 것과 같은
-    종류의 라이브락이라 M4 는 반려 대신 직접 받아준다.
+    '판별선 미달' 분기는 `_no_candidate_action` 을 안 거쳐 "통과한 후보를 지목하라"
+    만 돌려준다 - 지목할 통과 후보가 **하나도 없는데도**. 그래서 지어낸 claim_id 를
+    낸 LLM 은 물러설 길을 안내받고, 실재하는 미통과 claim 을 정직하게 지목한 LLM 은
+    막다른 길에 몰려 루프 한계까지 왕복하다 inconclusive 로 끝난다(조치가 다르다:
+    재시도 vs lot 밖 대조군).
+
+    `_WEAK_IN_SILENCE` 의 점수(0.4)는 잔차 아랫선(0.25)을 넘으므로 (2b)("갈리는
+    항목 없음")는 안 열린다 - "안 갈렸다" 는 점수가 전부 아랫선 미만이어야 참인
+    주장인데 이 상태는 그렇지 않다(M4 재리뷰로 확정, 2026-09-10). 이 분기가
+    여전히 시험하는 것은 "판별선 미달 후보를 정직하게 지목했는데 통과 후보가
+    없을 때" 다.
     """
     findings = [_WEAK_IN_SILENCE, PPID_SILENT, STEP_PASSAGE_SILENT, METRO_SILENT]
     ai = _ai_finalize(0.9, claim_id="eqp_ch_commonality:chamber:CC002000:ETCH9_B")
     out = nodes.tools_node({"messages": [ai], "loop_count": 3, "findings": findings})
-    assert out["finalize_status"] == "no_separation"
+    assert "finalize_accepted" not in out
+    assert "claim_id 를 비우" in out["messages"][0].content
 
 
 def test_gate_tells_how_to_step_back_when_every_axis_is_uncomputable():
@@ -2785,6 +2791,45 @@ ALL_WEAK = [
 ]
 
 
+def _thin_finding(tool, hyp, claim_id, loop):
+    """status 는 ok · 분리 점수 1.0(완전 분리)인데 타깃 표본이 1장뿐이라 미통과인
+    후보 하나짜리 실행.
+
+    `domain/engine.py:_passes` 가 실제로 이 모양을 낸다 - `target_pass < min_target`
+    (`COMMONALITY_PASS_MIN_TARGET`, 기본 2)이면 점수와 무관하게 반려하고
+    `reject_reason` 에 "타깃 표본 N < 2" 를 남긴다. 점수가 잔차 아랫선(0.25)을
+    한참 넘기므로 `bundle.residuals()` 는 이 후보를 담지 못한다(그 함수가
+    `target_pass >= COMMONALITY_PASS_MIN_TARGET` 도 함께 요구하기 때문) - 그래서
+    "잔차가 없다" 를 "안 갈렸다" 의 증거로 쓰면 거짓이 된다(M4 재리뷰 Critical).
+    """
+    return {
+        "loop": loop, "tool": tool, "args": {},
+        "result": {"hypothesis_id": hyp, "status": "ok", "candidates": [
+            {"claim_id": claim_id, "step_seq": "CC002000", "key": "K",
+             "level": "chamber", "passes": False,
+             "reject_reason": "타깃 표본 1 < 2", "score": 1.0,
+             "target_pass": 1, "target_total": 1,
+             "control_pass": 0, "control_total": 5},
+        ]},
+        "thought": "완전 분리, 얇은 표본",
+    }
+
+
+# 전축을 다 돌렸고 후보가 완전히 갈렸는데(score 1.0) 표본이 얇아 미통과인 상태.
+# `bundle.residuals()` 에도 안 잡히므로 `not bundle.residuals()` 를 "안 갈렸다" 의
+# 대용으로 쓰면 이 상태를 M4 로 잘못 받아들인다 - (2b)는 이 상태를 **열면 안 된다**.
+ALL_THIN = [
+    _thin_finding("hyp_eqp_ch_commonality", "eqp_ch_commonality",
+                  "eqp_ch_commonality:chamber:CC002000:ETCH9_B", 2),
+    _thin_finding("hyp_ppid_commonality", "ppid_commonality",
+                  "ppid_commonality:ppid:CC002000:P1", 3),
+    _thin_finding("hyp_step_passage_commonality", "step_passage_commonality",
+                  "step_passage_commonality:step:CC002000:S1", 4),
+    _thin_finding("hyp_metro_commonality", "metro_commonality",
+                  "metro_commonality:item:CC002000:M1", 5),
+]
+
+
 def test_a_below_the_line_pick_is_not_told_to_pick_when_only_a_sensor_passed():
     """미통과 1단을 정직하게 지목했는데 통과한 것이 **센서뿐**인 상태.
 
@@ -3185,15 +3230,27 @@ def test_no_separation_requires_every_axis():
 
 def test_no_separation_accepts_an_honest_pick():
     """약한 후보를 지목했다고 문을 닫으면 반려를 되풀이하다 루프 한계로 빠져
-    이번에 고치는 결함이 그대로 재발한다((2a)와 같은 규칙)."""
+    이번에 고치는 결함이 그대로 재발한다((2a)와 같은 규칙).
+
+    `SENSOR_FINDING`(통과한 2단 센서)을 섞는다 - 안 섞으면 `final_claims` 가
+    빈 목록이라 "picked_by_llm 이 없다" 단언이 공허하게 참이 된다(지워도
+    스위트가 초록이다, M4 재리뷰 Important 3). 섞은 김에 `top`(최고 분리 점수)이
+    센서의 효과크기(2.31)가 아니라 비센서 최고 점수(0.18)를 고르는지도 함께
+    잠근다. 판정문이 지목한 claim_id 를 실제로 부르는지도 잠근다(M4 재리뷰
+    Important 4) - (2a)와 하한이 같은데 이름을 안 부르면 정직하게 지목한 LLM 이
+    자기 제출이 무시된 승인을 받는다.
+    """
     update = {}
-    nodes._finalize_gate(
+    verdict = nodes._finalize_gate(
         {"claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH9_B",
          "hypothesis": "ETCH9_B 편중", "confidence": 0.9},
-        loop=2, update=update, findings=ALL_WEAK)
+        loop=2, update=update, findings=ALL_WEAK + [SENSOR_FINDING])
     assert update["finalize_status"] == "no_separation"
+    assert update["final_claims"]      # 통과 센서가 근거로 실려 있다
     # 받아준 것이지 원인으로 확정한 것이 아니다.
     assert not any(c.get("picked_by_llm") for c in update["final_claims"])
+    assert "최고 분리 점수 0.18" in verdict, verdict   # 센서 효과크기(2.31)가 아니다
+    assert "네가 지목한 eqp_ch_commonality:chamber:CC002000:ETCH9_B" in verdict, verdict
 
 
 def test_a_made_up_claim_id_does_not_open_no_separation():
@@ -3205,3 +3262,22 @@ def test_a_made_up_claim_id_does_not_open_no_separation():
         loop=2, update=update, findings=ALL_WEAK)
     assert "finalize_status" not in update
     assert "도구 결과에 없다" in verdict, verdict
+
+
+def test_a_thin_but_fully_separated_candidate_does_not_open_no_separation():
+    """표본이 얇아 미통과인 완전 분리 후보(score 1.0)는 M4 가 아니다.
+
+    `bundle.residuals()` 는 `target_pass >= COMMONALITY_PASS_MIN_TARGET` 도
+    요구하므로 이 상태(target_pass 1 < 2)를 못 담아 `not bundle.residuals()`
+    가 참이 된다 - 그것을 "안 갈렸다" 의 증거로 쓰면 실제로는 완전히 갈린
+    챔버를 "갈리는 항목 없음" 이라 말하는 거짓 판정문이 나간다(M4 재리뷰
+    Critical, 2026-09-10). (2b)는 점수를 직접 보므로 이 상태를 열지 않는다 -
+    "안 갈렸다" 가 아니라 "갈렸는데 표본이 얇다" 는 다른 사실이고, 그 조치도
+    다르다(lot 밖 대조군이 아니라 표본을 더 모으는 것).
+    """
+    update = {}
+    verdict = nodes._finalize_gate(
+        {"claim_id": "", "hypothesis": "h", "confidence": 0.3},
+        loop=2, update=update, findings=ALL_THIN)
+    assert update.get("finalize_status") != "no_separation", verdict
+    assert "갈리는 항목 없음" not in verdict, verdict
