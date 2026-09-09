@@ -536,8 +536,8 @@ def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) ->
                 f"근거로 싣는다. 확정이 아니라 '이 표본으로는 갈리지 않았다' 는 뜻이다. "
                 f"리포팅으로 진행한다.")
 
-    # (2b) 갈리는 항목 없음 - 전축을 대조했는데 후보가 났고 그 점수가 전부 아랫선
-    #      미만이다.
+    # (2b) 갈리는 항목 없음 - 전축을 대조했는데 비센서 후보가 났고 그 점수가 전부
+    #      아랫선 미만이다.
     #      "봤는데 아무것도 안 갈렸다" 를 말하는 판정이 없어서, 이 상태는 출구가
     #      루프 한계뿐이었다 - 엔지니어는 실제로 일어난 일과 다른 사유("미확정 -
     #      루프 한계 도달")를 본다(실측 재현, 조사 §2.2).
@@ -940,8 +940,10 @@ def _no_candidate_action(bundle, coverage) -> str:
     opens_no_data = (bool(ran_statuses) and not unrun                    # (3)
                      and not failed and uncomputable)
     opens_tool_failure = bool(failed) and not unrun and uncomputable     # (3b)
+    opens_no_separation = _no_separation_state(bundle, coverage)         # (2b)
     step_back = (" 지목할 것이 없어 물러설 때는 claim_id 를 비우고 finalize 하라."
-                 if opens_no_signal or opens_weak or opens_no_data or opens_tool_failure
+                 if opens_no_signal or opens_weak or opens_no_data
+                 or opens_tool_failure or opens_no_separation
                  else "")
     # 축이 0개 돌아간 상태를 **먼저** 가른다. 아래 "하나를 더 보거나" 는 사실과 안 맞고,
     # 2단 센서는 step_seq 를 요구하는데 그 값을 낼 근거가 아직 없다. (이 분기가 맨

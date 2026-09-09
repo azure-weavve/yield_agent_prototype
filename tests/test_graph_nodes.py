@@ -3281,3 +3281,19 @@ def test_a_thin_but_fully_separated_candidate_does_not_open_no_separation():
         loop=2, update=update, findings=ALL_THIN)
     assert update.get("finalize_status") != "no_separation", verdict
     assert "갈리는 항목 없음" not in verdict, verdict
+
+
+def test_no_separation_state_offers_the_step_back_path():
+    """판정만 만들고 안내를 안 고치면 문이 열려 있는 줄도 모른다.
+
+    이 상태에서 LLM 이 지어낸 이름을 내면 반려를 받는데, 그 반려가 "claim_id 를
+    비우고 finalize 하라" 를 안 붙이면 같은 왕복이 루프 한계까지 이어진다 -
+    (3)이 실제로 겪었던 라이브락이고, 그때도 원인은 판정과 안내가 다른 것을
+    보고 있었기 때문이다.
+    """
+    update = {}
+    verdict = nodes._finalize_gate(
+        {"claim_id": "eqp_ch_commonality:chamber:CC002000:NOPE",
+         "hypothesis": "지어낸 것", "confidence": 0.9},
+        loop=2, update=update, findings=ALL_WEAK)
+    assert "claim_id 를 비우고" in verdict, verdict
