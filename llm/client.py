@@ -252,22 +252,25 @@ class ScriptedMockLLMClient(LLMClient):
                 lines.append(f"     - 판단: {f['thought']}")
             if f["tool"] == "finalize":
                 lines.append(f"     - 게이트: {f['result']}")
+        # 두 갈래(inconclusive·weak_signal)가 같은 술어를 쓴다 - 앞에서 한 번만 센다.
+        has_residual_lines = any(not c.get("passes", True) for c in (claims or []))
         if finalize_status == "inconclusive":
             conclusion = f"미확정 (루프 한계 도달) - 유력 가설: {hypothesis or '없음'}."
-            # weak_signal 과 달리 inconclusive 는 잔차가 실려 있다는 보장이 없다
-            # (통과 후보가 이미 있으면 `_evidence_groups` 하한이 잔차를 안 더한다) -
+            # inconclusive 도 weak_signal 도 잔차가 실려 있다는 보장이 없다 - 둘 다
+            # 같은 이유가 아니라 각자 다른 이유로 조건부다. inconclusive 는 통과
+            # 후보가 이미 있으면 `_evidence_groups` 하한이 잔차를 안 더해서고,
+            # weak_signal 은 상한 절단이 잔차를 다 밀어낼 수 있어서다(아래 참조).
             # 무조건 이 문장을 붙이면 실제로 [잔차] 줄이 없는 리포트에도 "[잔차]" 라는
             # 글자가 찍혀, "잔차를 안 섞는다" 는 하한을 문장으로 어긴다.
-            if any(not c.get("passes", True) for c in (claims or [])):
+            if has_residual_lines:
                 conclusion += " 아래 [잔차] 줄은 판별선을 넘지 못한 후보다."
         elif finalize_status == "weak_signal":
             conclusion = ("약한 신호 - 후보는 나왔으나 판별선을 넘지 못했다. "
                           "원인 없음이 아니라 이 표본으로는 확정할 만큼 갈리지 않았다는 "
                           "뜻이며, 타깃/대조군을 넓히면 갈릴 수 있다.")
-            # inconclusive 와 같은 이유로 조건부다 - (2a) 는 통과한 2단 센서만으로도
-            # 열려, claims 가 전부 passes:true(센서)면 [잔차] 줄이 리포트에 없다.
-            # 무조건 이 문장을 붙이면 없는 줄을 가리키는 거짓 문장이 나간다.
-            if any(not c.get("passes", True) for c in (claims or [])):
+            # 위와 같은 이유로 조건부다 - 무조건 이 문장을 붙이면 없는 줄을 가리키는
+            # 거짓 문장이 나간다.
+            if has_residual_lines:
                 conclusion += " 아래 [잔차] 줄이 그 후보들이다."
         elif finalize_status == "no_signal":
             # "설비/챔버/PPID 가 없다" 로 단정하지 않는다 - 전축 실행이 전제 조건이

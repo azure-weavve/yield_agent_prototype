@@ -714,8 +714,9 @@ def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) ->
 
 def _record_evidence(update: dict, groups, picked) -> None:
     """판별선을 넘은 근거를 상태에 싣는다 - **지목 가능한 통과 후보가 없으면**
-    판별선을 못 넘은 잔차도 함께 실린다((2a)·(2b)·(4)·백스톱이 `_evidence_groups` 로
-    같은 규칙을 탄다). **모든 종료 경로에서 부른다.**
+    판별선을 못 넘은 잔차도 함께 실린다(상한이 남는 한 - 아래 참조)
+    ((2a)·(2b)·(4)·백스톱이 `_evidence_groups` 로 같은 규칙을 탄다).
+    **모든 종료 경로에서 부른다.**
 
     예전에는 승인(confirmed) 경로에서만 실었다. 그런데 루프 한계로 끝나는
     inconclusive 는 "확정은 못 했지만 판별선을 넘은 후보나 잔차가 있다" 는
@@ -770,6 +771,12 @@ def _residual_evidence_note(update: dict) -> str:
     잔차로 채우므로, 통과 근거(통과한 2단 센서 포함)가 상한을 채우면 잔차는 한
     건도 안 실릴 수 있다. 그 상태에서 절단 전 수를 찍으면 리포트에는 없는
     [잔차] 줄을 가리키는 거짓 판정문이 나간다(Task 6 리뷰 I-2).
+
+    **절단 전 잔차가 실재하는 경로에서만 부른다**((2a) 의 `and residuals`,
+    (4) 의 `carried is not groups` 하한) - 0건 갈래가 "있었으나" 를 단언하기
+    때문이다. 이 전제는 `REPORT_MAX_EVIDENCE >= 1` 도 함께 든다 - env 로 0 이
+    되면 통과 근거가 하나도 없어도 이 갈래에 들어와 "상한을 채워" 가 거짓이
+    되지만, 그런 설정 오용에 대한 방어는 넣지 않는다.
     """
     n = sum(1 for c in update["final_claims"] if not c.get("passes", True))
     if n:

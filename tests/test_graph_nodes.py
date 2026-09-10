@@ -3196,6 +3196,10 @@ def test_weak_signal_verdict_does_not_claim_residuals_the_cap_dropped(monkeypatc
     assert not any(not c.get("passes", True) for c in update["final_claims"]), \
         update["final_claims"]
     assert "잔차 1건" not in verdict, verdict
+    # 부정 단언만으로는 문장을 통째로 지워도 초록이다 - 0건 문구가 실제로
+    # 나가는 것을 잠근다.
+    assert ("아랫선을 넘은 잔차가 있었으나 통과 근거가 상한을 채워 리포트에는 "
+            "실리지 않는다") in verdict, verdict
     report = nodes.report_node({
         "target_wafers": ["W1"], "target_source": "manual", "target_group": ["W1"],
         "status_summary": "s", "findings": [], "final_hypothesis": "h",
@@ -3224,6 +3228,10 @@ def test_loop_limit_verdict_does_not_claim_residuals_the_cap_dropped(monkeypatch
         update["final_claims"]
     assert "잔차 1건" not in verdict, verdict
     assert "확정 근거 없이" not in verdict, verdict   # 통과 센서는 실제로 실렸다
+    # 부정 단언만으로는 문장을 통째로 지워도 초록이다 - 0건 문구가 실제로
+    # 나가는 것을 잠근다.
+    assert ("아랫선을 넘은 잔차가 있었으나 통과 근거가 상한을 채워 리포트에는 "
+            "실리지 않는다") in verdict, verdict
     report = nodes.report_node({
         "target_wafers": ["W1"], "target_source": "manual", "target_group": ["W1"],
         "status_summary": "s", "findings": [], "final_hypothesis": "h",
