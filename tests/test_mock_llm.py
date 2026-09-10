@@ -833,7 +833,10 @@ def test_operational_prompt_says_inconclusive_can_carry_residuals():
     assert "inconclusive 에도 잔차가 실릴 수 있다" in client.llm.seen_sys
     # A-2 가 "[잔차] 항목을 지우지도 근거로 승격시키지도 마라" 를 바꾼 그 문구 -
     # 옛 문구로 되돌리면 이 단언이 빨개져야 한다(Task 6 리뷰 I-3).
-    assert "근거로 세지 말고 '아직 갈리지 않은 후보' 로 적어라" in client.llm.seen_sys
+    # **어느 항목인가를 정하는 절까지 함께 잠근다** - 꼬리("근거로 세지 말고 ...")만
+    # 단언하면 `passes 가 false` 를 `true` 로 뒤집는 훼손이 통과한다(리뷰 I-B, 실측).
+    assert ("passes 가 false 인 항목은 근거로 세지 말고 "
+            "'아직 갈리지 않은 후보' 로 적어라") in client.llm.seen_sys
 
 
 def test_analyze_prompt_knows_the_full_axis_case_is_received_not_rejected():
