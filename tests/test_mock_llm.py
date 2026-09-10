@@ -707,8 +707,8 @@ def test_mock_report_has_no_residual_sentence_for_weak_signal_without_residuals(
 
     **`claims` 가 전부 `passes: true` 가 되는 길은 상한 절단 하나뿐이다.** (2a)의
     하한이 `not statistical_passing() and residuals` 이므로, (2a) 에 도달했고
-    잔차가 있다면 `_evidence_groups` 는 반드시 잔차를 더한다(하한을 지우면
-    (2a) 자체가 안 열린다) - "통계 통과 후보가 없어도 열린다" 는 이 전부 true
+    잔차가 있다면 `_evidence_groups` 는 반드시 잔차를 더한다(잔차가 비면 (2a)
+    자체가 안 열린다) - "통계 통과 후보가 없어도 열린다" 는 이 전부 true
     상태의 원인이 아니다. 진짜 원인은 `_record_evidence` 의 상한(`REPORT_MAX_EVIDENCE`)
     이 통과 근거(여기서는 통과한 2단 센서)를 먼저 예약해, 남는 자리가 없으면
     잔차가 한 건도 안 실릴 수 있다는 것이다 - 그 상태에서도 무조건 잔차 문장을
@@ -786,11 +786,14 @@ def test_operational_client_tells_the_report_what_a_residual_claim_is():
     # **지시 문장**을 찾는다.
     assert "판별선을 넘지 못한 잔차다" in client.llm.seen
     assert "아직 갈리지 않은 후보" in client.llm.seen
-    # **어느 항목인가를 정하는 머리 절까지 함께 잠근다.** 꼬리("근거로 세지 말고
-    # ...")만 단언하면 이 머리 절의 `passes 가 false` 를 `true` 로 뒤집는 훼손이
-    # 통과한다 - sys 프롬프트 쪽 동형 문구는 이미 잠겨 있었는데(Task 6 리뷰 I-B)
-    # user 프롬프트 쪽은 안 잠겨 있었다(Task 7 훼손 실험 #1, 실측).
-    assert "passes 가 false 인 항목은 판별선을 넘지 못한 잔차다" in client.llm.seen
+    # **어느 항목인가를 정하는 머리 절부터 가운데 지시 동사를 지나 꼬리까지
+    # 문장 전체를 잠근다.** 머리 절과 꼬리 조각만 단언하면 가운데 지시 동사
+    # ("근거로 세지 말고" -> "근거로 세고")를 뒤집는 훼손이 통과한다 - sys
+    # 프롬프트 쪽 동형 문구는 이미 잠겨 있었는데(Task 6 리뷰 I-B) user 프롬프트
+    # 쪽은 안 잠겨 있었다(Task 7 훼손 실험 #1, 실측).
+    assert ("passes 가 false 인 항목은 판별선을 넘지 못한 잔차다(reject_reason 이 "
+            "왜 약한지를 말한다) - 근거로 세지 말고 '아직 갈리지 않은 후보' 로 "
+            "적어라)") in client.llm.seen
 
 
 def test_analyze_prompt_tells_the_llm_to_step_back_on_weak_candidates():

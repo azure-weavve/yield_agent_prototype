@@ -686,8 +686,9 @@ def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) ->
         # 후보를 단정한다((2a)와 같은 이유). 목록이 바뀌면 `is` 비교도 어차피
         # 안 맞는다. **지금은 이 삼항이 갈리지 않는 보험이다** - `carried is not
         # groups` 에 닿으려면 `claim is None`(환각·대체 이름)이어야 하고, 그러면
-        # `find_group` 도 None 이라 `picked` 는 항상 None 이다. `(2a)` 하한이
-        # 넓어져 실재하는 claim 을 지목한 채 이 갈래에 닿을 수 있게 되면 살아난다.
+        # `find_group` 도 None 이라 `picked` 는 항상 None 이다. `(2a)` 가 실재하는
+        # 통과 센서 claim 의 지목을 거절하도록 좁아져 이 갈래에 닿을 수 있게 되면
+        # 살아난다.
         carried = _evidence_groups(bundle, groups)
         _record_evidence(update, carried, picked if carried is groups else None)
         # **"확정 근거 없이" 는 실은 근거가 없을 때만 참이다.** `carried` 가
