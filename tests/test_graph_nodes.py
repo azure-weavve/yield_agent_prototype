@@ -628,7 +628,7 @@ def test_report_node_does_not_mix_residuals_into_a_passing_backstop():
     것)까지는 이 픽스처(스텝이 달라 안 접힌다)로는 재현하지 않는다. 이 테스트가
     없으면 백스톱 구현이 헬퍼 대신
     `bundle.ranked_groups(bundle.passing() + bundle.residuals())` 를 직접 적어도
-    통과해, "세 자리가 같은 규칙을 쓴다" 가 테스트로는 안 잠긴다.
+    통과해, "네 자리가 같은 규칙을 쓴다" 가 테스트로는 안 잠긴다.
     """
     out = nodes.report_node({"target_wafers": ["W1"], "target_source": "manual",
                              "target_group": ["W1"], "status_summary": "s",
@@ -3369,3 +3369,22 @@ def test_no_separation_state_offers_the_step_back_path():
          "hypothesis": "지어낸 것", "confidence": 0.9},
         loop=2, update=update, findings=ALL_WEAK)
     assert "claim_id 를 비우고" in verdict, verdict
+
+
+def test_no_separation_state_stays_closed_when_a_candidate_actually_passed(monkeypatch):
+    """`not bundle.statistical_passing()` 은 점수 조건이 있어도 따로 남겨 둔
+    방어선이다(`_no_separation_state` 독스트링) - `RESIDUAL_MIN_SCORE` 와
+    `COMMONALITY_PASS_MIN_SCORE` 는 각각 독립된 환경변수라 코드가 그 대소를
+    강제하지 않는다. 설정이 어긋나 `RESIDUAL_MIN_SCORE` 가 통과 점수보다 커지면
+    점수 조건(`all(score < RESIDUAL_MIN_SCORE)`) 만으로는 통과 후보를 걸러내지
+    못한다 - 그 상태에서 이 조건이 빠지면 실제로 통과한 후보가 있는데도
+    '갈리는 항목 없음'(no_separation)이 열려, confirmed 로 나가야 할 결과가
+    거짓 판정문으로 바뀐다.
+    """
+    from graph import evidence
+    monkeypatch.setattr(ya_config, "RESIDUAL_MIN_SCORE", 1.5)
+    findings = [EVIDENCE_FINDING_NEW, PPID_SILENT, STEP_PASSAGE_SILENT, METRO_SILENT]
+    bundle = evidence.build_bundle(findings)
+    coverage = nodes._coverage(bundle)
+    assert bundle.statistical_passing(), "픽스처가 통과 후보를 안 내면 이 시험은 공허하다"
+    assert nodes._no_separation_state(bundle, coverage) is False

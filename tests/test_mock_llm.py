@@ -705,9 +705,14 @@ def test_mock_report_has_a_sentence_for_weak_signal():
 def test_mock_report_has_no_residual_sentence_for_weak_signal_without_residuals():
     """잔차가 실제로 안 실리면 "[잔차] 줄이 그 후보들이다" 를 말하면 안 된다.
 
-    (2a) 는 통계 통과 후보 없이도 열리므로 `claims` 가 전부 `passes: true`(통과한
-    2단 센서만)일 수 있다 - 그 상태에서도 무조건 잔차 문장을 붙이면 존재하지 않는
-    [잔차] 줄을 가리키는 거짓 문장이 나간다.
+    **`claims` 가 전부 `passes: true` 가 되는 길은 상한 절단 하나뿐이다.** (2a)의
+    하한이 `not statistical_passing() and residuals` 이므로, (2a) 에 도달했고
+    잔차가 있다면 `_evidence_groups` 는 반드시 잔차를 더한다(하한을 지우면
+    (2a) 자체가 안 열린다) - "통계 통과 후보가 없어도 열린다" 는 이 전부 true
+    상태의 원인이 아니다. 진짜 원인은 `_record_evidence` 의 상한(`REPORT_MAX_EVIDENCE`)
+    이 통과 근거(여기서는 통과한 2단 센서)를 먼저 예약해, 남는 자리가 없으면
+    잔차가 한 건도 안 실릴 수 있다는 것이다 - 그 상태에서도 무조건 잔차 문장을
+    붙이면 존재하지 않는 [잔차] 줄을 가리키는 거짓 문장이 나간다.
     """
     from llm.client import ScriptedMockLLMClient
     report = ScriptedMockLLMClient().generate_report(
@@ -781,6 +786,11 @@ def test_operational_client_tells_the_report_what_a_residual_claim_is():
     # **지시 문장**을 찾는다.
     assert "판별선을 넘지 못한 잔차다" in client.llm.seen
     assert "아직 갈리지 않은 후보" in client.llm.seen
+    # **어느 항목인가를 정하는 머리 절까지 함께 잠근다.** 꼬리("근거로 세지 말고
+    # ...")만 단언하면 이 머리 절의 `passes 가 false` 를 `true` 로 뒤집는 훼손이
+    # 통과한다 - sys 프롬프트 쪽 동형 문구는 이미 잠겨 있었는데(Task 6 리뷰 I-B)
+    # user 프롬프트 쪽은 안 잠겨 있었다(Task 7 훼손 실험 #1, 실측).
+    assert "passes 가 false 인 항목은 판별선을 넘지 못한 잔차다" in client.llm.seen
 
 
 def test_analyze_prompt_tells_the_llm_to_step_back_on_weak_candidates():
@@ -837,6 +847,13 @@ def test_operational_prompt_says_inconclusive_can_carry_residuals():
     # 단언하면 `passes 가 false` 를 `true` 로 뒤집는 훼손이 통과한다(리뷰 I-B, 실측).
     assert ("passes 가 false 인 항목은 근거로 세지 말고 "
             "'아직 갈리지 않은 후보' 로 적어라") in client.llm.seen_sys
+    # **"뜻이 아니니" 부정어까지 잠근다.** 이 부정어를 지우면(`뜻이니`) 문장이
+    # "inconclusive 는 근거가 한 줄도 없다는 뜻" 으로 뒤집힌다 - 뒤 절이 이미 잠겨
+    # 있어 자기모순이 되므로 위험도는 낮지만(Task 7 훼손 실험 #B), 부정어 하나로
+    # 지시가 반대로 바뀌는 자리라 문장 전체를 단언한다.
+    assert ("확정 근거가 아니라는 "
+            "뜻이지 근거가 한 줄도 없다는 뜻이 아니니, passes 가 false 인 항목은 "
+            "근거로 세지 말고 '아직 갈리지 않은 후보' 로 적어라") in client.llm.seen_sys
 
 
 def test_analyze_prompt_knows_the_full_axis_case_is_received_not_rejected():
