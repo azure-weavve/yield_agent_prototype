@@ -685,14 +685,38 @@ def test_operational_client_repeats_the_roll_up_instruction_beside_the_claims():
 
 def test_mock_report_has_a_sentence_for_weak_signal():
     """판정 어휘를 늘리면 mock 결론문도 같이 늘려야 한다 - 안 그러면 새 판정이
-    `else` 로 떨어져 LLM 이 쓴 가설이 확정처럼 찍힌다."""
+    `else` 로 떨어져 LLM 이 쓴 가설이 확정처럼 찍힌다.
+
+    `claims` 에 실제로 passes=False 항목을 실어 보낸다 - report_node 가 넘기는
+    실제 호출과 같은 모양이다(잔차가 없으면 이 문장이 안 붙도록 조건이 걸려
+    있다, Task 6 fix 1 Part B).
+    """
     from llm.client import ScriptedMockLLMClient
     report = ScriptedMockLLMClient().generate_report(
         target_wafers=["W1"], target_source="manual", target_group=["W1"],
         status_summary="s", findings=[], hypothesis="ETCH9_B 편중", confidence=0.3,
-        finalize_status="weak_signal")
+        finalize_status="weak_signal",
+        claims=[{"claim_id": "a", "passes": False, "rank": 1,
+                 "reject_reason": "score below threshold"}])
     assert "약한 신호" in report
     assert "[잔차] 줄" in report
+
+
+def test_mock_report_has_no_residual_sentence_for_weak_signal_without_residuals():
+    """잔차가 실제로 안 실리면 "[잔차] 줄이 그 후보들이다" 를 말하면 안 된다.
+
+    (2a) 는 통계 통과 후보 없이도 열리므로 `claims` 가 전부 `passes: true`(통과한
+    2단 센서만)일 수 있다 - 그 상태에서도 무조건 잔차 문장을 붙이면 존재하지 않는
+    [잔차] 줄을 가리키는 거짓 문장이 나간다.
+    """
+    from llm.client import ScriptedMockLLMClient
+    report = ScriptedMockLLMClient().generate_report(
+        target_wafers=["W1"], target_source="manual", target_group=["W1"],
+        status_summary="s", findings=[], hypothesis="h", confidence=0.3,
+        finalize_status="weak_signal",
+        claims=[{"claim_id": "sensor:CC002000:TEMP_1", "passes": True, "rank": 1}])
+    assert "약한 신호" in report
+    assert "[잔차] 줄" not in report
 
 
 def test_operational_prompt_tells_the_report_what_weak_signal_means():

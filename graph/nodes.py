@@ -531,9 +531,15 @@ def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) ->
         else:
             picked_note = (f"네가 지목한 {claim_id} 는 판별선을 넘지 못해 "
                            f"원인으로 확정하지 않았다. ")
+        # **절단 전 `len(residuals)` 가 아니라 실제로 실린 수를 말한다.**
+        # `_record_evidence` 의 상한은 통과 근거(여기서는 통과한 2단 센서)를 먼저
+        # 예약하고 남는 자리만 잔차로 채우므로, 통과 근거가 상한을 채우면 잔차는
+        # 한 건도 안 실릴 수 있다 - 그런데도 절단 전 수를 찍으면 리포트에 없는
+        # [잔차] 줄을 가리키는 판정문이 나간다(Task 6 리뷰 I-2).
+        residual_note = _residual_evidence_note(update)
         return (f"약한 신호 ({_coverage_phrase(coverage)}): {picked_note}"
-                f"판별선을 넘은 원인 후보는 없고, 아랫선을 넘은 잔차 {len(residuals)}건을 "
-                f"근거로 싣는다. 확정이 아니라 '이 표본으로는 갈리지 않았다' 는 뜻이다. "
+                f"판별선을 넘은 원인 후보는 없고, {residual_note}"
+                f"확정이 아니라 '이 표본으로는 갈리지 않았다' 는 뜻이다. "
                 f"리포팅으로 진행한다.")
 
     # (2b) 갈리는 항목 없음 - 전축을 대조했는데 비센서 후보가 났고 그 점수가 전부
@@ -690,8 +696,11 @@ def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) ->
         # 지시를 받는다 - 근거를 실어 놓고 없다고 말하면 이 브랜치가 없애려던
         # 바로 그 거짓 문장이 된다.
         if carried is not groups:
+            # **절단 전 `len(residuals)` 가 아니라 실제로 실린 수를 말한다.** (2a)와
+            # 같은 이유 - 통과 근거가 상한을 채우면 잔차는 한 건도 안 실릴 수 있다.
+            residual_note = _residual_evidence_note(update)
             return (f"미확정 (루프 한계 도달): 판별선을 넘은 후보를 확정하지 못했다. "
-                    f"아랫선을 넘은 잔차 {len(residuals)}건을 근거로 싣는다. "
+                    f"{residual_note}"
                     f"리포팅으로 진행한다.")
         if carried:
             return (f"미확정 (루프 한계 도달): 판별선을 넘은 근거 {len(carried)}건을 "
@@ -709,7 +718,8 @@ def _record_evidence(update: dict, groups, picked) -> None:
     같은 규칙을 탄다). **모든 종료 경로에서 부른다.**
 
     예전에는 승인(confirmed) 경로에서만 실었다. 그런데 루프 한계로 끝나는
-    inconclusive 는 "확정은 못 했지만 판별선을 넘은 후보는 있다" 는 상태라,
+    inconclusive 는 "확정은 못 했지만 판별선을 넘은 후보나 잔차가 있다" 는
+    상태라(위 하한이 잔차를 싣게 된 뒤로는 잔차만 있는 inconclusive 가 정상이다),
     거기서 목록을 버리면 **가장 도움이 필요한 보고서에서 근거가 전부 사라진다**
     (다축 fixture M2423 이 실제로 그렇게 끝났다: 통과 후보 3개, 리포트 근거 0줄).
     no_comparable_data 는 정의상 통과 후보가 없어 빈 목록이 되지만, no_signal 은
@@ -749,6 +759,22 @@ def _record_evidence(update: dict, groups, picked) -> None:
         if hidden:
             dicts[-1]["more_below"] = hidden
     update["final_claims"] = dicts
+
+
+def _residual_evidence_note(update: dict) -> str:
+    """판정문이 잔차를 말할 때 쓰는 문구 - **`_record_evidence` 가 실제로 `final_claims`
+    에 실은 잔차 수**로 센다 (반드시 `_record_evidence` 호출 뒤에 불러야 한다).
+
+    절단 전 `bundle.residuals()` 의 길이를 쓰면 안 된다 - `_record_evidence` 의
+    상한(`REPORT_MAX_EVIDENCE`)은 통과 근거를 전부 먼저 예약하고 남는 자리만
+    잔차로 채우므로, 통과 근거(통과한 2단 센서 포함)가 상한을 채우면 잔차는 한
+    건도 안 실릴 수 있다. 그 상태에서 절단 전 수를 찍으면 리포트에는 없는
+    [잔차] 줄을 가리키는 거짓 판정문이 나간다(Task 6 리뷰 I-2).
+    """
+    n = sum(1 for c in update["final_claims"] if not c.get("passes", True))
+    if n:
+        return f"아랫선을 넘은 잔차 {n}건을 근거로 싣는다. "
+    return "아랫선을 넘은 잔차가 있었으나 통과 근거가 상한을 채워 리포트에는 실리지 않는다. "
 
 
 def _coverage(bundle) -> dict:

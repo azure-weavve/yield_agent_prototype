@@ -602,6 +602,12 @@ def test_report_node_keeps_residuals_when_the_gate_never_judged():
     이 경로는 **게이트 협조와 무관하다** - LLM 이 finalize 를 안 부르면 여기로
     오므로 프롬프트로는 못 막는다. `[잔차]` 라벨은 항목의 passes 로 갈리므로
     싣기만 하면 옳게 찍힌다.
+
+    산문 결론에도 잔차 안내 문장이 붙어야 한다 - mock 결론문의 그 문장은 어느
+    테스트에도 안 잠겨 있었다(`llm/client.py` 의 조건부 두 줄을 통째로 지워도
+    전체 스위트가 초록이었다, Task 6 리뷰 I-1). `[잔차]` 줄이 실제로 찍혔는데
+    "그 줄이 판별선을 넘지 못한 후보다" 를 말하는 문장이 없으면, 엔지니어가
+    [잔차] 줄을 [근거] 줄과 같은 무게로 읽는다.
     """
     out = nodes.report_node({"target_wafers": ["W1"], "target_source": "manual",
                              "target_group": ["W1"], "status_summary": "s",
@@ -609,6 +615,7 @@ def test_report_node_keeps_residuals_when_the_gate_never_judged():
     assert out["finalize_status"] == "inconclusive"
     assert "[잔차 1]" in out["report"], out["report"]
     assert "eqp_ch_commonality:chamber:CC002000:ETCH9_B" in out["report"]
+    assert "아래 [잔차] 줄은 판별선을 넘지 못한 후보다" in out["report"], out["report"]
 
 
 def test_report_node_does_not_mix_residuals_into_a_passing_backstop():
@@ -3167,6 +3174,63 @@ def test_loop_limit_with_a_passing_candidate_does_not_deny_the_evidence_it_carri
     assert update["final_claims"]
     assert "확정 근거 없이" not in verdict, verdict
     assert f"{len(update['final_claims'])}건" in verdict, verdict
+
+
+def test_weak_signal_verdict_does_not_claim_residuals_the_cap_dropped(monkeypatch):
+    """(2a) 판정문이 말하는 잔차 건수는 실제로 실린 건수여야 한다.
+
+    `_record_evidence` 는 상한(`REPORT_MAX_EVIDENCE`)을 넘으면 통과 근거를 전부
+    먼저 예약하고 남는 자리만 잔차로 채운다 - 통과 근거가 상한을 채우면 잔차는
+    한 건도 안 실린다. 그런데 절단 **전** 수인 `len(residuals)` 를 그대로 찍으면
+    "아랫선을 넘은 잔차 1건을 근거로 싣는다" 처럼, 리포트에는 없는 [잔차] 줄을
+    가리키는 판정문이 나간다(Task 6 리뷰 I-2, 실측: 통과 센서 9 + 잔차 1 ->
+    final_claims=8, [잔차] 줄 0개인데 판정문은 "잔차 1건"). 상한을 1로 낮춰 같은
+    조건을 통과 센서 1 + 잔차 1 로 재현한다.
+    """
+    monkeypatch.setattr(ya_config, "REPORT_MAX_EVIDENCE", 1)
+    update = {}
+    verdict = nodes._finalize_gate(
+        {"claim_id": "sensor:CC002000:TEMP_1", "hypothesis": "TEMP_1 이상", "confidence": 0.9},
+        loop=2, update=update, findings=[EQP_CH_BELOW_LINE, SENSOR_FINDING])
+    assert update["finalize_status"] == "weak_signal"
+    assert not any(not c.get("passes", True) for c in update["final_claims"]), \
+        update["final_claims"]
+    assert "잔차 1건" not in verdict, verdict
+    report = nodes.report_node({
+        "target_wafers": ["W1"], "target_source": "manual", "target_group": ["W1"],
+        "status_summary": "s", "findings": [], "final_hypothesis": "h",
+        "final_confidence": 0.9, "finalize_status": "weak_signal",
+        "final_claims": update["final_claims"],
+    })["report"]
+    assert "[잔차" not in report, report
+
+
+def test_loop_limit_verdict_does_not_claim_residuals_the_cap_dropped(monkeypatch):
+    """(4) 판정문도 (2a)와 같은 결함을 갖고 있었다 - 같은 방식으로 재현한다.
+
+    `carried is not groups`(잔차가 더해진) 분기로 들어가되, 상한이 통과 근거로
+    다 차 잔차가 0건 실리는 상태를 만든다. claim_id 를 실재하지 않는 이름으로
+    줘 (2a) 를 비켜가게 한다 - `claim is None` 이면 (2a) 의 "정직한 제출" 하한이
+    안 열린다.
+    """
+    monkeypatch.setattr(ya_config, "REPORT_MAX_EVIDENCE", 1)
+    update = {}
+    verdict = nodes._finalize_gate(
+        {"claim_id": "지어낸:claim:id", "hypothesis": "지어낸 것", "confidence": 0.9},
+        loop=ya_config.MAX_LOOPS, update=update,
+        findings=[EQP_CH_BELOW_LINE, SENSOR_FINDING])
+    assert update["finalize_status"] == "inconclusive"
+    assert not any(not c.get("passes", True) for c in update["final_claims"]), \
+        update["final_claims"]
+    assert "잔차 1건" not in verdict, verdict
+    assert "확정 근거 없이" not in verdict, verdict   # 통과 센서는 실제로 실렸다
+    report = nodes.report_node({
+        "target_wafers": ["W1"], "target_source": "manual", "target_group": ["W1"],
+        "status_summary": "s", "findings": [], "final_hypothesis": "h",
+        "final_confidence": 0.9, "finalize_status": "inconclusive",
+        "final_claims": update["final_claims"],
+    })["report"]
+    assert "[잔차" not in report, report
 
 
 def test_all_axes_run_but_nothing_separates_ends_as_no_separation():
