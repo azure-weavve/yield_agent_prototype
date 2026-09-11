@@ -406,12 +406,14 @@ def test_analyze_prompt_tells_the_llm_the_two_outcomes_of_naming_a_weak_candidat
     잡힌다. 지금 계약은 두 상태를 가른다: 잔차가 있으면(최신 도구 결과에 실재하는
     이름을 지목한 한) 지목해도 받아 주고, 잔차마저 없으면 반려된다.
 
-    "지어낸 이름이 아닌 한" 이 아니라 "실재하는 이름인 한" 이다 - 하한
-    `claim is not None` 은 `bundle.claims` 조회이고 그 dict 는 **대체(superseded)된
-    앞 실행의 후보를 안 담으므로**, 환각뿐 아니라 폐기된 지목도 함께 걸린다.
+    한정절은 **출처**를 말한다 - "지어내지 않았는가" 다. 하한(`_honest_pick`)이
+    `bundle.claims` **와** `bundle.dropped_claims` 를 둘 다 보므로, 대체(superseded)된
+    앞 실행의 후보를 지목한 제출도 열린다. 그것은 LLM 이 자기 문맥에서 실제로 받은
+    이름이라 환각이 아니다. 예전 문구("실재하는 이름")는 번들에 살아 있는 것만
+    가리켜, 대체 이름이 받아들여지는 지금은 거짓이다.
     """
     prompt = nodes.ANALYZE_SYSTEM_PROMPT
-    assert "최신 도구 결과에 실재하는 이름을 지목한 한" in prompt, prompt
+    assert "네가 도구 결과에서 실제로 받은 이름을 지목한 한" in prompt, prompt
     assert "잔차마저 없는 상태에서 지목하면 반려되고" in prompt, prompt
 
 
@@ -2935,6 +2937,41 @@ def test_a_named_residual_still_ends_as_weak_signal():
     assert not any(c.get("picked_by_llm") for c in update["final_claims"])
 
 
+# 잔차 자격을 갖춘 후보를 내는 두 번째 축 - eqp 축이 대체되어도 잔차가 남아 있어야
+# `(2a)` 의 `residuals` 조건이 살아 있다. 이것이 없으면 대체와 동시에 잔차가 사라져
+# 무엇이 문을 닫았는지 가려지지 않는다.
+PPID_BELOW_LINE = _weak_finding("hyp_ppid_commonality", "ppid_commonality",
+                                "ppid_commonality:ppid:CC002000:P1", 3, 0.40)
+
+
+def test_a_superseded_claim_id_opens_weak_signal():
+    """대체된 앞 실행의 후보를 지목한 것은 **환각이 아니다** - 하한이 그것도 받는다.
+
+    `tools_node` 가 도구 결과를 ToolMessage 로 대화에 실으므로, 축을 다시 돌린 뒤에도
+    LLM 은 앞 실행의 claim_id 를 자기 문맥에서 그대로 보고 제출한다. `bundle.claims`
+    는 대체된 후보를 안 담아서, 옛 하한(`claim is not None`)은 그 제출을 환각과 **같이**
+    반려했다. 손해가 왕복 1회로 끝나지 않는 자리가 있다 - 루프 한계에 닿으면 같은
+    증거가 제출 형태만 다르다는 이유로 사유가 달라진다(아래 루프 한계 시험).
+    """
+    update = {}
+    verdict = nodes._finalize_gate(
+        {"claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH9_B",
+         "hypothesis": "ETCH9_B 편중", "confidence": 0.9},
+        loop=2, update=update,
+        findings=[EQP_CH_BELOW_LINE, PPID_BELOW_LINE, EQP_CH_RERUN_SILENT])
+    assert update["finalize_status"] == "weak_signal"
+    assert update["finalize_accepted"] is True
+    # 대체 갈래는 **따로** 말해야 한다 - 대체된 후보는 통과했던 것일 수도 있어
+    # (M3 의 EVIDENCE_FINDING_NEW 가 그 모양이다) "판별선을 넘지 못해" 로 뭉개면
+    # 거짓이 된다. 무엇이 대체했는지 이름도 댄다(`dropped_claims` 가 들고 있다).
+    assert ("네가 지목한 eqp_ch_commonality:chamber:CC002000:ETCH9_B 는 "
+            "hyp_eqp_ch_commonality 를 다시 돌려 대체된 앞 실행의 후보라 원인으로 "
+            "확정하지 않았다.") in verdict, verdict
+    assert "판별선을 넘지 못해" not in verdict, verdict
+    # 확정하지 않기로 했으므로 picked 표시는 여전히 안 붙는다.
+    assert not any(c.get("picked_by_llm") for c in update["final_claims"])
+
+
 def test_a_named_passing_sensor_ends_as_weak_signal():
     """지목할 수 있는 것이 하나도 없는 상태에서 반려는 왕복만 만든다.
 
@@ -3031,8 +3068,9 @@ def test_a_hallucinated_claim_id_does_not_open_weak_signal():
     (`test_a_named_residual_still_ends_as_weak_signal`). 이 테스트가 초록이던
     이유는 하한이 좁아서가 아니라 claim_id 가 **환각**이라서였다.
 
-    지금 잠그는 것: 하한 `(not claim_id or claim is not None)` 의 뒷항이 살아 있어
-    번들에 없는 이름은 `(2a)` 를 못 연다. 없으면 '확신도 0.9 로 없는 근거를 지목한'
+    지금 잠그는 것: 하한(`_honest_pick`)의 출처 항들이 살아 있어 **지어낸** 이름은
+    `(2a)` 를 못 연다(대체된 이름은 이제 연다 - 그것은 지어낸 것이 아니다.
+    `test_a_superseded_claim_id_opens_weak_signal`). 없으면 '확신도 0.9 로 없는 근거를 지목한'
     제출이 곧바로 종료로 빠져나가 환각이 물러섬으로 둔갑한다.
     위 `test_a_made_up_claim_id_is_still_rejected_not_absorbed` 는 같은 상태에서
     **반려 문구**를 잠근다 - 이쪽은 `(2a)` 문이 안 열린다는 사실만 본다.
@@ -3368,6 +3406,42 @@ def test_a_thin_but_fully_separated_candidate_does_not_open_no_separation():
         loop=2, update=update, findings=ALL_THIN)
     assert update.get("finalize_status") != "no_separation", verdict
     assert "갈리는 항목 없음" not in verdict, verdict
+
+
+def test_a_superseded_claim_id_opens_no_separation():
+    """(2b) 하한도 `(2a)` 와 같은 규칙을 쓴다 - 대체 이름은 정직한 제출이다."""
+    update = {}
+    verdict = nodes._finalize_gate(
+        {"claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH9_B",
+         "hypothesis": "ETCH9_B 편중", "confidence": 0.3},
+        loop=2, update=update, findings=[*ALL_WEAK, EQP_CH_RERUN_SILENT])
+    assert update["finalize_status"] == "no_separation"
+    assert ("네가 지목한 eqp_ch_commonality:chamber:CC002000:ETCH9_B 는 "
+            "hyp_eqp_ch_commonality 를 다시 돌려 대체된 앞 실행의 후보라 원인으로 "
+            "확정하지 않았다.") in verdict, verdict
+    # 이 갈래(아랫선 미달) 문구로 뭉개면 안 된다 - 대체된 후보의 점수는 판정 대상이
+    # 아니고, 애초에 그 후보가 통과했을 수도 있다.
+    assert "에도 못 미쳐 원인으로 확정하지 않았다" not in verdict, verdict
+
+
+def test_loop_limit_no_longer_relabels_no_separation_for_a_superseded_pick():
+    """**이 규칙을 넓히는 실제 이유.** 루프 한계에서는 반려가 가르칠 다음 행동이
+    없으므로, 하한이 닫혀 있으면 같은 증거가 제출 형태만 다르다는 이유로 다른
+    사유를 받는다.
+
+    실측(고치기 전): 빈손 제출은 `no_separation`("갈리는 항목 없음")인데 대체 이름을
+    제출하면 `inconclusive`("미확정 - 루프 한계 도달: 확정 근거 없이 리포팅으로
+    진행한다")로 끝났다 - 전축을 다 보고 아무것도 안 갈린 실행인데 엔지니어는
+    루프를 다 썼다는 사유를 본다. 이 저장소가 M4 로 없앤 바로 그 문장이다.
+    """
+    update = {}
+    verdict = nodes._finalize_gate(
+        {"claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH9_B",
+         "hypothesis": "ETCH9_B 편중", "confidence": 0.3},
+        loop=ya_config.MAX_LOOPS, update=update,
+        findings=[*ALL_WEAK, EQP_CH_RERUN_SILENT])
+    assert update["finalize_status"] == "no_separation"
+    assert "루프 한계" not in verdict, verdict
 
 
 def test_no_separation_state_offers_the_step_back_path():

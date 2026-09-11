@@ -45,7 +45,7 @@ ANALYZE_SYSTEM_PROMPT = """너는 반도체 수율 분석 전문가다. 불량 �
 - 원인을 좁혔고 근거가 충분하면 finalize(claim_id, hypothesis, confidence) 로 종료를 제안하라. claim_id 는 가설 도구 결과의 후보에 실려 온 값을 **그대로** 옮겨야 한다 - 지어내거나 문장으로 대신하면 반려된다. 지목할 근거가 없어 물러설 때는 claim_id 를 비우고 낮은 확신도로 제출하라.
 - **claim_id 는 결론 하나를 고르는 것이 아니라 서술의 축을 정하는 것이다.** 판별선을 넘은 후보는 게이트가 상한 안에서는 전부 접어서 줄 세워 리포트에 싣고, 상한을 넘는 것은 건수만 알린다 - 다른 축의 근거를 버릴까 걱정해 지목을 미루지 마라. 다만 순위 1등이 아닌 것을 지목하면 반려된다.
 - **2단 센서(compare_sensor_distribution) 후보의 claim_id 는 근거 인용용이다.** finalize 로 지목할 수 있는 것은 가설 도구(hyp_*)가 발급한 claim_id 뿐이다 - 센서는 스텝당 수백 개라 다중비교 보정 없이 효과크기 순위만으로는 우연한 분리를 가릴 수 없어, 지목해도 원인으로 확정되지 않는다. 통과한 가설 도구(hyp_*) 후보가 있는데도 센서를 지목하면 그 이유로 반려된다 - 그럴 때는 통과한 hyp_* 후보를 대신 지목하라. 그렇다고 안 돌려도 된다는 뜻은 아니다: '왜' 를 채우는 근거이고, 그중 효과크기가 판별선을 넘은(passes=true) 후보만 게이트가 리포트에 함께 싣는다.
-- **판별선을 넘지 못한 후보만 있으면 지목하지 마라.** 판단상 더 볼 축이 남아 있다면 그것부터 돌려보고, 그러고도 판별선을 넘는 후보가 없을 때 물러서라. 억지로 지목해도 게이트는 그 후보를 원인으로 확정하지 않는다. 아랫선을 넘은 잔차가 있으면 최신 도구 결과에 실재하는 이름을 지목한 한 상한이 남는 한 그것을 근거로 싣지만, 잔차마저 없는 상태에서 지목하면 반려되고 같은 반려를 되풀이하면 루프 예산만 태운다 - 다만 등록 축을 도구 실패 없이 다 돌렸고 가설 도구 후보가 났는데 그 분리 점수가 전부 아랫선에도 못 미치면 게이트가 '갈리는 항목 없음' 으로 받으니 그때는 빈손으로 물러서라. 어느 쪽이든 물러서는 쪽이 낫다 - 빈손으로 내면 약한 후보를 원인으로 단언하는 문장을 애초에 쓰지 않게 된다.
+- **판별선을 넘지 못한 후보만 있으면 지목하지 마라.** 판단상 더 볼 축이 남아 있다면 그것부터 돌려보고, 그러고도 판별선을 넘는 후보가 없을 때 물러서라. 억지로 지목해도 게이트는 그 후보를 원인으로 확정하지 않는다. 아랫선을 넘은 잔차가 있으면 네가 도구 결과에서 실제로 받은 이름을 지목한 한 상한이 남는 한 그것을 근거로 싣지만, 잔차마저 없는 상태에서 지목하면 반려되고 같은 반려를 되풀이하면 루프 예산만 태운다 - 다만 등록 축을 도구 실패 없이 다 돌렸고 가설 도구 후보가 났는데 그 분리 점수가 전부 아랫선에도 못 미치면 게이트가 '갈리는 항목 없음' 으로 받으니 그때는 빈손으로 물러서라. 어느 쪽이든 물러서는 쪽이 낫다 - 빈손으로 내면 약한 후보를 원인으로 단언하는 문장을 애초에 쓰지 않게 된다.
 - **등록된 가설 도구를 전부 돌릴 의무는 없다.** 한 축을 더 깊이 파는 것과 다음 축으로 넘어가는 것 중 무엇이 원인에 가까운지 매 단계 네가 고른다. 어디까지 봤는지는 코드가 세어 리포트에 함께 싣는다.
 - 수치는 tool 결과를 그대로 인용하고 절대 임의로 만들지 마라."""
 
@@ -358,6 +358,40 @@ def _evidence_groups(bundle, passing_groups: list) -> list:
     return bundle.ranked_groups(bundle.passing() + residuals)
 
 
+def _honest_pick(bundle, claim_id: str) -> bool:
+    """물러섬 판정((2a)·(2b))의 하한 - **정직한 제출인가.**
+
+    빈손이거나 도구 결과에서 실제로 받은 이름이면 참이고, **지어낸 이름만** 거짓이다.
+
+    **대체(superseded)된 앞 실행의 후보도 정직한 제출이다.** `tools_node` 가 도구
+    결과를 ToolMessage 로 대화에 실으므로, 축을 다시 돌린 뒤에도 LLM 은 앞 실행의
+    claim_id 를 자기 문맥에서 그대로 보고 제출한다 - 지어낸 것이 아니다.
+    `bundle.claims` 조회만으로 하한을 걸면 그 제출이 환각과 **같이** 반려되는데,
+    루프 한계에서는 반려가 가르칠 다음 행동이 없어 **같은 증거가 제출 형태만
+    다르다는 이유로 다른 사유**를 받는다(실측: 빈손이면 `no_separation`, 대체
+    이름이면 `inconclusive` "루프 한계 도달"). 전축을 다 보고 아무것도 안 갈린
+    실행인데 엔지니어는 루프를 다 썼다는 사유를 보게 된다 - M4 가 없앤 문장이다.
+
+    **규칙을 한 자리에만 적는다.** (2a)·(2b) 두 분기가 같은 하한을 쓰므로 각자
+    적으면 한쪽만 고치는 이 저장소의 반복 결함이 그대로 재발한다.
+    """
+    return (not claim_id
+            or claim_id in bundle.claims
+            or claim_id in bundle.dropped_claims)
+
+
+def _superseded_note(bundle, claim_id: str) -> str:
+    """대체된 이름을 지목한 제출에 붙는 판정문 조각.
+
+    **"판별선을 넘지 못해"/"아랫선에도 못 미쳐" 로 뭉개면 거짓이 된다** - 대체된
+    후보는 통과했던 것일 수도 있고(M3 의 `EVIDENCE_FINDING_NEW` 가 그 모양이다)
+    번들에 없으니 점수를 볼 수도 없다. 확정하지 않는 이유는 점수가 아니라 **그
+    실행이 대체됐다는 것**이다. `_gate_rejection` 의 대체 문구와 같은 뜻으로 쓴다.
+    """
+    return (f"네가 지목한 {claim_id} 는 {bundle.dropped_claims[claim_id]} 를 다시 "
+            f"돌려 대체된 앞 실행의 후보라 원인으로 확정하지 않았다. ")
+
+
 def _no_separation_state(bundle, coverage: dict) -> bool:
     """(2b) '갈리는 항목 없음' 이 성립하는 상태인가 - **claim_id 하한은 빼고**.
 
@@ -499,19 +533,18 @@ def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) ->
     #      **하한은 `not claim_id` 가 아니라 "정직한 제출" 이다.** 빈손일 때만 열면
     #      이 문이 LLM 의 협조에만 열린다 - 약한 후보를 지목하는 순간 닫혀 (5) 반려로
     #      가고, 반려를 되풀이하면 루프 한계에서 잔차가 그대로 소각된다(이 기능이
-    #      없애려던 상태). `claim is not None` 은 번들 전체 조회라 잔차도 센서도
-    #      포함하고, **번들에 실재하는 이름만** 통과시킨다 - 환각은 "이 표본으로는
-    #      갈리지 않았다" 와 다른 사실이라 같은 이름을 주면 안 된다.
-    #      실재 판정이라 **대체(superseded)된 앞 실행의 후보도 함께 걸린다** -
-    #      `bundle.claims` 가 폐기된 후보를 안 담기 때문이고, 그것을 제출한 것은
-    #      환각이 아니다(아래 `_gate_rejection` 이 "대체된 앞 실행의 후보다" 로
-    #      정확히 답하고 물러설 길도 안내하므로 손해는 왕복 1회뿐이다).
+    #      없애려던 상태). 하한은 번들 전체를 보므로 잔차도 센서도 포함하고,
+    #      **지어내지 않은 이름만** 통과시킨다 - 환각은 "이 표본으로는 갈리지
+    #      않았다" 와 다른 사실이라 같은 이름을 주면 안 된다.
+    #      **대체(superseded)된 앞 실행의 후보는 정직한 제출로 친다** - 지어낸 것이
+    #      아니라 LLM 이 자기 문맥에서 실제로 받은 이름이다. 판정 근거는
+    #      `_honest_pick` 독스트링에 있다.
     #      `not bundle.statistical_passing()` 은 **그대로 둔다.** 이것이 남아 있어야
     #      `passing() + residuals` 의 비센서 claim 이 전부 미통과라 `_fold_key` 가
     #      통과 claim 과 잔차를 한 묶음에 섞지 않는다(설계 §4).
     residuals = bundle.residuals()
     if (not bundle.statistical_passing() and residuals
-            and (not claim_id or claim is not None)):
+            and _honest_pick(bundle, claim_id)):
         update["finalize_accepted"] = True
         update["finalize_status"] = "weak_signal"
         update["final_hypothesis"] = hypothesis
@@ -526,6 +559,10 @@ def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) ->
         _record_evidence(update, _evidence_groups(bundle, groups), None)
         if not claim_id:
             picked_note = ""
+        elif claim is None:
+            # 하한을 통과했는데 번들에 없다면 **대체된 이름뿐**이다 - 환각은
+            # `_honest_pick` 이 이미 걸렀다.
+            picked_note = _superseded_note(bundle, claim_id)
         elif claim.kind == "sensor":
             picked_note = f"네가 지목한 {claim_id} 는 2단 센서라 원인으로 확정하지 않았다. "
         else:
@@ -558,8 +595,8 @@ def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) ->
     #
     #      하한이 "정직한 제출" 인 이유는 (2a)와 같다 - 약한 후보를 지목했다고 문을
     #      닫으면 반려를 되풀이하다 루프 한계로 빠져 이 판정이 없애려는 상태가 그대로
-    #      재발한다. 환각만 반려한다.
-    if _no_separation_state(bundle, coverage) and (not claim_id or claim is not None):
+    #      재발한다. 환각만 반려한다(`_honest_pick`).
+    if _no_separation_state(bundle, coverage) and _honest_pick(bundle, claim_id):
         update["finalize_accepted"] = True
         update["finalize_status"] = "no_separation"
         update["final_hypothesis"] = hypothesis
@@ -576,6 +613,9 @@ def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) ->
         # 승인을 받는다.
         if not claim_id:
             picked_note = ""
+        elif claim is None:
+            # (2a)와 같은 이유 - 하한을 통과한 "번들에 없는 이름" 은 대체뿐이다.
+            picked_note = _superseded_note(bundle, claim_id)
         elif claim.kind == "sensor":
             picked_note = f"네가 지목한 {claim_id} 는 2단 센서라 원인으로 확정하지 않았다. "
         else:

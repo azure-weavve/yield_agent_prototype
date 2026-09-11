@@ -826,8 +826,8 @@ def test_analyze_prompt_stays_true_when_the_evidence_cap_truncates():
     assert ("판별선을 넘은 후보는 게이트가 상한 안에서는 전부 접어서 줄 세워 "
             "리포트에 싣고, 상한을 넘는 것은 건수만 알린다 - 다른 축의 근거를 "
             "버릴까 걱정해 지목을 미루지 마라") in nodes.ANALYZE_SYSTEM_PROMPT
-    assert ("아랫선을 넘은 잔차가 있으면 최신 도구 결과에 실재하는 이름을 지목한 "
-            "한 상한이 남는 한 그것을 근거로 싣지만") in nodes.ANALYZE_SYSTEM_PROMPT
+    assert ("아랫선을 넘은 잔차가 있으면 네가 도구 결과에서 실제로 받은 이름을 "
+            "지목한 한 상한이 남는 한 그것을 근거로 싣지만") in nodes.ANALYZE_SYSTEM_PROMPT
 
 
 def test_mock_report_has_a_sentence_for_no_separation():
