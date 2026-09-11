@@ -815,14 +815,19 @@ def test_analyze_prompt_stays_true_when_the_evidence_cap_truncates():
     둘 다 `REPORT_MAX_EVIDENCE` 절단에서 거짓이 되던 LLM 대면 문장이다. `:46` 은
     "전부 접어서 싣는다" 고 약속했고 `:48` 은 잔차를 "근거로 실은 채 끝난다" 고
     약속했는데, 상한이 차면 둘 다 안 실린다. 원래 의도("지목을 미루지 마라")는
-    살린 채 한정어만 붙인 형태다.
+    살린 채 한정어만 붙인 형태다. 단언은 **어느 항목에 대한 약속인가**를 정하는
+    머리 절부터 문장 전체를 본다 - 이 저장소는 꼬리만 잠근 단언이 가운데·머리를
+    뒤집는 훼손을 놓치는 것을 두 번 실측했다.
     """
     from graph import nodes
-    assert ("게이트가 상한 안에서는 전부 접어서 줄 세워 리포트에 싣고, 상한을 넘는 "
-            "것은 건수만 알린다 - 다른 축의 근거를 버릴까 걱정해 지목을 미루지 "
-            "마라") in nodes.ANALYZE_SYSTEM_PROMPT
-    assert ("실재하는 이름을 지목한 한 상한이 남는 한 그것을 근거로 "
-            "싣지만") in nodes.ANALYZE_SYSTEM_PROMPT
+    # **머리 절("어느 항목인가")부터 잠근다.** 한정어와 지시 동사만 보면 주어를
+    # `판별선을 넘지 못한 후보는` 으로 뒤집는 훼손이 초록으로 통과한다 - 그러면
+    # 프롬프트가 거짓이 되고 바로 아래 불릿과도 모순된다(재리뷰 지적, 실측).
+    assert ("판별선을 넘은 후보는 게이트가 상한 안에서는 전부 접어서 줄 세워 "
+            "리포트에 싣고, 상한을 넘는 것은 건수만 알린다 - 다른 축의 근거를 "
+            "버릴까 걱정해 지목을 미루지 마라") in nodes.ANALYZE_SYSTEM_PROMPT
+    assert ("아랫선을 넘은 잔차가 있으면 최신 도구 결과에 실재하는 이름을 지목한 "
+            "한 상한이 남는 한 그것을 근거로 싣지만") in nodes.ANALYZE_SYSTEM_PROMPT
 
 
 def test_mock_report_has_a_sentence_for_no_separation():
