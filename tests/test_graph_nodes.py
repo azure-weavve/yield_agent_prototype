@@ -2768,7 +2768,7 @@ EQP_CH_PASSING_AND_RESIDUAL = {
 
 
 def _weak_finding(tool, hyp, claim_id, loop, score):
-    """status 는 ok 인데 점수가 잔차 아랫선(0.25) 아래인 후보 하나짜리 실행.
+    """status 는 ok 이고 **점수는 호출자가 정하는** 후보 하나짜리 실행.
 
     `status: "ok" if candidates else "no_signal"`(tools/commonality.py) 이므로
     ok 는 곧 "후보가 났다" 이다. **점수는 호출자가 정한다** - 아랫선(0.25) 아래면
