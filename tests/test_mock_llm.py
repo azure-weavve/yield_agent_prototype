@@ -790,7 +790,8 @@ def test_operational_client_tells_the_report_what_a_residual_claim_is():
     # 문장 전체를 잠근다.** 머리 절과 꼬리 조각만 단언하면 가운데 지시 동사
     # ("근거로 세지 말고" -> "근거로 세고")를 뒤집는 훼손이 통과한다 - sys
     # 프롬프트 쪽 동형 문구는 이미 잠겨 있었는데(Task 6 리뷰 I-B) user 프롬프트
-    # 쪽은 안 잠겨 있었다(Task 7 훼손 실험 #1, 실측).
+    # 쪽은 안 잠겨 있었다(최종 리뷰 Minor 13 정정 - Task 7 훼손 실험 표의 #1 은
+    # `_evidence_groups` 훼손이다. 가운데 동사 미잠금을 실측한 것은 Task 7 리뷰).
     assert ("passes 가 false 인 항목은 판별선을 넘지 못한 잔차다(reject_reason 이 "
             "왜 약한지를 말한다) - 근거로 세지 말고 '아직 갈리지 않은 후보' 로 "
             "적어라)") in client.llm.seen
@@ -809,7 +810,11 @@ def test_analyze_prompt_tells_the_llm_to_step_back_on_weak_candidates():
 
 def test_mock_report_has_a_sentence_for_no_separation():
     """판정 어휘를 늘리면 mock 결론문도 같이 늘려야 한다 - 안 그러면 새 판정이
-    else 로 떨어져 LLM 이 쓴 가설이 확정처럼 찍힌다."""
+    else 로 떨어져 LLM 이 쓴 가설이 확정처럼 찍힌다.
+
+    claims 도 coverage 도 안 준 상태(센서 없음·no_data 없음)라 원래 대조 문장
+    그대로다 - 최종 리뷰 I-1·I-3 의 조건부 문구가 안 섞여 들어가는지도 함께 잠근다.
+    """
     from llm.client import ScriptedMockLLMClient
     report = ScriptedMockLLMClient().generate_report(
         target_wafers=["W1"], target_source="manual", target_group=["W1"],
@@ -817,11 +822,52 @@ def test_mock_report_has_a_sentence_for_no_separation():
         finalize_status="no_separation")
     assert "갈리는 항목 없음" in report
     assert "lot 밖 대조군" in report
+    assert ("계산된 가설 도구(hyp_*) 축에서는 타깃과 대조군을 가르는 항목이 없다. "
+            "분석이 안 돌은 것도 근거가 약한 것도 아니라 lot 내부 대조로는 "
+            "갈리지 않는다는 뜻이며,") in report
+    assert "2단 센서" not in report
+    assert "계산 불가 축" not in report
+
+
+def test_mock_report_no_separation_names_the_passing_sensor():
+    """최종 리뷰 I-1(mock): 통과한 2단 센서가 claims 에 실려 있으면 그 사실을
+    적어야 한다 - 안 적으면 "가르는 항목이 없다" 가 실제로 갈린 센서를 덮는다.
+    """
+    from llm.client import ScriptedMockLLMClient
+    report = ScriptedMockLLMClient().generate_report(
+        target_wafers=["W1"], target_source="manual", target_group=["W1"],
+        status_summary="s", findings=[], hypothesis="h", confidence=0.3,
+        finalize_status="no_separation",
+        claims=[{"claim_id": "sensor:CC002000:TEMP_1", "kind": "sensor",
+                 "passes": True, "rank": 1}])
+    assert ("가르는 항목이 없다. 2단 센서는 판별선을 넘은 근거가 함께 실렸다 - "
+            "원인 확정 근거는 아니다.") in report
+
+
+def test_mock_report_no_separation_scopes_to_computed_axes_when_no_data_present():
+    """최종 리뷰 I-3(a)(mock): coverage 에 no_data 축이 있으면 "다 대조했다" 를
+    빼고 그 축에 적재 범위 확인 조치를 붙인다.
+    """
+    from llm.client import ScriptedMockLLMClient
+    report = ScriptedMockLLMClient().generate_report(
+        target_wafers=["W1"], target_source="manual", target_group=["W1"],
+        status_summary="s", findings=[], hypothesis="h", confidence=0.3,
+        finalize_status="no_separation",
+        coverage={"no_data": ["hyp_metro_commonality"]})
+    assert "분석이 안 돌은 것도" not in report
+    assert ("근거가 약한 것도 아니라 lot 내부 대조로는 갈리지 않는다는 뜻이며, "
+            "계산 불가 축(hyp_metro_commonality)은 적재 범위와 추출 조건을 "
+            "확인해야 한다.") in report
 
 
 def test_operational_prompt_tells_the_report_what_no_separation_means():
     """운영 리포트 LLM 은 판정 이름만 받는다 - 무엇인지 안 알려주면 '분석 미수행'
-    으로 뭉개거나 반대로 '원인 없음' 으로 단정한다. 둘 다 조치가 틀려진다."""
+    으로 뭉개거나 반대로 '원인 없음' 으로 단정한다. 둘 다 조치가 틀려진다.
+
+    최종 리뷰 I-1·I-3(a): "가르는 항목이 없다" 를 가설 도구(hyp_*) 축에 한정하고
+    센서 단서를 붙이는 지시, coverage 의 no_data 축을 계산된 축 밖으로 빼고
+    적재 범위 확인을 후속 조치로 붙이는 지시도 함께 잠근다.
+    """
     client = _openai_client()
     client.generate_report(
         target_wafers=["W1"], target_source="manual", target_group=["W1"],
@@ -830,6 +876,12 @@ def test_operational_prompt_tells_the_report_what_no_separation_means():
     assert "판정이 no_separation 이면" in client.llm.seen_sys
     assert "분석 미수행이 아니다" in client.llm.seen_sys
     assert "다른 관측축" in client.llm.seen_sys
+    assert ("계산된 가설 도구(hyp_*) 축에서 타깃과 대조군을 가르는 항목이 "
+            "없었다는 관측이다") in client.llm.seen_sys
+    assert ("2단 센서 근거는 통과했을 수 있으니 그것까지 '가르는 항목이 없다'로 "
+            "뭉개지 마라") in client.llm.seen_sys
+    assert ("coverage 에 no_data 축이 있으면 결론을 계산된 축에 한정하고 그 축은 "
+            "적재 범위와 추출 조건 확인을 후속 조치로 적어라") in client.llm.seen_sys
 
 
 def test_operational_prompt_says_inconclusive_can_carry_residuals():
@@ -852,8 +904,9 @@ def test_operational_prompt_says_inconclusive_can_carry_residuals():
             "'아직 갈리지 않은 후보' 로 적어라") in client.llm.seen_sys
     # **"뜻이 아니니" 부정어까지 잠근다.** 이 부정어를 지우면(`뜻이니`) 문장이
     # "inconclusive 는 근거가 한 줄도 없다는 뜻" 으로 뒤집힌다 - 뒤 절이 이미 잠겨
-    # 있어 자기모순이 되므로 위험도는 낮지만(Task 7 훼손 실험 #B), 부정어 하나로
-    # 지시가 반대로 바뀌는 자리라 문장 전체를 단언한다.
+    # 있어 자기모순이 되므로 위험도는 낮지만(최종 리뷰 Minor 13 정정 - Task 7
+    # 훼손 실험 표에는 이 자리("#B")가 없다. 중간 동사 미잠금을 실측한 것은
+    # Task 7 리뷰다), 부정어 하나로 지시가 반대로 바뀌는 자리라 문장 전체를 단언한다.
     assert ("확정 근거가 아니라는 "
             "뜻이지 근거가 한 줄도 없다는 뜻이 아니니, passes 가 false 인 항목은 "
             "근거로 세지 말고 '아직 갈리지 않은 후보' 로 적어라") in client.llm.seen_sys
@@ -862,8 +915,15 @@ def test_operational_prompt_says_inconclusive_can_carry_residuals():
 def test_analyze_prompt_knows_the_full_axis_case_is_received_not_rejected():
     """분석 프롬프트가 '잔차마저 없으면 반려된다' 로만 말하면 이제 반만 참이다.
 
-    등록 축을 다 돌린 뒤라면 게이트가 '갈리는 항목 없음' 으로 받는다. 반쪽짜리
+    최종 리뷰 I-2: 예전 문구는 "등록 축을 다 돌린 뒤라면" 으로 뭉뚱그려
+    `_no_separation_state` 가 실제로 요구하는 두 조건 - **도구 실패 없이** 다
+    돌렸을 것(①)과 가설 도구 **후보가 나서** 그 **분리 점수가 전부 아랫선에도
+    못 미칠 것**(③④) - 을 빠뜨렸다(재현: `ALL_THIN` 에 빈손 제출 -> 게이트는
+    안 받고 반려·inconclusive 로 끝났는데 프롬프트는 "받는다" 고 말했다). 그
+    조건을 갖춰야 게이트가 실제로 '갈리는 항목 없음' 으로 받는다. 반쪽짜리
     문장을 남겨 두면 LLM 이 물러설 수 있는 자리에서 축을 더 부르며 예산을 태운다.
     """
     from graph import nodes
-    assert "갈리는 항목 없음" in nodes.ANALYZE_SYSTEM_PROMPT
+    assert ("등록 축을 도구 실패 없이 다 돌렸고 가설 도구 후보가 났는데 그 "
+            "분리 점수가 전부 아랫선에도 못 미치면 게이트가 '갈리는 항목 없음' "
+            "으로 받으니 그때는 빈손으로 물러서라") in nodes.ANALYZE_SYSTEM_PROMPT

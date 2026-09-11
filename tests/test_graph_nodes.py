@@ -3261,6 +3261,14 @@ def test_all_axes_run_but_nothing_separates_ends_as_no_separation():
     assert "잔차 아랫선(0.25)" in verdict, verdict
     assert "등록 축 4개 중 4개 대조" in verdict, verdict
     assert "lot 밖 대조군" in verdict, verdict
+    # 최종 리뷰 I-1: 센서가 안 실린 상태에서는 원래 대조 문장 그대로다 - 센서
+    # 단서 문구가 섞여 들어가면 안 된다(단서는 센서가 실렸을 때만 참이다).
+    assert ("계산된 가설 도구(hyp_*) 축에서는 타깃과 대조군을 가르는 항목이 "
+            "없다. 최고 분리 점수 0.18") in verdict, verdict
+    assert "2단 센서는 판별선을 넘은 근거가 함께 실렸다" not in verdict, verdict
+    # 최종 리뷰 I-3: no_data 축이 없으면 원래 조건문 그대로다.
+    assert "분석이 안 돌은 것도 근거가 약한 것도 아니라" in verdict, verdict
+    assert "계산 불가 축" not in verdict, verdict
 
 
 def test_no_separation_wins_over_no_signal():
@@ -3323,6 +3331,13 @@ def test_no_separation_accepts_an_honest_pick():
     assert not any(c.get("picked_by_llm") for c in update["final_claims"])
     assert "최고 분리 점수 0.18" in verdict, verdict   # 센서 효과크기(2.31)가 아니다
     assert "네가 지목한 eqp_ch_commonality:chamber:CC002000:ETCH9_B" in verdict, verdict
+    # 최종 리뷰 I-1(재현 케이스, 실측): 통과한 2단 센서가 근거로 실린 상태에서
+    # "가르는 항목이 없다" 를 축 전체로 넓히면 거짓이다 - 가설 도구(hyp_*) 축에
+    # 한정하고 센서 단서를 붙인다. 문장 전체를 단언해 가운데 한정어가 빠져도
+    # 빨개지게 한다.
+    assert ("계산된 가설 도구(hyp_*) 축에서는 타깃과 대조군을 가르는 항목이 "
+            "없다. 2단 센서는 판별선을 넘은 근거가 함께 실렸다 - 원인 확정 "
+            "근거는 아니다. 최고 분리 점수 0.18") in verdict, verdict
 
 
 def test_a_made_up_claim_id_does_not_open_no_separation():
@@ -3369,6 +3384,8 @@ def test_no_separation_state_offers_the_step_back_path():
          "hypothesis": "지어낸 것", "confidence": 0.9},
         loop=2, update=update, findings=ALL_WEAK)
     assert "claim_id 를 비우고" in verdict, verdict
+    # 이월 10: 반려 경로에 있다는 사실 자체를 스스로 단언한다.
+    assert "finalize_status" not in update
 
 
 def test_no_separation_state_stays_closed_when_a_candidate_actually_passed(monkeypatch):
@@ -3388,3 +3405,71 @@ def test_no_separation_state_stays_closed_when_a_candidate_actually_passed(monke
     coverage = nodes._coverage(bundle)
     assert bundle.statistical_passing(), "픽스처가 통과 후보를 안 내면 이 시험은 공허하다"
     assert nodes._no_separation_state(bundle, coverage) is False
+
+
+def test_no_separation_limits_the_claim_to_computed_axes_when_some_are_no_data():
+    """최종 리뷰 I-3(a): 계산 불가(no_data) 축이 섞이면 "다 대조했다" 는 거짓이다.
+
+    약한 ok 축 1개(`ALL_WEAK[0]`) + `no_paired_stratum` 축 3개
+    (`_ALL_NO_PAIR[1:]`) - `_no_separation_state` 의 ①(`not unrun and not
+    failed`)은 `no_data` 를 안 보므로 이 상태에서도 그대로 열린다(재현, 리뷰어
+    사례: 약한 ok 축 1 + no_paired_stratum 축 3 -> "등록 축 4개 중 4개 대조"라고
+    말하면서 3개는 계산 불가였다는 사실을 "가르는 항목이 없다" 뒤에서 숨긴다).
+    "가르는 항목이 없다" 를 계산된 축에 한정하고, "분석이 안 돌은 것도 아니라"
+    를 빼며, 계산 불가 축에 적재 범위 확인 조치를 붙인다.
+    """
+    update = {}
+    verdict = nodes._finalize_gate(
+        {"claim_id": "", "hypothesis": "h", "confidence": 0.3},
+        loop=2, update=update, findings=[ALL_WEAK[0], *_ALL_NO_PAIR[1:]])
+    assert update["finalize_status"] == "no_separation"
+    assert update["coverage"]["no_data"] == [
+        "hyp_metro_commonality", "hyp_ppid_commonality", "hyp_step_passage_commonality"]
+    assert "등록 축 4개 중 4개 대조" in verdict, verdict
+    assert ("그중 3개는 계산 불가: hyp_metro_commonality, hyp_ppid_commonality, "
+            "hyp_step_passage_commonality") in verdict, verdict
+    # "분석이 안 돌은 것도" 는 no_data 가 있으면 거짓이라 뺀다 - 전체 문구를
+    # 단언해 부정어 하나만 지우는 훼손도 잡는다.
+    assert "분석이 안 돌은 것도" not in verdict, verdict
+    assert ("계산된 가설 도구(hyp_*) 축에서는 타깃과 대조군을 가르는 항목이 "
+            "없다. 최고 분리 점수 0.18 로 잔차 아랫선(0.25)에도 미달한다. "
+            "근거가 약한 것도 아니라 lot 내부 대조로는 갈리지 않는다는 "
+            "뜻이다.") in verdict, verdict
+    # 계산 불가 축에는 (3)/운영 프롬프트 no_comparable_data 와 같은 조치를 붙인다.
+    assert ("계산 불가 축(hyp_metro_commonality, hyp_ppid_commonality, "
+            "hyp_step_passage_commonality)은 적재 범위와 추출 조건을 "
+            "확인해야 한다.") in verdict, verdict
+    assert "lot 밖 대조군 또는 다른 관측축이 필요하다" in verdict, verdict
+
+
+def test_loop_limit_evidence_count_reflects_the_cap_not_the_carried_total(monkeypatch):
+    """최종 리뷰 I-4: (4) `elif carried:` 판정문의 건수는 절단 전 `len(carried)`
+    가 아니라 실제로 `final_claims` 에 실린 수여야 한다.
+
+    통과 묶음을 2개(서로 다른 축) 만들고 상한을 1로 낮춘다. `bundle.
+    statistical_passing()` 이 참이라 `_evidence_groups` 는 잔차를 안 더하고
+    `groups` 를 그대로 돌려주므로(`carried is groups`) `elif carried:` 갈래로
+    떨어진다 - `len(carried)` 는 2 인데 `_record_evidence` 의 상한이 걸려
+    `final_claims` 는 1건만 남는다(리뷰어 재현: 통과 묶음 11개 · confidence 0.3
+    · loop 7 -> final_claims 8건인데 판정문은 "근거 11건").
+    """
+    monkeypatch.setattr(ya_config, "REPORT_MAX_EVIDENCE", 1)
+    second_axis_passing = {
+        "loop": 3, "tool": "hyp_ppid_commonality", "args": {},
+        "result": {"hypothesis_id": "ppid_commonality", "status": "ok", "candidates": [
+            {"claim_id": "ppid_commonality:ppid:CC002000:P1", "step_seq": "CC002000",
+             "key": "P1", "level": "ppid", "passes": True, "reject_reason": None,
+             "score": 1.0, "target_pass": 3, "target_total": 3,
+             "control_pass": 0, "control_total": 3},
+        ]},
+        "thought": "다른 축 통과",
+    }
+    update = {}
+    verdict = nodes._finalize_gate(
+        {"claim_id": "지어낸:claim:id", "hypothesis": "h", "confidence": 0.3},
+        loop=ya_config.MAX_LOOPS, update=update,
+        findings=[EVIDENCE_FINDING_NEW, second_axis_passing])
+    assert update["finalize_status"] == "inconclusive"
+    assert len(update["final_claims"]) == 1     # 상한 1 로 잘렸다
+    assert f"근거 {len(update['final_claims'])}건" in verdict, verdict
+    assert "근거 2건" not in verdict, verdict
