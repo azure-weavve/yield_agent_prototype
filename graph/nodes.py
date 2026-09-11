@@ -746,14 +746,16 @@ def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) ->
         update["final_hypothesis"] = hypothesis
         update["final_confidence"] = conf
         update["coverage"] = coverage
-        # **잔차도 싣는다.** 이 경로는 `(2a)` 가 환각·대체 이름을 안 받아 줄 때
-        # 열리므로 게이트 협조로는 못 막는다 - 여기서 안 실으면 "봤고 후보도
+        # **잔차도 싣는다.** 이 경로는 `(2a)` 가 환각을 안 받아 줄 때 열리므로
+        # 게이트 협조로는 못 막는다 - 여기서 안 실으면 "봤고 후보도
         # 났는데 약하다" 가 통째로 소각된다(실측 재현).
         # `picked` 는 잔차를 실은 목록에서는 안 붙인다: 그 상태에서 지목할 수
         # 있는 것은 센서나 잔차뿐이고, 그것을 서술의 축으로 삼으면 리포트가 약한
         # 후보를 단정한다((2a)와 같은 이유). 목록이 바뀌면 `is` 비교도 어차피
         # 안 맞는다. **지금은 이 삼항이 갈리지 않는 보험이다** - `carried is not
-        # groups` 에 닿으려면 `claim is None`(환각·대체 이름)이어야 하고, 그러면
+        # groups` 에 닿으려면 `_honest_pick` 이 거짓이어야 하고(그 상태에서 (2a)의
+        # 나머지 두 항은 이미 참이다), 그것은 **환각뿐**이다 - 대체 이름은 이제
+        # `(2a)` 가 받아 이 경로에 못 온다. 환각이면 `claim is None` 이고, 그러면
         # `find_group` 도 None 이라 `picked` 는 항상 None 이다. `(2a)` 가 실재하는
         # 통과 센서 claim 의 지목을 거절하도록 좁아져 이 갈래에 닿을 수 있게 되면
         # 살아난다.

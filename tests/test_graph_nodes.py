@@ -2771,7 +2771,8 @@ def _weak_finding(tool, hyp, claim_id, loop, score):
     """status 는 ok 인데 점수가 잔차 아랫선(0.25) 아래인 후보 하나짜리 실행.
 
     `status: "ok" if candidates else "no_signal"`(tools/commonality.py) 이므로
-    ok 는 곧 "후보가 났다" 이고, 점수가 아랫선 아래라 잔차 자격은 없다.
+    ok 는 곧 "후보가 났다" 이다. **점수는 호출자가 정한다** - 아랫선(0.25) 아래면
+    잔차 자격이 없고, 위면 잔차가 된다(`PPID_BELOW_LINE` 이 후자를 일부러 쓴다).
     """
     return {
         "loop": loop, "tool": tool, "args": {},
@@ -3111,8 +3112,8 @@ def test_a_weak_only_pick_is_not_told_to_empty_its_claim_id():
     (2a) 를 여니, 이 상태에서 비우라는 안내가 나가면 오히려 이미 받아준 지목을
     취소하라는 모순된 지시가 된다.
 
-    안내 자체가 없어진 것은 아니다 - 환각이나 대체(superseded)된 이름을 지목하면
-    `(2a)` 가 안 열려 반려로 가고, 위
+    안내 자체가 없어진 것은 아니다 - **환각**을 지목하면 `(2a)` 가 안 열려 반려로
+    가고(대체된 이름은 이제 열린다 - `test_a_superseded_claim_id_opens_weak_signal`), 위
     `test_a_made_up_claim_id_is_still_rejected_not_absorbed` 가 그 상태에서
     "claim_id 를 비우고" 가 **나온다**고 단언한다. 두 테스트는 같은 문구의
     나가는 상태와 안 나가는 상태를 각각 잠근다.
