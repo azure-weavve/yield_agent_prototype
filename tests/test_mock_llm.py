@@ -808,6 +808,23 @@ def test_analyze_prompt_tells_the_llm_to_step_back_on_weak_candidates():
     assert "잔차" in nodes.ANALYZE_SYSTEM_PROMPT
 
 
+def test_analyze_prompt_stays_true_when_the_evidence_cap_truncates():
+    """최종 리뷰 Minor 12 로 고친 두 문장을 잠근다 - **고쳤는데 안 잠그면 안 고친**
+    **것이다**(이 브랜치의 확정 교훈: 프롬프트를 고치면 단언도 같이 넣는다).
+
+    둘 다 `REPORT_MAX_EVIDENCE` 절단에서 거짓이 되던 LLM 대면 문장이다. `:46` 은
+    "전부 접어서 싣는다" 고 약속했고 `:48` 은 잔차를 "근거로 실은 채 끝난다" 고
+    약속했는데, 상한이 차면 둘 다 안 실린다. 원래 의도("지목을 미루지 마라")는
+    살린 채 한정어만 붙인 형태다.
+    """
+    from graph import nodes
+    assert ("게이트가 상한 안에서는 전부 접어서 줄 세워 리포트에 싣고, 상한을 넘는 "
+            "것은 건수만 알린다 - 다른 축의 근거를 버릴까 걱정해 지목을 미루지 "
+            "마라") in nodes.ANALYZE_SYSTEM_PROMPT
+    assert ("실재하는 이름을 지목한 한 상한이 남는 한 그것을 근거로 "
+            "싣지만") in nodes.ANALYZE_SYSTEM_PROMPT
+
+
 def test_mock_report_has_a_sentence_for_no_separation():
     """판정 어휘를 늘리면 mock 결론문도 같이 늘려야 한다 - 안 그러면 새 판정이
     else 로 떨어져 LLM 이 쓴 가설이 확정처럼 찍힌다.
@@ -882,6 +899,19 @@ def test_operational_prompt_tells_the_report_what_no_separation_means():
             "뭉개지 마라") in client.llm.seen_sys
     assert ("coverage 에 no_data 축이 있으면 결론을 계산된 축에 한정하고 그 축은 "
             "적재 범위와 추출 조건 확인을 후속 조치로 적어라") in client.llm.seen_sys
+    # **재리뷰 Important: 형제 판정의 단서를 전부 옮겼는지 세어 본다.**
+    # 물러섬·미수행 판정은 하나도 빠짐없이 "확정 결론을 쓰지 마라" 로 끝나는데
+    # (weak_signal·no_signal·no_comparable_data·tool_failure·llm_call_failed)
+    # no_separation 에만 없었다. 그리고 `(2b)` 는 **정직한 지목을 받아들여**
+    # (`nodes.py` `(2b)` 분기) 그 가설을 `final_hypothesis` 로 저장하고 report_node
+    # 가 리포트 LLM 에 그대로 넘기므로, 게이트가 원인으로 확정하지 않은 후보가
+    # 결론문의 주어로 나갈 수 있다 - weak_signal 이 같은 이유로 전용 문장을 받은
+    # 선례가 바로 옆에 있다. 문장 전체를 단언해 가운데 지시 동사를 뒤집는 훼손도
+    # 잡는다.
+    assert "다른 관측축이 필요하다고 적어라. 확정 결론을 쓰지 마라." in client.llm.seen_sys
+    assert ("판정이 no_separation 인데 제출된 가설이 특정 후보를 원인으로 지목하고 "
+            "있어도 그 문장을 그대로 옮기지 마라 - 게이트는 정직한 지목을 반려하지 "
+            "않을 뿐 그 후보를 원인으로 확정하지 않았다.") in client.llm.seen_sys
 
 
 def test_operational_prompt_says_inconclusive_can_carry_residuals():
