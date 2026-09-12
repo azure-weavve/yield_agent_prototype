@@ -719,13 +719,44 @@ def test_enumeration_and_sampling_agree(tmp_path, monkeypatch):
     sampled = _find(cm.find_commonality(t, c), "equipment", "ETCH9")
     assert sampled["n_permutations_total"] == 924           # 경우의 수는 그대로 보고
     # 표본 경로는 관측 라벨을 빼지 않는다 - 924가지에서 1000번 뽑으므로 관측과
-    # 같은 라벨이 몇 번 다시 나오고, 그것이 "관측 이상" 으로 세어진다. 여기서는
-    # 2번 → p = 3/1001 = 0.003 (PERM_SEED 고정이라 결정론적이다). 그래서 표본
-    # 경로의 p 는 바닥값 1/1001 에 닿지 않는다 - 두 경로의 바닥이 다르다.
-    assert sampled["p_permutation"] == 0.003
-    assert sampled["p_min_possible"] == 0.001
+    # 같은 라벨이 다시 나오고, 그것이 "관측 이상" 으로 세어진다. 그래서 완전
+    # 분리인데도 표본 경로의 p 는 자기 바닥에 닿지 못한다. **뽑힌 횟수(그래서
+    # p 값 자체)는 난수열이 바뀌면 달라진다** - 여기서 잠그는 것은 그 숫자가
+    # 아니라 "바닥에 못 닿는다" 는 성질이고, 그 원인은 아래
+    # `test_only_the_exhaustive_branch_drops_the_observed_labelling` 이 잠근다.
+    assert sampled["p_at_floor"] is False
+    assert sampled["p_permutation"] > sampled["p_min_possible"]
+    assert sampled["p_min_possible"] == 0.001               # 1/(1000+1) - 계산 예산이 정한다
     # 그럼에도 결론은 같아야 한다: 둘 다 "귀무는 이만한 분리를 거의 못 만든다"
     assert abs(sampled["p_permutation"] - exhaustive["p_permutation"]) < 0.01
+
+
+def test_only_the_exhaustive_branch_drops_the_observed_labelling():
+    """두 경로의 p 가 갈리는 **원인**을 직접 잰다.
+
+    전수 열거는 관측 라벨을 건너뛴다 - 안 그러면 "넘은 횟수" 가 늘 1 이상이 되어
+    p 가 자기 바닥에 절대 못 닿고, 그러면 p_min_possible 로 공간 부족을 읽는
+    계약이 죽는다. 표본 추출은 반대로 관측 라벨을 다시 뽑을 수 있고, 그것이 위
+    `test_enumeration_and_sampling_agree` 에서 표본 경로의 p 가 바닥보다 큰 이유다.
+
+    이 성질을 **여기서** 재는 이유: 위 테스트는 열거 상한을 10 으로 낮춰야
+    표본 경로를 타는데, 프로덕션 상한은 10,000 이라 6대6(924가지)은 언제나 전수
+    경로다. 즉 그쪽 p 값은 프로덕션에서 나올 수 없는 배치의 산물이다. 원인을
+    직접 재면 그 배치에 기대지 않는다.
+    """
+    masks = [("L1", 0b0011, 0b1100)]                        # 타깃 2 · 대조군 2 = 6가지
+    seen = 0b1111
+    observed_t = 0b0011
+
+    exhaustive = list(cm._iter_label_sets(masks, 6, 1000, random.Random(0), seen))
+    assert len(exhaustive) == 5                             # 6가지 중 관측을 뺐다
+    assert all(labels[0][1] != observed_t for labels in exhaustive)
+
+    # n_total 이 PERM_EXHAUSTIVE_MAX 를 넘으면 표본 분기다. 회차 수만큼 뽑으므로
+    # 6가지밖에 없는 여기서는 관측 라벨이 반드시 다시 나온다.
+    sampled = list(cm._iter_label_sets(masks, 10 ** 6, 50, random.Random(0), seen))
+    assert len(sampled) == 50
+    assert any(labels[0][1] == observed_t for labels in sampled)
 
 
 # -------------------------------------------------------------------- FDR
