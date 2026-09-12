@@ -569,7 +569,10 @@ def test_report_node_names_a_verdict_when_the_gate_never_judged():
     out = nodes.report_node({"target_wafers": ["W1"], "target_source": "manual",
                              "target_group": ["W1"], "status_summary": "s",
                              "findings": [EQP_CH_SILENT]})
-    assert out["finalize_status"] == "inconclusive"
+    # 이 픽스처는 증거 상태가 no_signal 이다(대조한 축이 침묵했다). 예전에는
+    # 게이트를 안 탄다는 이유만으로 inconclusive 로 뭉개졌다 - 이름이 붙었다는
+    # 사실이 이 테스트의 주제이지, 이름이 무엇인지는 아니다.
+    assert out["finalize_status"] == "no_signal"
 
 
 def test_report_node_keeps_evidence_when_the_gate_never_judged():
@@ -614,10 +617,14 @@ def test_report_node_keeps_residuals_when_the_gate_never_judged():
     out = nodes.report_node({"target_wafers": ["W1"], "target_source": "manual",
                              "target_group": ["W1"], "status_summary": "s",
                              "findings": [EQP_CH_BELOW_LINE]})
-    assert out["finalize_status"] == "inconclusive"
+    # 이 픽스처는 증거 상태가 weak_signal 이다(판별선 미만이지만 잔차 자격은 있는
+    # 후보 1개). 이 테스트의 주제는 잔차가 리포트에 남는가이지 판정 이름이 아니다.
+    assert out["finalize_status"] == "weak_signal"
     assert "[잔차 1]" in out["report"], out["report"]
     assert "eqp_ch_commonality:chamber:CC002000:ETCH9_B" in out["report"]
-    assert "아래 [잔차] 줄은 판별선을 넘지 못한 후보다" in out["report"], out["report"]
+    # weak_signal 결론 문장은 inconclusive 와 다르다(`llm/client.py` 참조) - 판정이
+    # 바뀌었으니 잔차 안내 문장도 그 갈래의 문장이어야 한다.
+    assert "아래 [잔차] 줄이 그 후보들이다" in out["report"], out["report"]
 
 
 def test_report_node_does_not_mix_residuals_into_a_passing_backstop():
@@ -1818,7 +1825,9 @@ def test_report_node_marks_superseded_when_the_gate_never_judged():
         out = nodes.report_node(state)
     finally:
         nodes._llm = original
-    assert out["finalize_status"] == "inconclusive"
+    # 이 픽스처는 증거 상태가 no_signal 이다(대조한 축에 통과 후보도 잔차도 없다).
+    # 예전에는 게이트를 안 탄다는 이유만으로 inconclusive 로 뭉개졌다.
+    assert out["finalize_status"] == "no_signal"
     assert "[대체됨]" in out["report"]
     assert received["findings"][0].get("superseded") is True
 
@@ -3915,3 +3924,135 @@ def test_loop_limit_evidence_count_reflects_the_cap_not_the_carried_total(monkey
     assert len(update["final_claims"]) == 1     # 상한 1 로 잘렸다
     assert f"근거 {len(update['final_claims'])}건" in verdict, verdict
     assert "근거 2건" not in verdict, verdict
+
+
+def test_gateless_exit_takes_its_reason_from_the_evidence_state():
+    """**게이트를 안 거치고 끝나도 사유는 증거 상태가 정한다.**
+
+    경로 B(루프 한계인데 finalize 를 안 불렀거나, tool 없이 텍스트만 응답)는 게이트를
+    통째로 건너뛰어 무조건 `inconclusive` 였다 - 4축을 다 돌고 아무것도 안 갈린 분석과
+    예산이 모자라 못 끝낸 분석이 같은 사유로 나갔다. 엔지니어가 받는 조치가 다른데
+    ("표본을 늘려라" vs "재실행하라") 하나로 뭉개진다.
+
+    **자리를 세어서 전부 돈다** - 사유 하나만 잠그면 나머지가 조용히 `inconclusive` 로
+    남아도 초록이다(이 저장소가 여덟 번 당한 유형).
+    """
+    failed = [{**f, "result": "오류: DB 연결 실패", "failed": True} for f in ALL_SILENT]
+    cases = [
+        ("전축 침묵", ALL_SILENT, "no_signal"),
+        ("전부 아랫선 미만", ALL_WEAK, "no_separation"),
+        ("잔차 있음", [EQP_CH_BELOW_LINE, PPID_SILENT, STEP_PASSAGE_SILENT,
+                    METRO_SILENT], "weak_signal"),
+        ("전축 짝 없음", _ALL_NO_PAIR, "no_comparable_data"),
+        ("전축 도구 실패", failed, "tool_failure"),
+        ("볼 것이 아무것도 없음", [], "inconclusive"),
+    ]
+    for label, findings, expected in cases:
+        status, verdict, _ = nodes._gateless_finalize(findings)
+        assert status == expected, (label, status, verdict)
+
+
+def test_gateless_exit_can_never_approve():
+    """**게이트 밖에서 승인은 나오지 않는다** - 금지 규칙이 아니라 구조다.
+
+    통과 후보가 실재해도 `(1)` 은 지목한 claim 을 요구하는데 경로 B 는 제출이 없어
+    `claim_id` 가 빈손이다. 그래서 `confirmed` 가 아니라 `inconclusive` 로 떨어지고,
+    근거는 그대로 실린다(근거가 있다는 것과 승인 판정을 받았다는 것은 다른 사실이다).
+    """
+    status, verdict, claims = nodes._gateless_finalize(
+        [EVIDENCE_FINDING_NEW, PPID_SILENT, STEP_PASSAGE_SILENT, METRO_SILENT])
+    assert status == "inconclusive", verdict
+    assert claims, "근거는 실려야 한다"
+    assert not [c for c in claims if c.get("picked_by_llm")]   # 지목이 없으니 표시도 없다
+
+
+def test_gateless_exit_carries_the_same_evidence_as_before():
+    """근거 목록은 **오늘과 같아야 한다** - 이 변경은 사유만 좁힌다.
+
+    사슬을 타면서 근거가 달라지면 잔차나 통과 후보가 조용히 사라질 수 있다. 옛 백스톱이
+    쓰던 호출과 결과가 같은지 직접 견준다.
+    """
+    for findings in ([EQP_CH_BELOW_LINE, PPID_SILENT, STEP_PASSAGE_SILENT, METRO_SILENT],
+                     [EVIDENCE_FINDING_NEW, PPID_SILENT, STEP_PASSAGE_SILENT, METRO_SILENT],
+                     ALL_SILENT):
+        from graph import evidence
+
+        bundle = evidence.build_bundle(findings)
+        before = {}
+        nodes._record_evidence(
+            before, nodes._evidence_groups(bundle, bundle.ranked_groups()), None)
+        _, _, after = nodes._gateless_finalize(findings)
+        assert [c["claim_id"] for c in after] == \
+               [c["claim_id"] for c in before["final_claims"]], findings
+
+
+def test_gateless_verdict_says_the_code_judged_it():
+    """판정문이 **누가 판정했는지**를 말한다.
+
+    증거 상태가 같아도 게이트가 판정한 종료와 코드가 메운 종료는 분석 과정이 다르다.
+    이 문장이 없으면 "LLM 이 종료를 제안하지 않았다" 는 사실이 사라지는데, 그것은
+    프롬프트나 스크립트를 고쳐야 한다는 신호다.
+    """
+    _, verdict, _ = nodes._gateless_finalize(ALL_SILENT)
+    assert "LLM 이 종료를 제안하지 않아 코드가 증거 상태로 판정했다" in verdict
+    assert "신호 없음" in verdict            # 사유 자체도 그대로 들어 있다
+    assert "무시하고 증거 상태로 판정했다" not in verdict   # 버린 지목은 없다
+
+
+def test_report_node_sends_the_gateless_verdict_to_the_client_on_a_copy():
+    """백스톱 판정문이 **감사 기록 사본에** 합성 finalize 레코드로 실려 LLM 에 간다.
+
+    경로 B 에는 finalize 호출이 없어 findings 에 게이트 줄이 없다 - 그러면 코드가 낸
+    판정문이 리포트 LLM 에 도달할 길이 없고, 운영 프롬프트가 "판정문을 그대로 인용하라"
+    고 지시하는 것이 공허해진다.
+
+    **상태의 findings 는 건드리지 않는다.** 감사 기록은 실제로 일어난 호출의 기록이고,
+    코드가 만든 판정은 그것과 구분돼야 한다(`superseded` 표시를 사본에만 붙이는 선례).
+    """
+    received = {}
+
+    class _RecordingClient:
+        def analyze_step(self, messages):
+            raise NotImplementedError
+
+        def generate_report(self, **kwargs):
+            received.update(kwargs)
+            return "고정된 산문 리포트"
+
+    findings = list(ALL_SILENT)
+    state = {"target_wafers": ["W2406_02"], "target_source": "manual",
+             "target_group": ["W2406_02"], "status_summary": "요약",
+             "findings": findings, "loop_count": ya_config.MAX_LOOPS}
+    original = nodes._llm
+    nodes._llm = _RecordingClient()
+    try:
+        out = nodes.report_node(state)
+    finally:
+        nodes._llm = original
+
+    assert out["finalize_status"] == "no_signal"
+    gate_lines = [f for f in received["findings"] if f["tool"] == "finalize"]
+    assert len(gate_lines) == 1, received["findings"]
+    assert "LLM 이 종료를 제안하지 않아 코드가 증거 상태로 판정했다" in gate_lines[0]["result"]
+    assert gate_lines[0]["loop"] == ya_config.MAX_LOOPS
+    # **사본에만 붙었다** - 상태의 감사 기록은 그대로다.
+    assert state["findings"] == list(ALL_SILENT)
+    assert not [f for f in state["findings"] if f["tool"] == "finalize"]
+
+
+def test_both_gateless_entrances_route_to_report():
+    """경로 B 가 **실재한다**는 것을 라우팅에서 잠근다.
+
+    `report_node` 는 두 입구를 구분할 수단이 없으므로(둘 다 `finalize_status` 가 빈 채로
+    도착한다) 거기서 둘을 비교하는 단언은 공허하다. 진짜 단언은 라우팅이다.
+    """
+    from langchain_core.messages import AIMessage
+
+    from graph import build
+
+    # 입구 1: 루프 한계인데 게이트 승인이 없다 (마지막 회차에 finalize 말고 다른 도구)
+    assert build._after_tools({"loop_count": ya_config.MAX_LOOPS}) == "report"
+    # 한계 아래이고 승인도 없으면 계속 돈다 - 가드레일이 경계에서만 걸린다
+    assert build._after_tools({"loop_count": ya_config.MAX_LOOPS - 1}) == "analyze"
+    # 입구 2: tool call 없이 텍스트만 응답 (loop 1 에도 일어난다)
+    assert build._after_analyze({"messages": [AIMessage(content="그냥 텍스트")]}) == "report"

@@ -1207,6 +1207,45 @@ def _no_candidate_action(bundle, coverage) -> str:
             "2단 센서로 근거를 더 좁히거나 대조군을 다시 보라." + step_back)
 
 
+def _gateless_finalize(audit: list[dict]) -> tuple[str, str, list[dict]]:
+    """게이트를 안 거치고 끝난 종료의 사유를 **증거 상태에서** 낸다.
+
+    돌려주는 것은 `(finalize_status, 판정문, final_claims)`.
+
+    **루프 한계는 종료 트리거이지 사유가 아니다** - 그 원칙은 게이트 밖에도 적용된다.
+    `_after_tools` 의 한계 가드레일과 `_after_analyze` 의 텍스트 응답 이탈은 게이트를
+    통째로 건너뛰는데, 거기서 무조건 `inconclusive` 를 찍으면 "봤는데 안 갈렸다" 와
+    "예산 안에 못 끝냈다" 가 같은 이름으로 나간다 - 엔지니어가 할 조치가 다르다.
+    이 경로는 LLM 협조와 무관하게 코드 라우팅이 만들므로 프롬프트로는 못 막는다.
+
+    **사슬을 추출하지 않고 빈손 제출로 그대로 부른다.** 규칙을 두 자리에 적으면 한쪽만
+    고치는 이 저장소의 반복 결함이 그대로 재발한다. 제출이 없는데 제출인 척하는 대가는
+    치르되, 그 대가가 무엇을 막는지는 아래 두 줄에 적는다.
+
+    **`loop` 를 한계로 강제하는 것이 `(5) 반려` 를 닫는다.** 텍스트 응답 이탈은 loop 1
+    에도 일어나므로, 강제하지 않으면 종료 노드가 "반려" 문구를 내보낸다 - 되돌아갈
+    루프가 없는 자리에서 반려는 뜻이 없다.
+
+    **승인은 구조적으로 불가능하다.** `claim_id` 가 빈손이라 `bundle.claims.get("")` 이
+    `None` 이고 `(1)` 은 지목한 claim 을 요구한다. 같은 이유로 `_drop_unapprovable_pick`
+    도 `None` 을 돌려주므로 버린 지목 괄호가 붙을 일이 없다 - 버릴 제출이 없다.
+
+    **꺼내 오는 것은 셋뿐이다.** `finalize_accepted` 는 상태에 거짓을 남기고(읽는 곳인
+    `build.py` 라우팅과 `tools_node` 는 이미 다 지나왔다), `final_hypothesis` 는 제출이
+    없었으니 비어 있는 것이 사실이며, `coverage` 는 `report_node` 가 같은 findings 로
+    이미 다시 세고 있다(같은 값을 두 경로로 들이면 나중에 한쪽만 바뀐다).
+    """
+    scratch: dict = {}
+    verdict = _finalize_gate({"claim_id": "", "hypothesis": "", "confidence": 0.0},
+                             ya_config.MAX_LOOPS, scratch, audit)
+    # **코드가 판정했다는 사실을 판정문에 남긴다.** 증거 상태가 같아도 분석 과정은
+    # 다르다 - 이 사실이 필요한 것은 엔지니어가 아니라 프롬프트·스크립트를 고치는
+    # 사람이다(LLM 이 종료를 제안하지 않았다는 신호). 판정 이름을 새로 만들지 않는
+    # 이유이기도 하다: 어휘가 늘면 게이트·목·운영 프롬프트 세 곳이 같이 움직인다.
+    verdict += " (LLM 이 종료를 제안하지 않아 코드가 증거 상태로 판정했다.)"
+    return scratch["finalize_status"], verdict, scratch["final_claims"]
+
+
 # ------------------------------------------------ 고정 골격: 리포팅
 def report_node(state: dict) -> dict:
     claims = state.get("final_claims") or []
@@ -1223,20 +1262,17 @@ def report_node(state: dict) -> dict:
     # 텍스트 응답). 그 경로에는 판정도 근거도 안 실려서, 판정이 '미상' 이면 운영
     # 프롬프트의 "확정 결론을 쓰지 마라" 가드가 하나도 안 붙고, 감사 기록에 판별선을
     # 넘은 후보나 잔차가 있어도 리포트 근거가 0줄이 된다 - 게이트 안에만 있던 계약이라
-    # 게이트를 안 타면 통째로 빠졌다. 사유는 그래도 inconclusive 다: 이 근거는 **게이트가
-    # 승인한 것이 아니다** - 판별선을 넘은 통과 후보든 그 아래 잔차든, 지목·승인 절차를
-    # 거친 적이 없다((4)와 같은 이유로, 근거가 있다는 것과 승인 판정을 받았다는
-    # 것은 다른 사실이다).
+    # 게이트를 안 타면 통째로 빠졌다. **사유도 여기서 낸다** - 무조건 inconclusive 로
+    # 찍으면 "봤는데 안 갈렸다" 와 "예산 안에 못 끝냈다" 가 같은 이름으로 나간다
+    # (`_gateless_finalize` 참조). 승인만은 여기서 안 나온다 - 금지가 아니라 지목이
+    # 없어 `(1)` 이 성립하지 않는다.
     verdict = state.get("finalize_status")
+    gateless_verdict = ""
     if not verdict:
-        verdict = "inconclusive"
-        gateless = {}
         # **이 종료에는 finalize 판정이 실린 적이 없다** - 앞 루프에서 반려를
         # 받았을 수는 있지만 그 반려는 `finalize_status` 를 안 찍는다(`(4)` 는
-        # 그 필드가 찍힌 상태로도 올 수 있는 경로라 다르다). 잔차를 싣는
-        # 이유·하한 규칙은 `_evidence_groups` 를 본다.
-        _record_evidence(gateless, _evidence_groups(bundle, bundle.ranked_groups()), None)
-        claims = gateless["final_claims"]
+        # 그 필드가 찍힌 상태로도 올 수 있는 경로라 다르다).
+        verdict, gateless_verdict, claims = _gateless_finalize(audit)
     # **대체된 실행에 표시를 붙여 넘긴다.** 같은 축을 다시 돌리면 build_bundle 이 앞
     # 후보를 버리는데(그룹이 바뀌면 분모가 달라 거짓이므로 옳다), findings 는 그대로
     # 넘어가고 운영 프롬프트는 그 수치를 "그대로 인용하라" 고 지시한다 - 표시가 없으면
@@ -1247,6 +1283,15 @@ def report_node(state: dict) -> dict:
     if bundle.superseded:
         sent_findings = [{**f, "superseded": True} if i in bundle.superseded else f
                          for i, f in enumerate(audit)]
+    if gateless_verdict:
+        # **판정문이 LLM 에 닿는 유일한 길이다.** 경로 B 에는 finalize 호출이 없어
+        # findings 에 게이트 줄이 없고, 운영 프롬프트는 판정문을 인용하라고 지시한다.
+        # `tools_node` 가 만드는 레코드와 같은 계약으로 얹어 목이 `[분석 과정]` 의
+        # `- 게이트:` 줄로 렌더링하게 한다. **끝에 붙인다** - `bundle.superseded` 는
+        # `audit` 안의 위치라, 앞에 끼우면 그 인덱스가 어긋난다.
+        sent_findings = [*sent_findings,
+                         {"loop": state.get("loop_count", 0), "tool": "finalize",
+                          "args": {}, "result": gateless_verdict, "thought": ""}]
     try:
         report = _llm_lazy().generate_report(
             target_wafers=state.get("target_wafers", []),
