@@ -683,8 +683,8 @@ def test_permutation_can_be_turned_off(tmp_path, monkeypatch):
     assert "p_permutation" in on["note"]
     # 순열이 얹는 필드 전부. 새 필드를 여기 안 넣으면 아래 단언이 그 필드 때문에
     # 깨지는데, 그건 "후보가 바뀌었다" 가 아니라 목록이 낡은 것이다.
-    perm_fields = ("p_permutation", "p_min_possible", "n_permutations_total",
-                   "n_reference")
+    perm_fields = ("p_permutation", "p_min_possible", "p_at_floor",
+                   "n_permutations_total", "n_reference")
     strip = lambda r: [{k: v for k, v in x.items() if k not in perm_fields}
                        for x in r["candidates"]]
     assert strip(off) == strip(on)          # 순열은 후보 자체를 바꾸지 않는다
@@ -1045,3 +1045,44 @@ def test_a_missing_size_is_not_a_match():
     out = cm._null_distribution(masks, 0b1111, {_K: 0.5}, {}, 100, 1, _low_and_no_sizes)
     assert out["n_reference"][_K] == 0
     assert out["p"][_K] == 1.0
+
+
+# ------------------------------------- 바닥에 닿았다는 것은 비교가 아니라 셈이다
+
+def test_at_floor_is_a_count_the_tool_carries_not_a_comparison_downstream():
+    """`p == p_min_possible` 을 소비자가 재계산하면 반올림에 걸린다.
+
+    두 값은 4자리로 반올림돼 나가므로 참조 회차가 13,333 이상이면
+    `1/13334 = 0.0001` 과 `2/13334 = 0.0001` 이 같은 숫자가 된다. 귀무가 한 번
+    넘은 후보에 "이 표본의 최소값" 딱지가 붙는 것이 그 결과다
+    (`graph/evidence.py::format_evidence_line`). 사실을 아는 자리는 넘은 횟수를
+    세고 있는 여기뿐이라, 여기서 싣는다.
+    """
+    masks = [("L1", 0b0011, 0b1100)]
+
+    # 참조 2회차 중 한 번 관측(0.5)을 넘는다 -> p = 2/3, 바닥 1/3. 바닥이 아니다.
+    exceeded = cm._null_distribution(
+        masks, 0b1111, {_K: 0.5}, {_K: 2}, 100, 1,
+        _fixed_null(sizes_by_t={0b0101: 2, 0b1001: 2},
+                    scores_by_t={0b0101: 0.9, 0b1001: 0.1}))
+    assert exceeded["p_at_floor"][_K] is False
+
+    # 같은 참조집합인데 아무도 못 넘는다 -> p = 1/3 = 바닥.
+    at_floor = cm._null_distribution(
+        masks, 0b1111, {_K: 0.5}, {_K: 2}, 100, 1,
+        _fixed_null(sizes_by_t={0b0101: 2, 0b1001: 2},
+                    scores_by_t={0b0101: 0.1, 0b1001: 0.1}))
+    assert at_floor["p_at_floor"][_K] is True
+
+
+def test_candidate_carries_the_floor_fact(tmp_path, monkeypatch):
+    """도구가 낸 후보에 사실이 실려야 소비자가 반올림된 숫자를 다시 안 비교한다."""
+    t = [f"T{i}" for i in range(1, 7)]
+    c = [f"C{i}" for i in range(1, 7)]
+    ys = [_y(w, "A45Z5") for w in t + c]
+    hs = [_h(w, "Etch", "ETCH9", "3") for w in t]
+    hs += [_h(w, "Etch", "ETCH8", "1") for w in c]
+    _make_db(tmp_path, monkeypatch, ys, hs)
+
+    eq = _find(cm.find_commonality(t, c), "equipment", "ETCH9")
+    assert eq["p_at_floor"] is True          # 완전 분리 - 귀무가 한 번도 못 넘었다

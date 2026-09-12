@@ -39,6 +39,10 @@ class Claim:
     kind: str = "statistical"
     p_permutation: float | None = None
     p_min_possible: float | None = None    # 이 표본이 낼 수 있는 최소 p (바닥값)
+    # p 가 그 바닥에 닿았는가. **도구가 센 사실이다** - p 와 바닥은 4자리로 반올림돼
+    # 오므로 여기서 두 숫자를 == 로 비교하면 참조 회차가 13,333 이상일 때 귀무가
+    # 넘은 후보까지 바닥으로 읽힌다 (`tools/commonality.py::_null_distribution`).
+    p_at_floor: bool | None = None
     # 이 후보가 가리키는 실제 wafer. 카운트만 담으면 두 후보가 **같은 3장**을 말하는지
     # **다른 3장**을 말하는지 게이트가 구분할 수 없다 - 축이 여럿일 때 한 사실의 두
     # 이름(교락)과 독립 근거 둘이 똑같아 보인다. 축 무관 필드라 1급으로 둔다
@@ -61,6 +65,7 @@ _FIRST_CLASS_FIELDS = frozenset({
     "claim_id", "hypothesis_id", "step_seq", "key", "level", "passes",
     "reject_reason", "score", "target_pass", "target_total",
     "control_pass", "control_total", "kind", "p_permutation", "p_min_possible",
+    "p_at_floor",
     "target_wafers", "control_wafers", "level_columns",
 })
 
@@ -638,7 +643,11 @@ def format_evidence_line(claim: dict) -> str:
         # 바닥값에 닿았으면 "약한 신호" 가 아니라 "이 표본이 낼 수 있는 최강" 이다.
         # 소표본에서 p 는 1/(참조 회차+1) 밑으로 못 내려간다 - 표시가 없으면
         # 같은 숫자가 정반대 뜻으로 읽힌다.
-        elif floor == p:
+        #
+        # **판정은 도구가 센 사실로 한다.** 여기서 `floor == p` 로 물으면 두 값이
+        # 4자리로 반올림돼 있어 참조 회차가 13,333 이상일 때 1/13334 과 2/13334 이
+        # 같은 숫자가 되고, 귀무가 넘은 후보에 정반대 딱지가 붙는다.
+        elif claim.get("p_at_floor"):
             line += " (이 표본의 최소값)"
     return line
 
@@ -768,6 +777,7 @@ def build_bundle(findings: list[dict]) -> Bundle:
                 control_total=int(c.get("control_total") or 0),
                 p_permutation=c.get("p_permutation"),
                 p_min_possible=c.get("p_min_possible"),
+                p_at_floor=c.get("p_at_floor"),
                 # frozen dataclass 라 tuple 로 받는다. 도구가 아직 안 싣는 경우
                 # (센서 등 다른 형태의 결과)에도 빈 튜플로 안전하게 떨어진다.
                 target_wafers=tuple(c.get("target_wafers") or ()),

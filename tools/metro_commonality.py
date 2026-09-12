@@ -548,6 +548,8 @@ def find_metro_commonality(target_wafers: list[str], control_wafers: list[str],
         if perm:
             cand["p_permutation"] = round(perm["p"][key], 4)
             cand["p_min_possible"] = round(perm["p_min_possible"][key], 4)
+            # 반올림된 두 숫자를 소비자가 다시 비교하지 않도록 사실을 함께 싣는다.
+            cand["p_at_floor"] = perm["p_at_floor"][key]
             cand["n_reference"] = perm["n_reference"][key]   # 바닥값을 설명하는 숫자
             cand["n_permutations_total"] = perm["n_permutations_total"]
         candidates.append(cand)

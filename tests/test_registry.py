@@ -121,3 +121,15 @@ def test_every_hypothesis_tells_the_llm_that_p_is_read_with_its_floor():
         assert "같은 축 안에서만" in d, spec["id"]
         assert "축이 다르면 점수는 쓰지 않는다" in d, spec["id"]
         assert "통계적 근거가 없는 것으로 취급" in d, spec["id"]
+
+
+def test_every_permutation_axis_teaches_p_at_floor_not_a_comparison():
+    """바닥에 닿았는지는 **도구가 센 사실**(`p_at_floor`)이다.
+
+    yaml 이 그것을 안 가르치면 LLM 은 p 와 p_min_possible 을 직접 비교해 알아내는데,
+    두 값은 4자리로 반올림돼 나가므로 참조 회차가 13,333 이상이면 1/13334 과
+    2/13334 이 같은 숫자가 된다. 축이 늘 때 이 문장만 빠지는 것을 여기서 막는다.
+    """
+    for spec in registry.load_hypotheses():
+        if "p_min_possible" in spec["description"]:
+            assert "p_at_floor" in spec["description"], spec["id"]

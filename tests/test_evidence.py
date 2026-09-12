@@ -295,7 +295,8 @@ def test_evidence_line_marks_a_p_that_sits_at_the_floor():
     같은 0.1667 이 1000회 순열에서 나왔다면 뜻이 정반대다. 표시가 없으면 리포트를
     읽는 엔지니어가 "유의하지 않다" 로 읽어 진짜 원인을 버린다.
     """
-    at_floor = {**CAND_PASS, "p_permutation": 0.1667, "p_min_possible": 0.1667}
+    at_floor = {**CAND_PASS, "p_permutation": 0.1667, "p_min_possible": 0.1667,
+                "p_at_floor": True}
     b = evidence.build_bundle([_finding("hyp_eqp_ch_commonality", "eqp_ch_commonality",
                                         "ok", [at_floor])])
     line = evidence.format_evidence_line(asdict(b.claims[CAND_PASS["claim_id"]]))
@@ -1078,13 +1079,31 @@ def test_a_candidate_with_no_null_reference_is_not_called_the_samples_best():
     assert "비교" in line               # 왜 판단할 수 없는지는 말해 준다
 
 
+def test_the_floor_mark_follows_the_carried_fact_not_the_rounded_numbers():
+    """딱지는 도구가 센 사실(`p_at_floor`)을 따른다 - 두 숫자를 여기서 다시 비교하면
+    반올림에 걸린다.
+
+    p 도 바닥도 4자리로 반올림돼 오므로 참조 회차가 13,333 이상이면
+    `1/13334` 과 `2/13334` 이 둘 다 0.0001 이 된다. 그러면 귀무가 한 번 넘은
+    후보가 "이 표본의 최소값" 으로 나가 - 신호가 바닥에 눌린 것이 아닌데도
+    "더 모아도 이보다 작아지지 않는다" 로 읽힌다.
+    """
+    collided = {**CAND_PASS, "p_permutation": 0.0001, "p_min_possible": 0.0001,
+                "p_at_floor": False}
+    assert "이 표본의 최소값" not in evidence.format_evidence_line(collided)
+
+    real = {**collided, "p_at_floor": True}
+    assert "이 표본의 최소값" in evidence.format_evidence_line(real)
+
+
 def test_a_real_floor_is_still_marked_as_the_samples_best():
     """분기 반대쪽 - 진짜 바닥에 닿은 후보의 딱지는 그대로 있어야 한다.
 
     한쪽만 막으면 "1.0 이면 빼기" 대신 "딱지를 아예 없애기" 로 고쳐도 안 잡힌다.
     """
     line = evidence.format_evidence_line(
-        {**CAND_PASS, "p_permutation": 0.05, "p_min_possible": 0.05})
+        {**CAND_PASS, "p_permutation": 0.05, "p_min_possible": 0.05,
+         "p_at_floor": True})
     assert "이 표본의 최소값" in line
 
 

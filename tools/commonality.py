@@ -488,6 +488,11 @@ def _null_distribution(strata_masks, seen, observed: dict[tuple, float],
     return {
         "p": {k: (n + 1) / (reference[k] + 1) for k, n in exceed.items()},
         "p_min_possible": {k: 1 / (r + 1) for k, r in reference.items()},
+        # **"바닥에 닿았다" 는 비교가 아니라 셈이다.** p 와 바닥은 4자리로 반올림돼
+        # 나가므로 소비자가 두 숫자를 == 로 재보면 참조 회차가 13,333 이상일 때
+        # 1/13334 과 2/13334 이 둘 다 0.0001 이 되어, 귀무가 넘은 후보가 "이 표본의
+        # 최소값" 으로 나간다. 넘은 횟수를 아는 자리는 여기뿐이라 여기서 싣는다.
+        "p_at_floor": {k: n == 0 for k, n in exceed.items()},
         # family-wise 는 회차별 **최댓값**을 재므로 참조집합을 안 좁힌다 - 바닥도
         # 회차 전부에서 나온다. 후보별 바닥의 최솟값과 **다른 값**이다(그쪽은 좁혀진
         # 참조집합에서 나오므로 항상 이보다 크거나 같다). 두 도구가 같은 식을 각자
@@ -705,6 +710,8 @@ def find_commonality(target_wafers: list[str], control_wafers: list[str],
             # **후보마다 다르다.** 참조집합이 표본 크기가 같은 회차로 좁혀지므로
             # 바닥값도 후보마다 갈린다 - 스칼라 하나로는 말할 수 없다.
             cand["p_min_possible"] = round(perm["p_min_possible"][key], 4)
+            # 반올림된 두 숫자를 소비자가 다시 비교하지 않도록 사실을 함께 싣는다.
+            cand["p_at_floor"] = perm["p_at_floor"][key]
             cand["n_permutations_total"] = perm["n_permutations_total"]
             # **바닥값을 설명하는 유일한 숫자다.** 바닥은 1/(참조 회차+1) 인데
             # 참조 회차는 후보마다 다르므로, 이것 없이는 같은 결과 안에서

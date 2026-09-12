@@ -184,6 +184,20 @@ def test_evaluate_carries_the_p_floor_so_a_big_p_can_be_read_correctly(fx_db):
     assert ch["n_reference"] == 19
 
 
+def test_evaluate_carries_the_floor_fact_not_just_the_two_numbers(fx_db):
+    """"바닥에 닿았다" 는 사실도 어댑터를 건너야 한다.
+
+    소비자가 p 와 p_min_possible 을 == 로 비교해 알아내던 것을 도구가 세어 싣도록
+    바꿨다(`tools/commonality.py::_null_distribution`). 그 사실이 여기 화이트리스트
+    매핑에서 잘리면 근거 줄은 다시 반올림된 두 숫자를 비교할 수밖에 없고, 참조
+    회차가 아주 많을 때 귀무가 넘은 후보에 "이 표본의 최소값" 이 붙는다.
+    """
+    res = engine.evaluate({"id": "eqp_ch", "legend": EQP_CH},
+                          ["G1", "G2", "G3"], ["C1", "C2", "C3"])
+    ch = {c["key"]: c for c in res["candidates"]}["ETCH9_B"]
+    assert ch["p_at_floor"] is True          # 완전 분리 - 귀무가 한 번도 못 넘었다
+
+
 def test_evaluate_carries_the_fdr_table_and_family_wise_p(fx_db):
     """`hypotheses.yaml` 이 LLM 에게 "결과 최상위의 fdr_table" 을 읽으라고 지시한다.
 

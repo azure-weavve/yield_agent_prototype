@@ -81,6 +81,9 @@ def evaluate(spec: dict, group_ids: list[str], control_ids: list[str]) -> dict:
             # p 가 1/(경우의 수) 밑으로 못 내려가므로 그 바닥값을 함께 보낸다 —
             # hypotheses.yaml 이 LLM 에게 이 필드를 읽으라고 지시한다.
             "p_min_possible": cand.get("p_min_possible"),
+            # 바닥에 닿았는지는 도구가 센다. 두 숫자는 반올림돼 오므로 소비자가
+            # 다시 비교하면 참조 회차가 아주 많을 때 서로 같아 보인다.
+            "p_at_floor": cand.get("p_at_floor"),
             "n_permutations_total": cand.get("n_permutations_total"),
             # 바닥값은 1/(참조 회차+1) 이고 참조 회차는 후보마다 다르다. 이 숫자가
             # 없으면 n_permutations_total 과 p_min_possible 이 서로 안 맞아 보인다.
