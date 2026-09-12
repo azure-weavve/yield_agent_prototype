@@ -25,6 +25,11 @@ class AgentState(TypedDict, total=False):
     finalize_status: str    # confirmed | weak_signal | no_separation | no_signal | no_comparable_data | tool_failure | inconclusive | no_anomaly | unknown_target | isolated | control_insufficient | eds_lookup_failed | llm_call_failed
     final_hypothesis: str                           # 승인된 원인 가설 (LLM 서술)
     final_confidence: float                         # 승인 시 확신도
+    # 루프 한계에서 게이트가 **버린** 지목의 claim_id (안 버렸으면 없다).
+    # `final_hypothesis` 는 LLM 이 쓴 문장 그대로라 버린 후보를 원인으로 단정한 채로
+    # 남아 있을 수 있다 - 산문을 만드는 LLM 은 판정문으로 그 사실을 받지만, 코드가
+    # 결론을 직접 적는 자리(리포트 생성 실패 폴백)는 문자열을 뒤지지 않고 이것을 본다.
+    dropped_pick: str
     # 승인된 근거 **목록** (게이트가 접고 줄 세운 것). 예전에는 dict 하나였고, 그래서
     # 축이 여럿일 때 LLM 이 고른 것 말고는 리포트에 도달하지 못했다. 각 항목은 대표
     # claim + `confounded_with`(같은 wafer 를 가리키는 **다른 설명**들) +

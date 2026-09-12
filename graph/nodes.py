@@ -377,9 +377,11 @@ def _honest_pick(bundle, claim_id: str) -> bool:
     반려를 되풀이하다 한계에 닿는 왕복 자체를 줄인다.
 
     ⚠️ **이 하한을 다시 좁히면 `(4)` 의 `carried is not groups` 갈래가 되살아난다.**
-    지금 그 갈래가 도달 불가인 것은 한계에서 이 절이 늘 참이기 때문이고(`:834-849`
-    참조), 좁히는 순간 잔차가 `(4)` 로 다시 타기 시작한다 - 손대기 전에 그 갈래를
-    먼저 볼 것.
+    지금 그 갈래가 도달 불가인 것은 한계에서 이 절이 늘 참이기 때문이고(근거는
+    `_gate_verdict` 의 `(4) 루프 한계 도달` 블록에서 `carried = _evidence_groups(...)`
+    를 감싼 주석), 좁히는 순간 잔차가 `(4)` 로 다시 타기 시작한다 - 손대기 전에 그
+    갈래를 먼저 볼 것. **줄 번호로 적지 않는다** - 이 파일은 자주 늘어나 각주가 곧
+    엉뚱한 분기를 가리킨다(재리뷰가 실제로 잡았다).
 
     **규칙을 한 자리에만 적는다.** (2a)·(2b) 두 분기가 같은 하한을 쓰므로 각자
     적으면 한쪽만 고치는 이 저장소의 반복 결함이 그대로 재발한다.
@@ -529,6 +531,10 @@ def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) ->
     verdict, dropped = _gate_verdict(args, loop, update, findings)
     if dropped:
         claim_id, why = dropped
+        # **코드가 결론을 직접 적는 자리는 문자열을 뒤지게 두지 않는다.** 아래 판정문은
+        # LLM 계약이고, 리포트 생성 실패 폴백은 `final_hypothesis`(버린 후보를 원인으로
+        # 단정했을 수 있는 LLM 문장)를 그대로 찍는다 - 그쪽이 볼 구조적 신호다.
+        update["dropped_pick"] = claim_id
         # **"루프 한계" 를 사유로 적지 않는다.** 한계는 종료 트리거이고 사유는 위
         # 판정문이 이미 말했다 - 여기에 한계를 또 적으면 그 사유가 루프를 다 썼기
         # 때문인 것처럼 읽힌다.
@@ -1259,11 +1265,21 @@ def report_node(state: dict) -> dict:
         # 여기가 마지막 노드다 - 예외를 내보내면 분석을 다 해 놓고 결과를 전부 버린다.
         # 산문만 포기하고 결론은 코드로 적는다. 현황·감사 기록은 main.py 가 상태에서
         # 따로 찍으므로, 여기서 필요한 것은 '왜 산문이 없는지'와 결론뿐이다.
+        # **게이트가 버린 지목은 결론으로 찍지 않는다.** `final_hypothesis` 는 LLM 이
+        # 쓴 문장 그대로라 버린 후보를 원인으로 단정한 채 남아 있다 - 산문 LLM 은
+        # 판정문으로 그 사실을 받지만 이 폴백은 문장을 그대로 찍으므로, 바로 위
+        # [판정] 줄이 "무시했다" 고 말하는데 [결론] 이 그 후보를 원인이라고 적는
+        # 리포트가 나간다. 확신도도 같이 뺀다 - LLM 자기 신고라 근거가 아니다.
+        dropped_pick = state.get("dropped_pick")
+        conclusion = (f"원인 미확정 (게이트가 마지막 지목 '{dropped_pick}' 을 버렸다 "
+                      f"- 사유는 위 [판정] 줄)"
+                      if dropped_pick else
+                      f"{state.get('final_hypothesis') or '원인 미확정'}"
+                      f" (확신도 {state.get('final_confidence')})")
         report = (f"[리포트 생성 실패] LLM 호출이 실패해 산문 리포트를 만들지 못했다 "
                   f"({type(e).__name__}: {e}). 아래는 코드가 적은 결론이다.\n"
                   f"[판정] {verdict}\n"
-                  f"[결론] {state.get('final_hypothesis') or '원인 미확정'}"
-                  f" (확신도 {state.get('final_confidence')})")
+                  f"[결론] {conclusion}")
     # [근거] 줄은 클라이언트(LLM)가 아니라 여기서 코드로 붙인다 - 운영에서도
     # 근거가 리포트에서 사라지지 않게 하려는 것이 이 기능의 목적이다.
     # 여러 줄인 이유: 축이 여럿이면 근거도 여럿이고, 그중 하나만 남기던 것이

@@ -1842,6 +1842,47 @@ def test_report_node_keeps_the_superseded_line_when_the_llm_fails():
     assert "[대체됨]" in out["report"]
 
 
+def test_report_fallback_does_not_conclude_with_a_pick_the_gate_dropped():
+    """산문이 죽었을 때 **코드가 적는 결론**이 게이트가 버린 지목을 원인으로 찍으면 안 된다.
+
+    `final_hypothesis` 는 LLM 이 쓴 문장 그대로라 버린 후보를 원인으로 단정한 채 남아
+    있다. 산문을 만드는 LLM 은 판정문으로 그 사실을 받지만 이 폴백은 문장을 그대로
+    찍으므로, 바로 위 [판정] 줄이 "무시했다" 고 말하는데 [결론] 은 그 후보를 원인이라고
+    적는 리포트가 나간다.
+
+    **문자열을 뒤지지 않고 `dropped_pick` 을 본다** - 판정문은 LLM 계약이라 문구가
+    바뀌고, 코드가 거기에 매달리면 문구를 고칠 때 이 자리가 조용히 꺼진다.
+    """
+    class _DeadClient:
+        def analyze_step(self, messages):
+            raise NotImplementedError
+
+        def generate_report(self, **kwargs):
+            raise RuntimeError("LLM down")
+
+    cid = "eqp_ch_commonality:chamber:CC002000:ETCH9_B"
+    state = {"target_wafers": ["W1"], "target_group": ["W1"], "status_summary": "s",
+             "findings": [], "final_hypothesis": f"{cid} 챔버가 원인이다",
+             "final_confidence": 0.9, "finalize_status": "inconclusive",
+             "dropped_pick": cid,
+             "messages": [AIMessage(content="", tool_calls=[
+                 {"name": "finalize", "id": "1",
+                  "args": {"claim_id": cid, "hypothesis": "h", "confidence": 0.9}}])]}
+
+    original = nodes._llm
+    nodes._llm = _DeadClient()
+    try:
+        out = nodes.report_node(state)
+    finally:
+        nodes._llm = original
+
+    conclusion = [l for l in out["report"].splitlines() if l.startswith("[결론]")]
+    assert conclusion, out["report"]
+    assert "원인이다" not in conclusion[0], conclusion[0]   # 버린 후보를 단정하지 않는다
+    assert "버렸다" in conclusion[0], conclusion[0]
+    assert cid in conclusion[0], conclusion[0]              # 무엇을 버렸는지는 말한다
+
+
 # ------------------------------------------------ M3 재리뷰 지적
 EQP_CH_RERUN_SAME_ARGS = {
     "loop": 5, "tool": "hyp_eqp_ch_commonality",
@@ -3242,6 +3283,7 @@ def test_a_pick_approval_could_use_is_untouched_at_the_loop_limit():
         loop=ya_config.MAX_LOOPS, update=update, findings=[EVIDENCE_FINDING_NEW])
     assert update["finalize_status"] == "inconclusive"    # 진짜 미확정이다
     assert "무시" not in verdict, verdict
+    assert "dropped_pick" not in update, update           # 안 버렸으면 신호도 없다
     assert [c for c in update["final_claims"] if c.get("picked_by_llm")]
 
 
@@ -3270,6 +3312,7 @@ def test_loop_limit_drops_every_pick_that_approval_cannot_use():
             loop=ya_config.MAX_LOOPS, update=update, findings=findings)
         assert update["finalize_status"] == "no_signal", (label, verdict)
         assert "등록 축 4개 중 4개" in verdict, (label, verdict)
+        assert update.get("dropped_pick") == cid, label
         # 버린 지목을 서술의 축으로 남기면 안 된다 - 게이트가 원인으로 확정하지
         # 않기로 한 후보를 리포트가 "←서술 기준" 으로 찍는다.
         assert not [c for c in (update.get("final_claims") or [])
@@ -3347,6 +3390,13 @@ def test_dropping_a_pick_clears_the_claim_object_too():
     # 한계 **아래**에서는 받은 것을 그대로 돌려준다.
     assert nodes._drop_unapprovable_pick(
         bundle, ya_config.MAX_LOOPS - 1, cid, claim) == (cid, claim, None)
+
+    # **빈손 제출은 버릴 것이 없다.** `not claim_id` 항을 빼도 전 스위트가 초록이었다
+    # (재리뷰 훼손 I-C). 그런데 그 항이 없으면 정직하게 물러선 모든 한계 종료에
+    # "마지막 제출 claim_id '' 는 도구 결과에 없어 무시했다" 는 **거짓 괄호**가 붙는다.
+    # 술어가 4연언이면 네 항을 다 돌아야 한다 - 셋만 돌아서 이 자리가 비어 있었다.
+    assert nodes._drop_unapprovable_pick(
+        bundle, ya_config.MAX_LOOPS, "", None) == ("", None, None)
 
     # 승인이 쓸 수 있는 지목(판별선을 넘은 비센서)은 한계에서도 안 버린다.
     passing = evidence.build_bundle([EVIDENCE_FINDING_NEW])
@@ -3442,6 +3492,10 @@ def test_the_drop_note_survives_on_every_branch_a_drop_can_reach():
         assert cid in verdict, (label, verdict)
         assert expected_why in verdict, (label, verdict)
         assert "무시하고 증거 상태로 판정했다" in verdict, (label, verdict)
+        # **판정문(LLM 계약)과 함께 구조적 신호도 남긴다.** 코드가 결론을 직접 적는
+        # 자리(리포트 생성 실패 폴백)는 문자열을 뒤지면 안 된다 - 판정문 문구가 바뀌면
+        # 조용히 꺼진다. 쓰는 쪽을 안 잠그면 `update` 한 줄을 지워도 초록이었다(훼손).
+        assert update.get("dropped_pick") == cid, (label, update.get("dropped_pick"))
 
 
 def test_loop_limit_recovers_tool_failure_and_no_separation_too():

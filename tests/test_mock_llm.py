@@ -331,6 +331,39 @@ def test_generate_report_renders_inconclusive_status():
     assert "ETCH-9" in report        # 유력 가설은 후보로 남긴다
 
 
+def test_generate_report_does_not_call_a_dropped_pick_a_likely_hypothesis():
+    """**게이트가 버린 지목은 목에서도 유력 가설이 아니다.**
+
+    `inconclusive` 는 "유력 후보로 서술하라" 는 반대 방향 지시가 걸린 유일한 판정이라,
+    루프 한계에서 지목이 버려지면 **판정문은 "무시했다" 인데 결론은 "유력 가설: 그것"**
+    인 리포트가 나왔다(재리뷰 I-A 가 실제 출력으로 재현). 목은 프롬프트를 따르는 LLM 의
+    대역이므로 같은 규칙을 타야 한다 - 안 그러면 운영에서 잡아야 할 모순을 목이 정상으로
+    보여 준다.
+
+    LLM 이 보는 신호는 **판정문**이다(state 는 LLM 에게 안 간다). 그래서 findings 의
+    finalize 결과 문자열로 판정한다.
+    """
+    llm = ScriptedMockLLMClient()
+    verdict = ("미확정 (루프 한계 도달): 확정 근거 없이 리포팅으로 진행한다. "
+               "(마지막 제출 claim_id 'eqp_ch_commonality:chamber:CC002000:ETCH9_B' 는 "
+               "판별선을 넘지 못해 승인 대상이 아니어서 무시하고 증거 상태로 판정했다.)")
+    report = llm.generate_report(
+        target_wafers=["W2406_02"], target_source="manual",
+        target_group=TARGET, status_summary="s",
+        findings=[{"loop": 7, "tool": "finalize", "args": {}, "result": verdict,
+                   "thought": ""}],
+        hypothesis="ETCH-9 rf_power 이상 추정", confidence=0.9,
+        finalize_status="inconclusive",
+    )
+    assert "미확정" in report
+    assert "버렸다" in report                  # 무슨 일이 있었는지는 말한다
+    # 버린 후보를 결론의 주어로 올리지 않는다. [분석 과정] 의 게이트 줄에는 판정문이
+    # 그대로 실리므로 claim_id 자체는 리포트에 남는다 - 여기서 잠그는 것은 **결론 문장**이다.
+    conclusion = [l for l in report.splitlines() if l.startswith("[결론]")]
+    assert conclusion, report
+    assert "유력 가설: ETCH-9" not in conclusion[0], conclusion[0]
+
+
 def test_generate_report_no_longer_renders_evidence_line_itself():
     """[근거] 줄은 이제 mock 이 아니라 report_node 가 코드로 붙인다 (Task 8 최종 검토).
 
@@ -938,11 +971,20 @@ def test_operational_prompt_blocks_carrying_a_dropped_pick_into_the_report():
         target_wafers=["W1"], target_source="manual", target_group=["W1"],
         status_summary="s", findings=[], hypothesis="h", confidence=0.9,
         finalize_status="no_signal", claims=[])
-    assert ("판정이 no_signal 이거나 no_comparable_data 이거나 tool_failure 인데 "
-            "제출된 가설이 특정 후보를 원인으로 지목하고 있어도 그 문장을 그대로 "
-            "옮기지 마라 - 게이트가 루프 한계에서 승인이 못 받는 지목을 버리고 증거 "
-            "상태로 판정한 것이며, 그 후보는 확정된 것이 아니라 **버려진 지목**이다."
+    assert ("판정이 no_signal 이거나 no_comparable_data 이거나 tool_failure 이거나 "
+            "inconclusive 인데 제출된 가설이 특정 후보를 원인으로 지목하고 있어도 그 "
+            "문장을 그대로 옮기지 마라 - 게이트가 루프 한계에서 승인이 못 받는 지목을 "
+            "버리고 증거 상태로 판정한 것이며, 그 후보는 확정된 것이 아니라 **버려진 "
+            "지목**이다.") in client.llm.seen_sys
+    # **`inconclusive` 는 반대 방향 지시가 걸려 있는 유일한 자리라 따로 막는다.**
+    # "유력 후보·추가 조사 필요 항목으로 서술하라" 를 그대로 두면, 버린 지목이 남은
+    # 유일한 후보 문장이라 LLM 이 그것을 유력 후보로 올린다 - 같은 리포트의 판정문은
+    # "무시했다" 이다(재리뷰 I-A 가 실제 출력으로 재현했다).
+    assert ("inconclusive 의 '유력 후보' 에도 그 후보는 쓰지 마라 - 게이트가 쓸 수 "
+            "없다고 판정한 것을 유력하다고 적으면 같은 리포트가 스스로를 부정한다."
             ) in client.llm.seen_sys
+    assert ("단 판정문 끝 괄호에 버린 지목이 적혀 있으면 그 후보는 유력 후보에서 빼고, "
+            "무엇을 왜 버렸는지를 적어라.") in client.llm.seen_sys
     # **버린 사실을 어디서 읽는지까지 말한다.** 판정문 끝 괄호(`_finalize_gate`)에
     # claim_id 와 사유가 실려 findings 를 타고 여기까지 오는데, 그것을 안 가리키면
     # LLM 은 "지목을 쓰지 마라" 만 받고 다음에 할 일을 못 적는다.
