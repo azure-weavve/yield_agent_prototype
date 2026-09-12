@@ -489,7 +489,7 @@ def _null_distribution(strata_masks, seen, observed: dict[tuple, float],
         "p": {k: (n + 1) / (reference[k] + 1) for k, n in exceed.items()},
         "p_min_possible": {k: 1 / (r + 1) for k, r in reference.items()},
         # **"바닥에 닿았다" 는 비교가 아니라 셈이다.** p 와 바닥은 4자리로 반올림돼
-        # 나가므로 소비자가 두 숫자를 == 로 재보면 참조 회차가 13,333~19,999 일 때
+        # 나가므로 소비자가 두 숫자를 == 로 재보면 참조 회차가 13,333~19,999 이거나 40,000 이상일 때
         # 1/13334 과 2/13334 이 둘 다 0.0001 이 되어, 귀무가 넘은 후보가 "이 표본의
         # 최소값" 으로 나간다. 넘은 횟수를 아는 자리는 여기뿐이라 여기서 싣는다.
         #
@@ -634,7 +634,13 @@ def find_commonality(target_wafers: list[str], control_wafers: list[str],
             # 아래 "이력 결측" 경로와 status 를 공유하므로 **가르는 값을 양쪽에 다
             # 싣는다.** 한쪽에만 있으면 "키가 없다" 와 "결측이 없다" 가 같아 보이고,
             # status 서술이 가리키는 meta.missing_history 를 읽으면 KeyError 다.
-            "meta": {"missing_history": []},
+            #
+            # **세어서 낸다.** 상수 [] 로 두면 "확인했더니 없다" 와 "확인한 적이
+            # 없다" 가 같은 값이 되어, 결측이 있는 그룹이 "이력은 멀쩡하다" 로
+            # 보고된다. 분모는 아래 경로와 다르다 - 여기는 짝지어진 stratum 이
+            # 없으므로 요청받은 wafer 전체에서 센다.
+            "meta": {"missing_history": sorted(set(targets + controls)
+                                               - {r["wafer_id"] for r in rows})},
             "fdr_table": [], "p_family_wise": None, "p_family_wise_min_possible": None,
             "note": ("타깃과 같은 root_lot 에 속한 대조군 wafer 가 없다. "
                      "route/시간 교락 없이 비교할 짝이 없어 계산을 중단했다."),

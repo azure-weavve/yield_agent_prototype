@@ -345,15 +345,32 @@ def test_statistical_evidence_line_is_unchanged():
 def _cand(claim_id, key, score, p, wafers, level="chamber", step="CC002000",
           floor=0.001, at_floor=None):
     # `p_at_floor` 는 도구가 **넘은 횟수를 세어** 싣는 값이다(`_null_distribution`).
-    # 픽스처의 p·바닥은 반올림 손실이 없는 값이라 여기서는 비교로 재현해도 같다 -
+    # 여기서 등호로 재현하되 도구가 **낼 수 없는 조합을 만들지 않는다**: p 나 바닥이
+    # 없으면(`None == None` 은 참이다) 거짓이고, 바닥이 1.0(참조 0회)이면 도구는
+    # 언제나 거짓을 낸다 - "바닥에 닿았다" 가 아니라 "잴 것이 없었다" 이기 때문이다.
     # 안 실으면 근거 줄이 실제 도구 출력과 다른 모양을 받아 단언이 공허해진다.
     return {"claim_id": claim_id, "level": level, "step_seq": step, "key": key,
             "passes": True, "reject_reason": None, "score": score,
             "target_pass": len(wafers), "target_total": 6,
             "control_pass": 0, "control_total": 6,
             "p_permutation": p, "p_min_possible": floor,
-            "p_at_floor": (p == floor) if at_floor is None else at_floor,
+            "p_at_floor": ((p is not None and floor is not None
+                            and floor < 1.0 and p == floor)
+                           if at_floor is None else at_floor),
             "target_wafers": list(wafers), "control_wafers": []}
+
+
+def test_the_fixture_never_builds_a_floor_fact_the_tool_cannot_produce():
+    """`_cand` 는 픽스처지만 **도구 계약을 흉내 낸다.** 어긋나면 아래 테스트들이
+    실제로는 일어날 수 없는 입력으로 초록이 된다.
+
+    도구 규칙은 등호가 아니라 "참조 회차 > 0 이고 넘은 횟수 0" 이다. 등호로만 재면
+    두 자리가 갈린다 - p·바닥이 없을 때(`None == None` 은 참이다)와 참조 0회로
+    둘 다 1.0 일 때다. 뒤쪽은 이 브랜치가 도구에서 막 없앤 상태다.
+    """
+    assert _cand("a:1", "K", 1.0, None, ["W1"], floor=None)["p_at_floor"] is False
+    assert _cand("b:1", "K", 1.0, 1.0, ["W1"], floor=1.0)["p_at_floor"] is False
+    assert _cand("c:1", "K", 1.0, 0.05, ["W1"], floor=0.05)["p_at_floor"] is True
 
 
 def _groups(*cands):
@@ -1094,7 +1111,7 @@ def test_the_floor_mark_follows_the_carried_fact_not_the_rounded_numbers():
     """딱지는 도구가 센 사실(`p_at_floor`)을 따른다 - 두 숫자를 여기서 다시 비교하면
     반올림에 걸린다.
 
-    p 도 바닥도 4자리로 반올림돼 오므로 참조 회차가 13,333~19,999 이면
+    p 도 바닥도 4자리로 반올림돼 오므로 참조 회차가 13,333~19,999 이거나 40,000 이상이면
     `1/13334` 과 `2/13334` 이 둘 다 0.0001 이 된다. 그러면 귀무가 한 번 넘은
     후보가 "이 표본의 최소값" 으로 나가 - 신호가 바닥에 눌린 것이 아닌데도
     "더 모아도 이보다 작아지지 않는다" 로 읽힌다.

@@ -2146,7 +2146,7 @@ def test_missing_pipeline_group_in_state_is_not_an_empty_denominator():
 
     with pytest.raises(RuntimeError, match="control_group"):     # 대조군만 없음
         nodes.tools_node({"messages": [ai], "loop_count": 1, "findings": [],
-                          "target_group": _PIPELINE_TARGET})     # 이력 결측 위장 쪽
+                          "target_group": _PIPELINE_TARGET})     # 대조군 결측 위장 쪽
 
     with pytest.raises(RuntimeError, match="control_group"):     # 키는 있고 값이 None
         nodes.tools_node({"messages": [ai], "loop_count": 1, "findings": [],

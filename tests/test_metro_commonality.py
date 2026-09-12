@@ -501,6 +501,22 @@ def test_the_two_no_paired_stratum_paths_are_told_apart():
     assert no_metro["meta"]["missing_metro"] == sorted(set(t) | set(c))
 
 
+def test_the_unpaired_path_counts_the_missing_metro_it_reports():
+    """metro 의 경로 (1) 도 결측을 **세어서** 낸다 - 상수 `[]` 는 사실이 아니다.
+
+    계측은 lot 당 몇 장뿐이라 metro 에서는 결측이 예외가 아니라 상시 상태다.
+    안 세고 0 을 내보내면 "계측은 다 있는데 짝이 없다" 로 읽힌다.
+    """
+    from data.generate_dummy import ADV_NOSIGNAL_LOT, METRO_TARGETS, adv_group
+
+    t, c = adv_group(ADV_NOSIGNAL_LOT)          # 계측 행이 하나도 없는 코호트
+    res = mc.find_metro_commonality(
+        [w for w in METRO_TARGETS if w.startswith("T2421")], list(c))
+
+    assert res["status"] == "no_paired_stratum"          # root_lot 이 안 맞는다
+    assert res["meta"]["missing_metro"] == sorted(c)     # 대조군 전원이 계측 결측이다
+
+
 def test_the_note_blames_the_reference_rounds_not_the_sample_for_a_big_floor():
     """바닥값의 원인은 **참조 회차**다. metro 에서 특히 갈리는 자리다.
 

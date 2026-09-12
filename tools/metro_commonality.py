@@ -485,11 +485,14 @@ def find_metro_commonality(target_wafers: list[str], control_wafers: list[str],
     if not paired:
         # **계측 결측 경로와 같은 모양으로 낸다.** 두 경로가 status 를 공유하므로
         # 소비자가 둘을 가르는 값(meta.missing_metro)은 양쪽에 다 있어야 한다 -
-        # 한쪽에만 있으면 "키가 없다" 와 "결측이 없다" 가 같아 보인다.
+        # 한쪽에만 있으면 "키가 없다" 와 "결측이 없다" 가 같아 보인다. **세어서
+        # 낸다** - 상수 [] 는 "확인한 적이 없다" 까지 "없다" 로 만든다. 분모는 아래
+        # 경로와 다르다(여기는 짝지어진 stratum 이 없어 요청 wafer 전체에서 센다).
         return _empty("no_paired_stratum",
                       "타깃과 같은 root_lot 에 속한 대조군 wafer 가 없다. route/시간 "
                       "교락 없이 비교할 짝이 없어 계산을 중단했다.") | {
-            "meta": {"missing_metro": []}}
+            "meta": {"missing_metro": sorted(set(targets + controls)
+                                             - {r["wafer_id"] for r in rows})}}
 
     wafers_all = targets + controls
     bits = {w: 1 << i for i, w in enumerate(wafers_all)}

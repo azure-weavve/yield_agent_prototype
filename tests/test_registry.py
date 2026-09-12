@@ -127,7 +127,7 @@ def test_every_permutation_axis_teaches_p_at_floor_not_a_comparison():
     """바닥에 닿았는지는 **도구가 센 사실**(`p_at_floor`)이다.
 
     yaml 이 그것을 안 가르치면 LLM 은 p 와 p_min_possible 을 직접 비교해 알아내는데,
-    두 값은 4자리로 반올림돼 나가므로 참조 회차가 13,333~19,999 이면 1/13334 과
+    두 값은 4자리로 반올림돼 나가므로 참조 회차가 13,333~19,999 이거나 40,000 이상이면 1/13334 과
     2/13334 이 같은 숫자가 된다. 축이 늘 때 이 문장만 빠지는 것을 여기서 막는다.
     """
     for spec in registry.load_hypotheses():
@@ -144,3 +144,15 @@ def test_no_axis_blames_the_sample_size_for_a_big_floor():
     """
     for spec in registry.load_hypotheses():
         assert "표본이 작아 p" not in spec["description"], spec["id"]
+
+
+def test_every_permutation_axis_qualifies_the_family_wise_comparison():
+    """family-wise 쌍은 **코드가 아니라 이 문장으로만** 한계를 알린다.
+
+    후보별 p 는 `p_at_floor` 라는 사실을 동반하지만 목록 단위 값 한 쌍은 그렇지
+    않기로 했다(2026-09-12 결정). 그래서 "둘이 같으면" 을 참고로만 쓰라는 한정절이
+    계약의 전부다 - 축이 늘거나 한 블록만 고쳐지면 조용히 갈린다.
+    """
+    for spec in registry.load_hypotheses():
+        if "p_family_wise_min_possible" in spec["description"]:
+            assert "참고로만 써라" in spec["description"], spec["id"]

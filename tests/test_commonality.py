@@ -993,7 +993,28 @@ def test_the_two_no_paired_stratum_paths_are_told_apart(tmp_path, monkeypatch):
     # 뒤져야 할지 모른다.
     assert unpaired["note"] != no_history["note"]
     assert no_history["meta"]["missing_history"] == ["C1", "C2", "T1", "T2"]
-    assert unpaired["meta"]["missing_history"] == []   # (1) 의 wafer 는 이력이 다 있다
+    # 여기서는 실제로 세어 봐도 결측이 없다(픽스처의 네 wafer 모두 이력이 있다).
+    # 안 세고 상수로 내면 안 된다 - 바로 위 테스트가 그 경우를 잰다.
+    assert unpaired["meta"]["missing_history"] == []
+
+
+def test_the_unpaired_path_counts_the_missing_history_it_reports(tmp_path, monkeypatch):
+    """경로 (1) 의 결측 목록은 **세어서** 내야 한다 - 상수 `[]` 는 사실이 아니다.
+
+    빈 목록에는 "확인했더니 결측이 없다" 와 "확인한 적이 없다" 가 같이 실린다.
+    도구가 낸 사실은 게이트도 LLM 도 검증 없이 믿으므로, 안 센 것을 0 으로
+    내보내면 결측이 있는 그룹이 "이력은 멀쩡하다" 로 보고된다 - 이 브랜치가
+    `p_at_floor` 에서 없앤 것과 같은 모양의 결함이다.
+    """
+    ys = [_y("T1", "AAAAA"), _y("T2", "AAAAA"),      # 타깃은 AAAAA
+          _y("C1", "BBBBB"), _y("C2", "BBBBB")]      # 대조군은 BBBBB -> 짝이 없다
+    hs = [_h("T1", "Etch", "ETCH9", "3")]            # T2 는 이력이 통째로 없다
+    hs += [_h(w, "Etch", "ETCH8", "1") for w in ("C1", "C2")]
+    _make_db(tmp_path, monkeypatch, ys, hs)
+
+    res = cm.find_commonality(["T1", "T2"], ["C1", "C2"])
+    assert res["status"] == "no_paired_stratum"
+    assert res["meta"]["missing_history"] == ["T2"]
 
 
 @pytest.mark.parametrize("build_db", [_db_insufficient_group, _db_unpaired_root_lot,
@@ -1140,7 +1161,7 @@ def test_a_missing_size_is_not_a_match():
 def test_at_floor_is_a_count_the_tool_carries_not_a_comparison_downstream():
     """`p == p_min_possible` 을 소비자가 재계산하면 반올림에 걸린다.
 
-    두 값은 4자리로 반올림돼 나가므로 참조 회차가 13,333~19,999 이면
+    두 값은 4자리로 반올림돼 나가므로 참조 회차가 13,333~19,999 이거나 40,000 이상이면
     `1/13334 = 0.0001` 과 `2/13334 = 0.0001` 이 같은 숫자가 된다. 귀무가 한 번
     넘은 후보에 "이 표본의 최소값" 딱지가 붙는 것이 그 결과다
     (`graph/evidence.py::format_evidence_line`). 사실을 아는 자리는 넘은 횟수를
