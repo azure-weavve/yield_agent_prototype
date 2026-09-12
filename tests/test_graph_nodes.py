@@ -3228,18 +3228,24 @@ def test_a_hallucination_below_the_loop_limit_is_still_rejected():
     assert verdict.startswith("반려")
 
 
-def test_an_honest_pick_at_the_loop_limit_is_untouched():
-    """정직한 제출은 이 규칙이 건드리지 않는다 - 버릴 것이 없다."""
+def test_a_pick_approval_could_use_is_untouched_at_the_loop_limit():
+    """**경계 반대편.** 승인이 쓸 수 있는 지목(판별선을 넘은 비센서 claim)은 안 버린다.
+
+    다 버리면 이 규칙이 "한계에서는 지목을 무시한다" 가 되어, 확신도만 모자란
+    제출까지 근거를 잃는다. 버리는 것은 **도구가 낸 사실상 승인이 성립할 수 없는**
+    지목뿐이다 - 여기서는 확신도(0.3)가 문턱 아래라 (1)이 안 걸릴 뿐이다.
+    """
     update = {}
     verdict = nodes._finalize_gate(
         {"claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH9_B",
-         "hypothesis": "h", "confidence": 0.9},
-        loop=ya_config.MAX_LOOPS, update=update, findings=[EQP_CH_BELOW_LINE])
-    assert update["finalize_status"] == "weak_signal"     # (2a)가 이미 받는다
+         "hypothesis": "h", "confidence": 0.3},
+        loop=ya_config.MAX_LOOPS, update=update, findings=[EVIDENCE_FINDING_NEW])
+    assert update["finalize_status"] == "inconclusive"    # 진짜 미확정이다
     assert "무시" not in verdict, verdict
+    assert [c for c in update["final_claims"] if c.get("picked_by_llm")]
 
 
-def test_loop_limit_drops_every_pick_that_approval_cannot_use(monkeypatch):
+def test_loop_limit_drops_every_pick_that_approval_cannot_use():
     """버려야 하는 것은 **환각이 아니라 "(1)이 못 받는 지목" 전체**다.
 
     `_honest_pick` 은 참이지만 승인으로 이어질 수 없는 지목이 둘 있다 - 2단 센서
@@ -3265,6 +3271,43 @@ def test_loop_limit_drops_every_pick_that_approval_cannot_use(monkeypatch):
         # 않기로 한 후보를 리포트가 "←서술 기준" 으로 찍는다.
         assert not [c for c in (update.get("final_claims") or [])
                     if c.get("picked_by_llm")], label
+
+
+def test_loop_limit_also_drops_a_real_candidate_that_missed_the_line():
+    """**미통과 claim 도 승인이 못 받는 지목이다.** 실재한다고 남겨 두면 안 된다.
+
+    `passes` 는 확신도·등수와 성격이 다르다 - 확신도는 LLM 이 올릴 수 있고 등수는
+    축을 더 돌리면 바뀌지만, `passes` 는 **도구가 발급한 사실**이라 루프 한계에서는
+    바꿀 회차가 없다. 센서·대체 이름과 같은 쪽이다.
+
+    재현(부분 커버리지 - (2b)는 전축을 요구하므로 닫히고 잔차도 없다):
+    빈손·환각은 `no_signal` + 커버리지 문장인데, **실재하는 약한 후보를 지목하면**
+    `inconclusive` "확정 근거 없이" 로 끝나 안 돌린 축이 무엇인지까지 사라졌다.
+    """
+    weak = {"loop": 2, "tool": "hyp_eqp_ch_commonality", "args": {},
+            "result": {"hypothesis_id": "eqp_ch_commonality", "status": "ok",
+                       "candidates": [
+                           {"claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH9_B",
+                            "step_seq": "CC002000", "key": "ETCH9_B", "level": "chamber",
+                            "passes": False, "reject_reason": "분리 점수 0.1 < 0.5",
+                            "score": 0.1,        # 아랫선(0.25) 미만 - 잔차도 아니다
+                            "target_pass": 4, "target_total": 4,
+                            "control_pass": 3, "control_total": 5}]},
+            "thought": ""}
+    findings = [weak, PPID_SILENT, STEP_PASSAGE_SILENT]   # metro 는 안 돌렸다
+
+    empty, real = {}, {}
+    nodes._finalize_gate({"claim_id": "", "hypothesis": "h", "confidence": 0.9},
+                         loop=ya_config.MAX_LOOPS, update=empty, findings=findings)
+    verdict = nodes._finalize_gate(
+        {"claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH9_B",
+         "hypothesis": "h", "confidence": 0.9},
+        loop=ya_config.MAX_LOOPS, update=real, findings=findings)
+    assert real["finalize_status"] == empty["finalize_status"] == "no_signal"
+    assert "안 돌린 축 1개: hyp_metro_commonality" in verdict, verdict
+    # 버린 이유를 센서라고 부르면 거짓이다 - 가설 도구의 챔버 후보다.
+    assert "센서" not in verdict, verdict
+    assert "판별선" in verdict, verdict
 
 
 def test_the_drop_note_says_which_kind_of_pick_it_ignored():

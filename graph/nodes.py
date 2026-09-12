@@ -385,22 +385,35 @@ def _honest_pick(bundle, claim_id: str) -> bool:
 
 
 def _approvable_pick(claim) -> bool:
-    """이 지목으로 (1) 승인이 성립할 수 있는가 - **종류만 본다.**
+    """이 지목으로 (1) 승인이 성립할 수 있는가 - **도구가 낸 사실만 본다.**
 
-    확신도나 등수는 안 본다. 그것들은 "지목은 쓸 수 있는데 이번엔 모자랐다" 이고,
-    여기서 묻는 것은 "이 이름으로는 애초에 승인이 성립하지 않는다" 다. 거짓인 경우가
-    셋이다: 번들에 없는 이름(환각) · 대체된 앞 실행의 이름(역시 claims 에 없다) ·
-    2단 센서 claim(근거로는 실리되 지목 대상이 아니다 - (1)의 `kind` 하한).
+    거짓인 경우가 넷이다: 번들에 없는 이름(환각) · 대체된 앞 실행의 이름(역시 claims
+    에 없다) · 2단 센서 claim(근거로는 실리되 지목 대상이 아니다 - (1)의 `kind` 하한) ·
+    **판별선을 못 넘은 claim**((1)의 `passes` 하한).
+
+    **확신도와 등수는 일부러 안 본다.** 그 둘은 "지목은 쓸 수 있는데 이번엔 모자랐다"
+    이고 빈손 제출도 같은 자리에서 막히므로 제출 형태에 따른 비대칭이 안 생긴다.
+    `passes` 는 다르다 - 확신도는 LLM 이 올릴 수 있고 등수는 축을 더 돌리면 바뀌지만,
+    `passes` 는 **도구가 발급한 사실**이라 루프 한계에서는 바꿀 회차가 없다. 남겨 두면
+    실재한다는 이유로 `(2)` 의 `not claim_id` 하한에 걸려, 정직하게 지목한 쪽이
+    환각보다 나쁜 사유를 받는다(실측: 부분 커버리지에서 빈손·환각은 `no_signal` 인데
+    실재하는 약한 후보 지목은 `inconclusive` + 커버리지 문장 소실).
     """
-    return claim is not None and claim.kind != "sensor"
+    return claim is not None and claim.kind != "sensor" and claim.passes
 
 
 def _drop_reason(bundle, claim_id: str, claim) -> str:
-    """버린 지목을 판정문에서 어떻게 부를 것인가. **셋을 뭉개지 않는다** - 다음에
-    할 일이 다르다(지어내지 마라 / 가설 도구의 claim 을 지목하라 / 재실행 결과를 보라).
+    """버린 지목을 판정문에서 어떻게 부를 것인가. **넷을 뭉개지 않는다** - 다음에 할
+    일이 다르다(가설 도구의 claim 을 지목하라 / 판별선을 넘은 것을 지목하라 /
+    재실행 결과를 보라 / 지어내지 마라).
     """
-    if claim is not None:
+    # **`_approvable_pick` 과 같은 술어를 쓴다.** 여기서 `claim is not None` 하나로
+    # 센서를 판정하면 그쪽이 넓어지는 순간 이 문장이 조용히 거짓이 된다 - 가설 도구의
+    # 챔버 후보를 "2단 센서" 라고 부르게 된다(재리뷰 I-1 이 실제로 잡은 자리다).
+    if claim is not None and claim.kind == "sensor":
         return "2단 센서 근거라 지목 대상이 아니어서"
+    if claim is not None:
+        return "판별선을 넘지 못해 승인 대상이 아니어서"
     if claim_id in bundle.dropped_claims:
         return "같은 축을 다시 돌려 대체된 앞 실행의 후보라"
     return "도구 결과에 없어"
@@ -467,7 +480,8 @@ def _no_separation_state(bundle, coverage: dict) -> bool:
 def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) -> str:
     """판정에 **버린 지목**을 덧붙여 돌려주는 얇은 껍데기. 판정 자체는 아래 함수다.
 
-    루프 한계에서 환각 지목을 버릴 수 있는데(`_gate_verdict` 참조), 그 사실은 판정문에
+    루프 한계에서 승인이 못 받는 지목(환각·2단 센서·대체된 이름·판별선 미달)을 버릴 수
+    있는데(`_gate_verdict` 참조), 그 사실은 판정문에
     남아야 한다 - 이 문자열은 findings 를 타고 리포트 LLM 까지 가고 프롬프트는 그것을
     "그대로 인용하라" 고 지시한다. 판정 분기가 여럿이라 각 분기 문구를 고치는 대신
     여기서 한 번만 붙인다.
@@ -485,7 +499,7 @@ def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) ->
 
 
 def _gate_verdict(args: dict, loop: int, update: dict, findings: list[dict],
-                  dropped: list[str]) -> str:
+                  dropped: list[tuple[str, str]]) -> str:
     """LLM 의 종료 제안을 코드가 최종 판정한다 (부품 4b).
 
     승인 실권은 confidence 자기 신고도, LLM 이 쓴 문장도 아니라 **EvidenceBundle
@@ -521,7 +535,7 @@ def _gate_verdict(args: dict, loop: int, update: dict, findings: list[dict],
       (5) 그 외 -> 반려. 무엇이 모자란지 그대로 돌려준다.
 
     **루프 한계에서는 위 목록을 타기 전에 지목을 한 번 거른다.** 승인이 못 받는
-    지목(환각·2단 센서·대체된 이름)은 버리고 빈손으로 본다 - 그러지 않으면 (2a)·(2b)의
+    지목(환각·2단 센서·대체된 이름·판별선 미달)은 버리고 빈손으로 본다 - 그러지 않으면 (2a)·(2b)의
     "정직한 제출" 하한과 (2)·(3)·(3b)의 `not claim_id` 하한에 걸려, 종료 사유가
     증거 상태가 아니라 **마지막 제출 형태**에 끌려간다. 버린 것은 `dropped` 에
     (claim_id, 사유) 한 쌍으로 담아 껍데기(`_finalize_gate`)가 판정문에 덧붙인다.
