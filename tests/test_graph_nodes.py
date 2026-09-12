@@ -41,7 +41,7 @@ def _ai_finalize(confidence, hypothesis="Etch ETCH-9 원인", claim_id="eqp_ch_c
 # 값만 쓴다. 게이트는 `score` 와 `passes` 만 읽어서 어긋나도 안 죽지만, 픽스처를
 # 복사해 쓰는 다음 사람이 실재하지 않는 조합을 근거로 삼게 된다. 두 가지를 맞춘다:
 #   score         = target_pass/target_total - control_pass/control_total (commonality 정의)
-#   reject_reason = domain/engine.py:17-19 형식 + ya_config 실제 임계
+#   reject_reason = domain/engine.py 의 reject_reason 조립부 형식 + ya_config 실제 임계
 #                   (COMMONALITY_PASS_MIN_SCORE=0.5, COMMONALITY_PASS_MIN_TARGET=2)
 
 # 게이트 증거 검사용(신형): 챔버 가설이 ETCH-9 를 통과 판정한 감사 기록
@@ -3043,7 +3043,7 @@ def test_a_named_passing_sensor_ends_as_weak_signal():
     # 잠그지 못하는 것: 표에 적힌 문자 그대로("None 대신 picked 전달" - 여기서
     # `picked` 는 함수 맨 위, **인자 없는** `bundle.ranked_groups()` 호출이 만든
     # 객체)는 다르다. `groups_to_dicts` 가 `group is picked` 로 식별하는데
-    # (`evidence.py:520`), (2a)가 넘기는 목록은 `bundle.ranked_groups(bundle.
+    # (`evidence.py` 의 `ranked_groups`), (2a)가 넘기는 목록은 `bundle.ranked_groups(bundle.
     # passing() + residuals)` 라는 **별도** 호출이 매번 새로 만든 객체들이라
     # (`ranked_groups()` 는 호출마다 새 `ClaimGroup` 을 만든다 - `find_group`
     # 자체 docstring 의 경고), 그 stale `picked` 를 그대로 넘겨도 `is` 비교가

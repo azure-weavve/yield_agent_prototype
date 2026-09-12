@@ -257,6 +257,7 @@ class ScriptedMockLLMClient(LLMClient):
                 lines.append(f"     - 게이트: {f['result']}")
         # 두 갈래(inconclusive·weak_signal)가 같은 술어를 쓴다 - 앞에서 한 번만 센다.
         has_residual_lines = any(not c.get("passes", True) for c in (claims or []))
+        suppress_conf = False
         if finalize_status == "inconclusive":
             # **게이트가 버린 지목을 유력 가설로 찍지 않는다.** 목은 프롬프트를 따르는
             # LLM 의 대역이므로 같은 규칙을 타야 한다 - 안 그러면 판정문은 "무시했다"
@@ -266,10 +267,18 @@ class ScriptedMockLLMClient(LLMClient):
             dropped = any(f["tool"] == "finalize"
                           and "무시하고 증거 상태로 판정했다" in str(f.get("result", ""))
                           for f in findings)
-            conclusion = ("미확정 (루프 한계 도달) - 마지막 지목은 게이트가 버렸다"
-                          "(사유는 [판정] 줄). 유력 가설로 쓸 수 있는 후보가 없다."
+            # **버린 지목만 배제한다.** "쓸 수 있는 후보가 없다" 로 넓히면 거짓이 된다 -
+            # 통과 근거가 실린 채로 이 갈래에 오는 상태가 있고(지목만 센서였던 경우)
+            # 그때 [근거] 줄에는 완전 분리 후보가 찍힌다. 판정문과 결론이 서로를
+            # 부정하는 것이 이 규칙이 없애려던 바로 그 모양이다(3차 리뷰 I-1).
+            # 줄 이름도 실제 출력에 맞춘다 - `[판정]` 은 리포트 생성 실패 폴백에만 있다.
+            conclusion = ("미확정 (루프 한계 도달) - 마지막 지목은 게이트가 버려 유력 "
+                          "가설이 아니다(사유는 위 [분석 과정] 의 게이트 줄)."
                           if dropped else
                           f"미확정 (루프 한계 도달) - 유력 가설: {hypothesis or '없음'}.")
+            # 버린 지목에 딸린 자기 신고 확신도는 안 찍는다 - 근거가 아니고, 코드가
+            # 결론을 적는 자리(`report_node` 폴백)가 같은 이유로 이미 뺐다.
+            suppress_conf = dropped
             # 두 갈래 다 잔차가 실려 있다는 보장이 없다 - **상한 절단**이 잔차를 다
             # 밀어낼 수 있기 때문이다(`_record_evidence` 가 통과 근거를 먼저 예약한다).
             # 이것이 공통 이유이고, inconclusive 에는 하나가 더 있다 - 통과 후보가
@@ -348,7 +357,8 @@ class ScriptedMockLLMClient(LLMClient):
                           "root_lot 확장은 ETL(lot_type) 이후 활성화. 추후 분석 필요.")
         else:
             conclusion = hypothesis or "원인 미확정"
-        conf = f" (확신도 {confidence})" if confidence is not None else ""
+        conf = ("" if suppress_conf or confidence is None
+                else f" (확신도 {confidence})")
         lines += ["", f"[결론] {conclusion}{conf}"]
         # [근거] 줄은 여기서 붙이지 않는다 - report_node 가 코드로 붙인다(운영 클라이언트도
         # 동일하게 보장하려고 두 클라이언트 밖으로 뺐다). 여기서 또 붙이면 줄이 두 번 나온다.
@@ -491,14 +501,13 @@ class OpenAILLMClient(LLMClient):
             "볼 데이터가 없는 것(no_comparable_data)이 아니라 조회 자체가 실패한 것이니 "
             "적재 범위가 아니라 DB/서비스 상태 확인과 재실행을 후속 조치로 적고, "
             "확정 결론을 쓰지 마라. "
-            "판정이 no_signal 이거나 no_comparable_data 이거나 tool_failure 이거나 "
-            "inconclusive 인데 제출된 가설이 특정 후보를 원인으로 지목하고 있어도 그 "
-            "문장을 그대로 옮기지 마라 - 게이트가 루프 한계에서 승인이 못 받는 지목을 "
-            "버리고 증거 상태로 판정한 것이며, 그 후보는 확정된 것이 아니라 **버려진 "
-            "지목**이다. inconclusive 의 '유력 후보' 에도 그 후보는 쓰지 마라 - 게이트가 "
-            "쓸 수 없다고 판정한 것을 유력하다고 적으면 같은 리포트가 스스로를 부정한다. "
-            "무엇을 왜 버렸는지는 판정문 끝 괄호에 그대로 적혀 있으니 그것을 근거로 "
-            "다음에 할 일을 적어라. "
+            "판정문 끝 괄호에 '무시하고 증거 상태로 판정했다' 가 있으면 거기 적힌 "
+            "claim_id 는 게이트가 **버린** 지목이다 - 제출된 가설이 그 후보를 원인으로 "
+            "지목하고 있어도 그 문장을 그대로 옮기지 말고, '유력 후보' 로도 쓰지 마라. "
+            "게이트가 쓸 수 없다고 판정한 것을 유력하다고 적으면 같은 리포트가 스스로를 "
+            "부정한다. **버린 지목만** 배제하는 것이지 다른 근거까지 없다는 뜻이 아니다 - "
+            "[근거] 줄이 있으면 그것은 그대로 서술하라. 무엇을 왜 버렸는지도 그 괄호에 "
+            "있으니 그것을 근거로 다음에 할 일을 적어라. "
             "판정이 no_separation 이면 '갈리는 항목 없음'으로 서술하라 - "
             "분석 미수행이 아니다. 계산된 가설 도구(hyp_*) 축에서 타깃과 대조군을 "
             "가르는 항목이 없었다는 관측이다. 2단 센서 근거는 통과했을 수 있으니 "

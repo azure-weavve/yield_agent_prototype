@@ -742,7 +742,8 @@ def _gate_verdict(args: dict, loop: int, update: dict,
         # 실제로는 갈린 센서를 안 갈렸다고 말하는 거짓 판정문이 된다(리뷰어 재현:
         # `ALL_WEAK + [SENSOR_FINDING]` 빈손 제출 -> 판정문이 "가르는 항목 없음" 인데
         # `[근거 1]` 은 판별선을 넘은 센서다). `_no_candidate_action` 독스트링·
-        # weak_signal sys 프롬프트(`client.py:438-439`)가 이미 같은 이유로 센서를
+        # weak_signal sys 프롬프트(`llm/client.py` 의 "판정이 weak_signal 이면" 절)가
+        # 이미 같은 이유로 센서를
         # 따로 부른다.
         sensor_note = (
             "2단 센서는 판별선을 넘은 근거가 함께 실렸다 - 원인 확정 근거는 아니다. "
