@@ -182,9 +182,10 @@ def test_group_arguments_are_never_llm_facing():
 def test_group_arguments_are_still_required_at_invoke_time():
     """스키마에서 뺐다고 도구가 그룹 없이 도는 것은 아니다.
 
-    주입을 빠뜨리면 빈 그룹으로 조용히 돌아 `no_paired_stratum`("이력 결측") 이
-    나가는 것이 최악이다 - LLM 인자 실수가 엔지니어에게 데이터 결측으로 보고되던
-    것과 같은 오류다. 인자 자체는 필수로 남아 누락이 예외로 드러나야 한다.
+    주입을 빠뜨리면 빈 그룹으로 조용히 도는 것이 최악이다 - LLM 인자 실수가
+    엔지니어에게 데이터 사실로 보고된다(실측: 그룹이 통째로 비면
+    `insufficient_group`, 대조군만 비면 `no_paired_stratum` 이다). 인자 자체는
+    필수로 남아 누락이 예외로 드러나야 한다.
     """
     with pytest.raises(Exception):
         at.TOOLS_BY_NAME["hyp_eqp_ch_commonality"].invoke({"reason": "그룹 없이"})

@@ -127,7 +127,7 @@ def test_every_permutation_axis_teaches_p_at_floor_not_a_comparison():
     """바닥에 닿았는지는 **도구가 센 사실**(`p_at_floor`)이다.
 
     yaml 이 그것을 안 가르치면 LLM 은 p 와 p_min_possible 을 직접 비교해 알아내는데,
-    두 값은 4자리로 반올림돼 나가므로 참조 회차가 13,333 이상이면 1/13334 과
+    두 값은 4자리로 반올림돼 나가므로 참조 회차가 13,333~19,999 이면 1/13334 과
     2/13334 이 같은 숫자가 된다. 축이 늘 때 이 문장만 빠지는 것을 여기서 막는다.
     """
     for spec in registry.load_hypotheses():

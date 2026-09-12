@@ -697,10 +697,11 @@ def test_enumeration_and_sampling_agree(tmp_path, monkeypatch):
     열거를 타는데, 열거 상한을 낮춰 무작위 표본 경로로 강제한다. 두 p 가 크게
     벌어지면 둘 중 하나가 틀린 것이다 - 표본이 편향됐거나 열거가 빠뜨렸거나다.
 
-    두 값의 차이만 재면 안 된다. 완전 분리라 두 p 가 각자의 바닥값에 붙어 있어
-    차이가 늘 1e-4 수준이고, 그러면 허용오차 0.01 은 어떤 회귀도 못 잡는다.
-    각 경로의 p 를 바닥값에 직접 못 박아, "귀무가 한 번도 못 넘었다" 는 같은
-    결론에 두 경로가 각각 도달했는지를 잠근다.
+    두 값의 차이만 재면 안 된다. 완전 분리라 두 p 가 바닥 근처에 붙어 있어 차이가
+    작고, 그러면 허용오차 0.01 은 어떤 회귀도 못 잡는다. 그래서 경로마다 **성질**을
+    따로 못 박는다 - 전수는 바닥에 닿고(`p_at_floor`), 표본은 관측 라벨이 참조집합에
+    남아 바닥에 못 닿으며 그 바닥은 회차 예산이 정한다. p 값 자체는 난수열에
+    딸린 숫자라 잠그지 않는다.
     """
     t = [f"T{i}" for i in range(1, 7)]
     c = [f"C{i}" for i in range(1, 7)]
@@ -713,7 +714,7 @@ def test_enumeration_and_sampling_agree(tmp_path, monkeypatch):
     assert exhaustive["n_permutations_total"] == 924        # 전수 경로였다
     # 923회(관측 제외) 중 관측을 넘은 것이 0 → p = 1/924
     assert exhaustive["p_permutation"] == 0.0011
-    assert exhaustive["p_permutation"] == exhaustive["p_min_possible"]
+    assert exhaustive["p_at_floor"] is True                 # 귀무가 한 번도 못 넘었다
 
     monkeypatch.setattr(cm, "PERM_EXHAUSTIVE_MAX", 10)      # 무작위 표본으로 강제
     sampled = _find(cm.find_commonality(t, c), "equipment", "ETCH9")
@@ -992,9 +993,7 @@ def test_the_two_no_paired_stratum_paths_are_told_apart(tmp_path, monkeypatch):
     # 뒤져야 할지 모른다.
     assert unpaired["note"] != no_history["note"]
     assert no_history["meta"]["missing_history"] == ["C1", "C2", "T1", "T2"]
-    # (1) 의 wafer 는 이력이 다 있다. 이 단언은 지금 meta 가 없어 자동으로도
-    # 참이지만, 나중에 이 경로가 meta 를 갖게 될 때 결측을 지어내지 않도록 둔다.
-    assert unpaired.get("meta", {}).get("missing_history", []) == []
+    assert unpaired["meta"]["missing_history"] == []   # (1) 의 wafer 는 이력이 다 있다
 
 
 @pytest.mark.parametrize("build_db", [_db_insufficient_group, _db_unpaired_root_lot,
@@ -1141,7 +1140,7 @@ def test_a_missing_size_is_not_a_match():
 def test_at_floor_is_a_count_the_tool_carries_not_a_comparison_downstream():
     """`p == p_min_possible` 을 소비자가 재계산하면 반올림에 걸린다.
 
-    두 값은 4자리로 반올림돼 나가므로 참조 회차가 13,333 이상이면
+    두 값은 4자리로 반올림돼 나가므로 참조 회차가 13,333~19,999 이면
     `1/13334 = 0.0001` 과 `2/13334 = 0.0001` 이 같은 숫자가 된다. 귀무가 한 번
     넘은 후보에 "이 표본의 최소값" 딱지가 붙는 것이 그 결과다
     (`graph/evidence.py::format_evidence_line`). 사실을 아는 자리는 넘은 횟수를
@@ -1162,6 +1161,23 @@ def test_at_floor_is_a_count_the_tool_carries_not_a_comparison_downstream():
         _fixed_null(sizes_by_t={0b0101: 2, 0b1001: 2},
                     scores_by_t={0b0101: 0.1, 0b1001: 0.1}))
     assert at_floor["p_at_floor"][_K] is True
+
+
+def test_a_candidate_with_no_comparable_round_is_not_at_floor():
+    """참조 회차가 0이면 **바닥에 닿은 것이 아니라 잴 것이 없었다** 이다.
+
+    넘은 횟수만 세면 둘이 같은 0 이라 정반대 뜻이 한 이름에 실린다. 참조 0회는
+    p 도 바닥도 1.0 인 상태이고, 이 저장소는 그것을 "이 표본이 낼 수 있는 최강"
+    과 따로 떼어 놓는다(`graph/evidence.py::_is_statistical`, 근거 줄의 "비교
+    가능한 귀무 표본이 없어 판단 불가"). 딱지가 안 붙는 이유가 근거 줄의 분기
+    **순서**뿐이면, 순서를 뒤집는 것만으로 정반대 문구가 나간다.
+    """
+    masks = [("L1", 0b0011, 0b1100)]
+    out = cm._null_distribution(masks, 0b1111, {_K: 0.5}, {_K: 7}, 100, 1,
+                                _fixed_null({}, {}))
+    assert out["n_reference"][_K] == 0
+    assert out["p"][_K] == out["p_min_possible"][_K] == 1.0
+    assert out["p_at_floor"][_K] is False
 
 
 def test_candidate_carries_the_floor_fact(tmp_path, monkeypatch):

@@ -443,7 +443,11 @@ def find_metro_commonality(target_wafers: list[str], control_wafers: list[str],
     반환 status 는 `find_commonality` 와 같은 어휘를 쓴다 (게이트가 그 어휘로
     "계산 불가" 를 판정하므로 갈리면 안 된다):
       - "insufficient_group": 타깃이 너무 적어 commonality 가 정의상 무의미
-      - "no_paired_stratum" : 타깃과 대조군이 같은 root_lot 에서 짝지어지지 않음
+      - "no_paired_stratum" : 비교할 짝이 없다. **경로가 둘이고 조치가 다르다** —
+                              (1) 대조군이 타깃과 다른 root_lot 에만 있다(대조군
+                              선정을 다시 한다) (2) 계측값이 있는 짝이 없다(계측
+                              결측을 뒤진다 — metro 는 lot 당 몇 장만 재므로 이쪽이
+                              흔하다). 가르는 값은 meta.missing_metro 다.
       - "no_signal"         : 계산은 됐으나 갈리는 구간이 없음
       - "ok"
     """
@@ -479,9 +483,13 @@ def find_metro_commonality(target_wafers: list[str], control_wafers: list[str],
 
     paired = {rl: s for rl, s in strata.items() if s["target"] and s["control"]}
     if not paired:
+        # **계측 결측 경로와 같은 모양으로 낸다.** 두 경로가 status 를 공유하므로
+        # 소비자가 둘을 가르는 값(meta.missing_metro)은 양쪽에 다 있어야 한다 -
+        # 한쪽에만 있으면 "키가 없다" 와 "결측이 없다" 가 같아 보인다.
         return _empty("no_paired_stratum",
                       "타깃과 같은 root_lot 에 속한 대조군 wafer 가 없다. route/시간 "
-                      "교락 없이 비교할 짝이 없어 계산을 중단했다.")
+                      "교락 없이 비교할 짝이 없어 계산을 중단했다.") | {
+            "meta": {"missing_metro": []}}
 
     wafers_all = targets + controls
     bits = {w: 1 << i for i, w in enumerate(wafers_all)}

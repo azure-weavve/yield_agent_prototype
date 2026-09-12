@@ -473,6 +473,34 @@ def test_turning_permutations_off_removes_the_p_explanation_from_the_note():
     assert "p_min_possible" not in res["note"]
 
 
+def test_the_two_no_paired_stratum_paths_are_told_apart():
+    """metro 도 `no_paired_stratum` 조기 반환이 **둘**이고 조치가 다르다.
+
+    (1) 대조군이 타깃과 다른 root_lot 에만 있다 -> 대조군 선정을 다시 한다.
+    (2) 계측값이 있는 짝이 하나도 없다 -> 계측 결측을 뒤진다. metro 는 lot 당 몇
+        장만 재므로 **이쪽이 상시 상태**다(`graph/nodes.py` 의 커버리지 판정이
+        metro 를 축 고유 사유로 따로 다루는 이유이기도 하다).
+
+    가르는 값은 meta.missing_metro 다 - (2) 만 어느 wafer 가 빠졌는지 댈 수 있다.
+    status 가 같으므로 이것이 없으면 두 경로를 세우는 테스트가 서로를 대신한다.
+    """
+    from data.generate_dummy import (ADV_NOSIGNAL_LOT, METRO_CONTROLS,
+                                     METRO_TARGETS, adv_group)
+
+    # 타깃은 T2421, 대조군은 T2422 - 같은 root_lot 짝이 없다.
+    unpaired = mc.find_metro_commonality(
+        [w for w in METRO_TARGETS if w.startswith("T2421")],
+        [w for w in METRO_CONTROLS if w.startswith("T2422")])
+    # 계측을 아예 안 하는 코호트 - 짝은 있는데 계측값이 없다.
+    t, c = adv_group(ADV_NOSIGNAL_LOT)
+    no_metro = mc.find_metro_commonality(list(t), list(c))
+
+    assert unpaired["status"] == no_metro["status"] == "no_paired_stratum"
+    assert unpaired["note"] != no_metro["note"]
+    assert unpaired["meta"]["missing_metro"] == []      # 계측 결측이 원인이 아니다
+    assert no_metro["meta"]["missing_metro"] == sorted(set(t) | set(c))
+
+
 def test_the_note_blames_the_reference_rounds_not_the_sample_for_a_big_floor():
     """바닥값의 원인은 **참조 회차**다. metro 에서 특히 갈리는 자리다.
 

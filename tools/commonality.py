@@ -489,10 +489,14 @@ def _null_distribution(strata_masks, seen, observed: dict[tuple, float],
         "p": {k: (n + 1) / (reference[k] + 1) for k, n in exceed.items()},
         "p_min_possible": {k: 1 / (r + 1) for k, r in reference.items()},
         # **"바닥에 닿았다" 는 비교가 아니라 셈이다.** p 와 바닥은 4자리로 반올림돼
-        # 나가므로 소비자가 두 숫자를 == 로 재보면 참조 회차가 13,333 이상일 때
+        # 나가므로 소비자가 두 숫자를 == 로 재보면 참조 회차가 13,333~19,999 일 때
         # 1/13334 과 2/13334 이 둘 다 0.0001 이 되어, 귀무가 넘은 후보가 "이 표본의
         # 최소값" 으로 나간다. 넘은 횟수를 아는 자리는 여기뿐이라 여기서 싣는다.
-        "p_at_floor": {k: n == 0 for k, n in exceed.items()},
+        #
+        # **참조 회차 0은 제외한다.** 거기서도 넘은 횟수가 0 이지만 뜻이 정반대다 -
+        # "이 표본이 낼 수 있는 최강" 이 아니라 **비교할 귀무 표본이 하나도 없었다**
+        # 이고, p 도 바닥도 1.0 이다. 안 빼면 소비자가 분기 순서로만 둘을 가르게 된다.
+        "p_at_floor": {k: reference[k] > 0 and n == 0 for k, n in exceed.items()},
         # family-wise 는 회차별 **최댓값**을 재므로 참조집합을 안 좁힌다 - 바닥도
         # 회차 전부에서 나온다. 후보별 바닥의 최솟값과 **다른 값**이다(그쪽은 좁혀진
         # 참조집합에서 나오므로 항상 이보다 크거나 같다). 두 도구가 같은 식을 각자
@@ -626,7 +630,12 @@ def find_commonality(target_wafers: list[str], control_wafers: list[str],
         return {
             "status": "no_paired_stratum",
             "n_target": len(targets), "n_control": len(controls),
-            "candidates": [], "fdr_table": [], "p_family_wise": None, "p_family_wise_min_possible": None,
+            "candidates": [],
+            # 아래 "이력 결측" 경로와 status 를 공유하므로 **가르는 값을 양쪽에 다
+            # 싣는다.** 한쪽에만 있으면 "키가 없다" 와 "결측이 없다" 가 같아 보이고,
+            # status 서술이 가리키는 meta.missing_history 를 읽으면 KeyError 다.
+            "meta": {"missing_history": []},
+            "fdr_table": [], "p_family_wise": None, "p_family_wise_min_possible": None,
             "note": ("타깃과 같은 root_lot 에 속한 대조군 wafer 가 없다. "
                      "route/시간 교락 없이 비교할 짝이 없어 계산을 중단했다."),
         }

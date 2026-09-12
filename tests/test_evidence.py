@@ -343,12 +343,16 @@ def test_statistical_evidence_line_is_unchanged():
 # ---------------------------------------------------------------- 접기와 순위
 
 def _cand(claim_id, key, score, p, wafers, level="chamber", step="CC002000",
-          floor=0.001):
+          floor=0.001, at_floor=None):
+    # `p_at_floor` 는 도구가 **넘은 횟수를 세어** 싣는 값이다(`_null_distribution`).
+    # 픽스처의 p·바닥은 반올림 손실이 없는 값이라 여기서는 비교로 재현해도 같다 -
+    # 안 실으면 근거 줄이 실제 도구 출력과 다른 모양을 받아 단언이 공허해진다.
     return {"claim_id": claim_id, "level": level, "step_seq": step, "key": key,
             "passes": True, "reject_reason": None, "score": score,
             "target_pass": len(wafers), "target_total": 6,
             "control_pass": 0, "control_total": 6,
             "p_permutation": p, "p_min_possible": floor,
+            "p_at_floor": (p == floor) if at_floor is None else at_floor,
             "target_wafers": list(wafers), "control_wafers": []}
 
 
@@ -613,6 +617,9 @@ def test_a_p_pinned_to_its_floor_is_a_resolution_tie_even_when_the_numbers_match
     dicts = evidence.groups_to_dicts(groups)
     assert [d["tie_reason"] for d in dicts] == ["resolution", "resolution"]
     assert "해상도에서는 갈리지 않아" in evidence.format_group_line(dicts[0])
+    # 위 docstring 이 "같은 줄이 딱지를 찍고 있다" 고 적은 그 줄. 픽스처가 도구처럼
+    # p_at_floor 를 싣지 않으면 이 문장이 조용히 거짓이 된다.
+    assert "이 표본의 최소값" in evidence.format_evidence_line(dicts[0])
 
 
 def test_a_cross_axis_tie_does_not_blame_the_resolution():
@@ -1073,8 +1080,12 @@ def test_a_candidate_with_no_null_reference_is_not_called_the_samples_best():
     **정반대 뜻**을 붙인다 - 비교 대상이 하나도 없었던 후보가 "낼 수 있는 최강" 으로
     읽힌다. 분리 점수 1.0 과 함께 나가면 엔지니어가 그것을 근거로 설비를 세운다.
     """
+    # **도구가 싣는 대로 준다.** 참조 0회면 `p_at_floor` 는 거짓이다 - 예전 픽스처는
+    # 이 키를 아예 빼서, 딱지가 안 붙는 이유가 분기 **순서**뿐인 상태를 못 잡았다
+    # (순서를 뒤집는 훼손이 전 스위트를 통과했다).
     line = evidence.format_evidence_line(
-        {**CAND_PASS, "p_permutation": 1.0, "p_min_possible": 1.0})
+        {**CAND_PASS, "p_permutation": 1.0, "p_min_possible": 1.0,
+         "p_at_floor": False})
     assert "이 표본의 최소값" not in line
     assert "비교" in line               # 왜 판단할 수 없는지는 말해 준다
 
@@ -1083,7 +1094,7 @@ def test_the_floor_mark_follows_the_carried_fact_not_the_rounded_numbers():
     """딱지는 도구가 센 사실(`p_at_floor`)을 따른다 - 두 숫자를 여기서 다시 비교하면
     반올림에 걸린다.
 
-    p 도 바닥도 4자리로 반올림돼 오므로 참조 회차가 13,333 이상이면
+    p 도 바닥도 4자리로 반올림돼 오므로 참조 회차가 13,333~19,999 이면
     `1/13334` 과 `2/13334` 이 둘 다 0.0001 이 된다. 그러면 귀무가 한 번 넘은
     후보가 "이 표본의 최소값" 으로 나가 - 신호가 바닥에 눌린 것이 아닌데도
     "더 모아도 이보다 작아지지 않는다" 로 읽힌다.
