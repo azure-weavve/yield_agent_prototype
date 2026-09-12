@@ -130,9 +130,15 @@ def test_every_permutation_axis_teaches_p_at_floor_not_a_comparison():
     두 값은 4자리로 반올림돼 나가므로 참조 회차가 13,333~19,999 이거나 40,000 이상이면 1/13334 과
     2/13334 이 같은 숫자가 된다. 축이 늘 때 이 문장만 빠지는 것을 여기서 막는다.
     """
-    for spec in registry.load_hypotheses():
-        if "p_min_possible" in spec["description"]:
-            assert "p_at_floor" in spec["description"], spec["id"]
+    specs = registry.load_hypotheses()
+    assert specs, "가설이 하나도 안 로드되면 아래 루프는 아무것도 안 지킨다"
+    for spec in specs:
+        # **조건은 축의 성질이다.** "p_at_floor 를 이미 적었으면" 으로 물으면 문장이
+        # 통째로 빠진 축은 조건이 거짓이라 그냥 지나간다 - 막으려던 바로 그 경우다.
+        if "p_permutation" not in spec["description"]:
+            continue
+        assert "p_min_possible" in spec["description"], spec["id"]
+        assert "p_at_floor" in spec["description"], spec["id"]
 
 
 def test_no_axis_blames_the_sample_size_for_a_big_floor():
@@ -153,6 +159,13 @@ def test_every_permutation_axis_qualifies_the_family_wise_comparison():
     않기로 했다(2026-09-12 결정). 그래서 "둘이 같으면" 을 참고로만 쓰라는 한정절이
     계약의 전부다 - 축이 늘거나 한 블록만 고쳐지면 조용히 갈린다.
     """
-    for spec in registry.load_hypotheses():
-        if "p_family_wise_min_possible" in spec["description"]:
-            assert "참고로만 써라" in spec["description"], spec["id"]
+    specs = registry.load_hypotheses()
+    assert specs, "가설이 하나도 안 로드되면 아래 루프는 아무것도 안 지킨다"
+    for spec in specs:
+        # 순열을 내는 축은 family-wise 쌍도 낸다(같은 기계를 공유한다). 그래서 조건을
+        # "그 문장이 이미 있으면" 이 아니라 **축의 성질**로 건다 - 전자면 문단째
+        # 빠진 축을 못 잡는다.
+        if "p_permutation" not in spec["description"]:
+            continue
+        assert "p_family_wise_min_possible" in spec["description"], spec["id"]
+        assert "참고로만 써라" in spec["description"], spec["id"]

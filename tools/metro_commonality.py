@@ -447,7 +447,10 @@ def find_metro_commonality(target_wafers: list[str], control_wafers: list[str],
                               (1) 대조군이 타깃과 다른 root_lot 에만 있다(대조군
                               선정을 다시 한다) (2) 계측값이 있는 짝이 없다(계측
                               결측을 뒤진다 — metro 는 lot 당 몇 장만 재므로 이쪽이
-                              흔하다). 가르는 값은 meta.missing_metro 다.
+                              흔하다). **어느 경로인지 말하는 것은 note 다.**
+                              meta.missing_metro 는 두 경로 다 세어서 내되 분모가
+                              다르다 — (1) 은 요청 wafer 전체, (2) 는 짝지어진
+                              stratum 안이다.
       - "no_signal"         : 계산은 됐으나 갈리는 구간이 없음
       - "ok"
     """

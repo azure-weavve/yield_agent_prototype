@@ -481,8 +481,10 @@ def test_the_two_no_paired_stratum_paths_are_told_apart():
         장만 재므로 **이쪽이 상시 상태**다(`graph/nodes.py` 의 커버리지 판정이
         metro 를 축 고유 사유로 따로 다루는 이유이기도 하다).
 
-    가르는 값은 meta.missing_metro 다 - (2) 만 어느 wafer 가 빠졌는지 댈 수 있다.
-    status 가 같으므로 이것이 없으면 두 경로를 세우는 테스트가 서로를 대신한다.
+    가르는 것은 **note** 다. meta.missing_metro 는 두 경로 다 세어서 내되 분모가
+    다르다((1)은 요청 wafer 전체, (2)는 짝지어진 stratum 안) - 비어 있지 않은
+    목록으로는 경로를 못 가린다. status 가 같으므로 note 단언이 없으면 두 경로를
+    세우는 테스트가 서로를 대신한다.
     """
     from data.generate_dummy import (ADV_NOSIGNAL_LOT, METRO_CONTROLS,
                                      METRO_TARGETS, adv_group)
@@ -497,8 +499,43 @@ def test_the_two_no_paired_stratum_paths_are_told_apart():
 
     assert unpaired["status"] == no_metro["status"] == "no_paired_stratum"
     assert unpaired["note"] != no_metro["note"]
-    assert unpaired["meta"]["missing_metro"] == []      # 계측 결측이 원인이 아니다
+    assert "root_lot" in unpaired["note"] and "계측" in no_metro["note"]
+    # 여기서는 실제로 세어 봐도 결측이 없다(두 코호트 모두 계측이 있다). 안 세고
+    # 상수로 내면 안 된다 - `..._counts_the_missing_metro_it_reports` 가 그 경우를 잰다.
+    assert unpaired["meta"]["missing_metro"] == []
     assert no_metro["meta"]["missing_metro"] == sorted(set(t) | set(c))
+
+
+def test_the_candidate_copies_the_floor_fact_instead_of_recomputing_it(monkeypatch):
+    """metro 후보도 사실을 **그대로 옮긴다**. commonality 쪽과 같은 이유다 -
+    실데이터에서는 등호와 답이 같아, 조립부가 등호로 되돌아가도 안 잡힌다.
+    """
+    targets, controls = _metro_groups()
+    real = mc._permutation_stats_metro
+
+    def _inject(p_val, floor, fact):
+        def _fn(*args, **kwargs):
+            perm = real(*args, **kwargs)
+            return {**perm,
+                    "p": {k: p_val for k in perm["p"]},
+                    "p_min_possible": {k: floor for k in perm["p_min_possible"]},
+                    "p_at_floor": {k: fact for k in perm["p_at_floor"]},
+                    "n_reference": {k: 0 for k in perm["n_reference"]}}
+        return _fn
+
+    # 참조 0회: 두 숫자는 같은데 사실은 거짓이다(등호로 되돌리면 True 가 된다).
+    monkeypatch.setattr(mc, "_permutation_stats_metro", _inject(1.0, 1.0, False))
+    cands = mc.find_metro_commonality(targets, controls)["candidates"]
+    assert cands
+    assert all(c["p_permutation"] == c["p_min_possible"] == 1.0 for c in cands)
+    assert all(c["p_at_floor"] is False for c in cands)
+
+    # 반대 방향 - 두 숫자가 다른데 사실은 참이다(상수 False 로 고치면 여기서 잡힌다).
+    monkeypatch.setattr(mc, "_permutation_stats_metro", _inject(0.5, 0.001, True))
+    cands2 = mc.find_metro_commonality(targets, controls)["candidates"]
+    assert cands2
+    assert all(c["p_permutation"] != c["p_min_possible"] for c in cands2)
+    assert all(c["p_at_floor"] is True for c in cands2)
 
 
 def test_the_unpaired_path_counts_the_missing_metro_it_reports():
@@ -507,14 +544,21 @@ def test_the_unpaired_path_counts_the_missing_metro_it_reports():
     계측은 lot 당 몇 장뿐이라 metro 에서는 결측이 예외가 아니라 상시 상태다.
     안 세고 0 을 내보내면 "계측은 다 있는데 짝이 없다" 로 읽힌다.
     """
-    from data.generate_dummy import ADV_NOSIGNAL_LOT, METRO_TARGETS, adv_group
+    from data.generate_dummy import (ADV_MISSING_LOT, ADV_NOSIGNAL_LOT,
+                                     METRO_TARGETS, adv_group)
 
-    t, c = adv_group(ADV_NOSIGNAL_LOT)          # 계측 행이 하나도 없는 코호트
-    res = mc.find_metro_commonality(
-        [w for w in METRO_TARGETS if w.startswith("T2421")], list(c))
+    _, c = adv_group(ADV_NOSIGNAL_LOT)          # 계측 행이 하나도 없는 코호트
+    # 타깃 쪽에도 계측이 없는 wafer 를 한 장 섞는다 - 대조군만 세는 분모로 좁혀도 답이
+    # 같아지면 그 절반이 안 잠긴다. metro 는 lot 당 몇 장만 재므로 **타깃이 분모에서
+    # 빠지는 것이 상시 상태**라 특히 중요하다. (METRO_UNMEASURED 는 못 쓴다 - 그쪽은
+    # METRO_PARTIAL 조합에서만 빠질 뿐 다른 스텝에는 계측이 있다.)
+    unmeasured = adv_group(ADV_MISSING_LOT)[0][0]   # 다른 root_lot 이라 짝도 안 생긴다
+    targets = [w for w in METRO_TARGETS if w.startswith("T2421")] + [unmeasured]
+    res = mc.find_metro_commonality(targets, list(c))
 
     assert res["status"] == "no_paired_stratum"          # root_lot 이 안 맞는다
-    assert res["meta"]["missing_metro"] == sorted(c)     # 대조군 전원이 계측 결측이다
+    assert "root_lot" in res["note"]                     # 계측 결측 경로가 아니다
+    assert res["meta"]["missing_metro"] == sorted({unmeasured, *c})
 
 
 def test_the_note_blames_the_reference_rounds_not_the_sample_for_a_big_floor():

@@ -491,7 +491,7 @@ def _null_distribution(strata_masks, seen, observed: dict[tuple, float],
         # **"바닥에 닿았다" 는 비교가 아니라 셈이다.** p 와 바닥은 4자리로 반올림돼
         # 나가므로 소비자가 두 숫자를 == 로 재보면 참조 회차가 13,333~19,999 이거나 40,000 이상일 때
         # 1/13334 과 2/13334 이 둘 다 0.0001 이 되어, 귀무가 넘은 후보가 "이 표본의
-        # 최소값" 으로 나간다. 넘은 횟수를 아는 자리는 여기뿐이라 여기서 싣는다.
+        # 최소값" 으로 나간다(뒤 구간은 둘 다 0.0 으로 반올림된다). 넘은 횟수를 아는 자리는 여기뿐이라 여기서 싣는다.
         #
         # **참조 회차 0은 제외한다.** 거기서도 넘은 횟수가 0 이지만 뜻이 정반대다 -
         # "이 표본이 낼 수 있는 최강" 이 아니라 **비교할 귀무 표본이 하나도 없었다**
@@ -584,10 +584,14 @@ def find_commonality(target_wafers: list[str], control_wafers: list[str],
     반환 status:
       - "insufficient_group": 타깃이 너무 적어 commonality 가 정의상 무의미
       - "no_paired_stratum" : 비교할 짝이 없다. **경로가 둘이고 조치가 다르다** —
-                              (1) 대조군이 타깃과 다른 root_lot 에만 있다(이력은
-                              멀쩡하다, 대조군 선정을 다시 한다) (2) step_history 가
-                              있는 짝이 없다(적재·추출 범위를 뒤진다). 가르는 값은
-                              meta.missing_history 다 — (2) 만 결측 wafer 를 댄다.
+                              (1) 대조군이 타깃과 다른 root_lot 에만 있다(대조군
+                              선정을 다시 한다) (2) step_history 가 있는 짝이 없다
+                              (적재·추출 범위를 뒤진다). **어느 경로인지 말하는 것은
+                              note 다.** meta.missing_history 는 두 경로 다 세어서
+                              내되 분모가 다르다 — (1) 은 요청 wafer 전체, (2) 는
+                              짝지어진 stratum 안이다. (2) 는 한쪽이 통째로 결측일
+                              때만 도달하므로 목록이 비지 않는다. 그래서 빈 목록이면
+                              (1) 이지만, 비어 있지 않은 것으로는 못 가른다.
       - "no_signal"         : 계산은 됐으나 분리되는 후보가 없음
                               → 원인 없음이 아니라 **lot 내부 대조로는 안 보임**.
                                 원인이 root_lot 전체에 걸리면 타깃·대조군이 같은 챔버를
@@ -684,9 +688,10 @@ def find_commonality(target_wafers: list[str], control_wafers: list[str],
             "n_target": len(targets), "n_control": len(controls),
             "candidates": [],
             # **정상 경로와 같은 자리에 둔다.** 여기서만 최상위에 있으면 소비자는
-            # 경로마다 다른 곳을 봐야 하고, 한쪽을 안 보면 "누가 결측인가" 를 못
-            # 댄다 - `no_paired_stratum` 으로 끝나는 두 경로를 가르는 유일한 값이다
-            # (다른 하나는 대조군 root_lot 이 안 맞는 경우로, 이력은 멀쩡하다).
+            # 경로마다 다른 곳을 봐야 하고, 한쪽을 안 보면 "누가 결측인가" 를 못 댄다.
+            # 이 목록은 **짝지어진 stratum 안**에서 센 것이라 위 경로(요청 wafer
+            # 전체에서 센다)와 분모가 다르다. 여기는 한쪽이 통째로 결측일 때만
+            # 도달하므로 목록이 비지 않는다 - 경로 이름은 note 가 말한다.
             "meta": {"missing_history": sorted(set(missing))},
             "fdr_table": [], "p_family_wise": None, "p_family_wise_min_possible": None,
             "note": "step_history 가 있는 타깃/대조군 짝이 없다 (이력 결측 확인 필요).",

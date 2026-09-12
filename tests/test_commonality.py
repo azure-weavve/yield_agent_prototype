@@ -975,8 +975,10 @@ def test_the_two_no_paired_stratum_paths_are_told_apart(tmp_path, monkeypatch):
     (2) step_history 가 있는 짝이 하나도 없다 -> 적재·추출 범위를 뒤져야 한다.
 
     status 가 같아서 두 경로를 세우는 테스트가 서로를 대신할 수 있었다. 한쪽을
-    지워도 다른 쪽 단언이 통과하면 아무것도 안 잠긴 것이다. 가르는 것은
-    **meta.missing_history** 다 - (2) 만 결측 wafer 를 댈 수 있다.
+    지워도 다른 쪽 단언이 통과하면 아무것도 안 잠긴 것이다. 가르는 것은 **note**
+    이고, meta.missing_history 는 두 경로 다 세어서 내되 분모가 다르다((1)은 요청
+    wafer 전체, (2)는 짝지어진 stratum 안). (2)는 한쪽이 통째로 결측일 때만
+    도달하므로 목록이 비지 않아, **빈 목록이면 (1)** 이라고는 말할 수 있다.
     """
     # 두 픽스처가 같은 파일명을 쓰므로 DB 를 따로 둔다.
     first, second = tmp_path / "unpaired", tmp_path / "no_history"
@@ -1008,13 +1010,15 @@ def test_the_unpaired_path_counts_the_missing_history_it_reports(tmp_path, monke
     """
     ys = [_y("T1", "AAAAA"), _y("T2", "AAAAA"),      # 타깃은 AAAAA
           _y("C1", "BBBBB"), _y("C2", "BBBBB")]      # 대조군은 BBBBB -> 짝이 없다
-    hs = [_h("T1", "Etch", "ETCH9", "3")]            # T2 는 이력이 통째로 없다
-    hs += [_h(w, "Etch", "ETCH8", "1") for w in ("C1", "C2")]
+    hs = [_h("T1", "Etch", "ETCH9", "3"),            # T2 · C2 는 이력이 통째로 없다
+          _h("C1", "Etch", "ETCH8", "1")]
     _make_db(tmp_path, monkeypatch, ys, hs)
 
     res = cm.find_commonality(["T1", "T2"], ["C1", "C2"])
     assert res["status"] == "no_paired_stratum"
-    assert res["meta"]["missing_history"] == ["T2"]
+    # **양쪽을 다 센다.** 한쪽만 세는 분모(타깃만/대조군만)로 좁혀도 결과가 같아지면
+    # 그 절반은 안 잠긴 것이다 - 그래서 타깃과 대조군에서 한 장씩 뺐다.
+    assert res["meta"]["missing_history"] == ["C2", "T2"]
 
 
 @pytest.mark.parametrize("build_db", [_db_insufficient_group, _db_unpaired_root_lot,
@@ -1199,6 +1203,45 @@ def test_a_candidate_with_no_comparable_round_is_not_at_floor():
     assert out["n_reference"][_K] == 0
     assert out["p"][_K] == out["p_min_possible"][_K] == 1.0
     assert out["p_at_floor"][_K] is False
+
+
+def test_the_candidate_copies_the_floor_fact_instead_of_recomputing_it(
+        tmp_path, monkeypatch):
+    """후보 조립은 도구가 센 사실을 **그대로 옮긴다** - 두 숫자를 다시 비교하지 않는다.
+
+    실데이터로는 이 둘이 대개 같은 답을 내서(완전 분리면 p == 바닥 == 사실 True)
+    조립부가 몰래 등호로 되돌아가도 티가 안 난다. 그래서 둘이 **갈리는** 순열 결과
+    (참조 0회 - p 도 바닥도 1.0 인데 바닥에 닿은 것은 아니다)를 주입해 잰다.
+    """
+    t, c = ["T1", "T2"], ["C1", "C2"]
+    ys = [_y(w, "A45Z5") for w in t + c]
+    hs = [_h(w, "Etch", "ETCH9", "3") for w in t]
+    hs += [_h(w, "Etch", "ETCH8", "1") for w in c]
+    _make_db(tmp_path, monkeypatch, ys, hs)
+
+    real = cm._permutation_stats
+
+    def _inject(p_val, floor, fact):
+        def _fn(*args, **kwargs):
+            perm = real(*args, **kwargs)
+            return {**perm,
+                    "p": {k: p_val for k in perm["p"]},
+                    "p_min_possible": {k: floor for k in perm["p_min_possible"]},
+                    "p_at_floor": {k: fact for k in perm["p_at_floor"]},
+                    "n_reference": {k: 0 for k in perm["n_reference"]}}
+        return _fn
+
+    # 참조 0회: p 도 바닥도 1.0 인데 바닥에 닿은 것은 아니다. 등호로 다시 계산하면 True.
+    monkeypatch.setattr(cm, "_permutation_stats", _inject(1.0, 1.0, False))
+    eq = _find(cm.find_commonality(t, c), "equipment", "ETCH9")
+    assert eq["p_permutation"] == eq["p_min_possible"] == 1.0
+    assert eq["p_at_floor"] is False
+
+    # 반대 방향도 잠근다 - 안 그러면 "상수 False" 로 고쳐도 안 잡힌다.
+    monkeypatch.setattr(cm, "_permutation_stats", _inject(0.5, 0.001, True))
+    eq2 = _find(cm.find_commonality(t, c), "equipment", "ETCH9")
+    assert eq2["p_permutation"] != eq2["p_min_possible"]
+    assert eq2["p_at_floor"] is True
 
 
 def test_candidate_carries_the_floor_fact(tmp_path, monkeypatch):
