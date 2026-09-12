@@ -371,10 +371,15 @@ def _honest_pick(bundle, claim_id: str) -> bool:
     다 보고 아무것도 안 갈린 실행인데, 지목했다는 이유만으로 물러설 길이 닫힌다.
 
     ⚠️ **이 절이 루프 한계를 막는 것은 아니다**(2026-09-12 이후). 한계에서는
-    `_gate_verdict` 가 승인이 못 받는 지목(환각·센서·대체 이름)을 **버리고** 상태로
-    판정하므로, 대체 이름은 이 절이 없어도 같은 사유로 끝난다. 이 절이 지금 하는
-    일은 **한계 아래**에서 반려 대신 (2a)·(2b)를 여는 것이다 - 반려를 되풀이하다
-    한계에 닿는 왕복 자체를 줄인다.
+    `_gate_verdict` 가 승인이 못 받는 지목(환각·센서·대체 이름·판별선 미달)을
+    **버리고** 상태로 판정하므로, 대체 이름은 이 절이 없어도 같은 사유로 끝난다.
+    이 절이 지금 하는 일은 **한계 아래**에서 반려 대신 (2a)·(2b)를 여는 것이다 -
+    반려를 되풀이하다 한계에 닿는 왕복 자체를 줄인다.
+
+    ⚠️ **이 하한을 다시 좁히면 `(4)` 의 `carried is not groups` 갈래가 되살아난다.**
+    지금 그 갈래가 도달 불가인 것은 한계에서 이 절이 늘 참이기 때문이고(`:834-849`
+    참조), 좁히는 순간 잔차가 `(4)` 로 다시 타기 시작한다 - 손대기 전에 그 갈래를
+    먼저 볼 것.
 
     **규칙을 한 자리에만 적는다.** (2a)·(2b) 두 분기가 같은 하한을 쓰므로 각자
     적으면 한쪽만 고치는 이 저장소의 반복 결함이 그대로 재발한다.
@@ -415,8 +420,43 @@ def _drop_reason(bundle, claim_id: str, claim) -> str:
     if claim is not None:
         return "판별선을 넘지 못해 승인 대상이 아니어서"
     if claim_id in bundle.dropped_claims:
-        return "같은 축을 다시 돌려 대체된 앞 실행의 후보라"
+        # **어느 축인지 이름을 댄다.** `_superseded_note` 와 같은 정보를 손에 쥐고
+        # 있으면서 "같은 축" 으로 뭉개면, 리포트 LLM 이 "어느 재실행 결과를 보라" 를
+        # 말할 수 없다 - 다음에 할 일을 가리키는 것이 이 네 갈래의 존재 이유다.
+        return f"{bundle.dropped_claims[claim_id]} 를 다시 돌려 대체된 앞 실행의 후보라"
     return "도구 결과에 없어"
+
+
+def _drop_unapprovable_pick(bundle, loop: int, claim_id: str, claim):
+    """루프 한계에서 승인이 못 받는 지목을 버린다. 돌려주는 것은 `(claim_id, claim,
+    버린 것)` 이고, 안 버렸으면 받은 것을 그대로 + `None` 이다.
+
+    **루프 한계는 종료 트리거이지 사유가 아니다.** 승인이 못 받는 지목은 (2a)·(2b)의
+    "정직한 제출" 하한이나 (2)·(3)·(3b)의 `not claim_id` 하한에 걸려 다섯 문이 닫히고,
+    그래서 같은 증거 상태가 **마지막 제출 형태에 따라** 다른 사유로 끝났다(실측:
+    빈손이면 weak_signal, 환각이면 inconclusive). 엔지니어가 받는 조치가 달라진다 -
+    "표본을 늘려라" 와 "분석이 예산 안에 못 끝났다" 는 다른 말이다. 한계에 닿았으면
+    지목을 버리고 증거 상태로 판정한다. 버린 사실은 껍데기(`_finalize_gate`)가
+    판정문에 남긴다.
+
+    **하한은 `_honest_pick` 이 아니라 `_approvable_pick` 이다.** 정직하지만 승인이
+    못 받는 지목이 셋 있다 - 2단 센서 claim · 대체된 앞 실행의 이름 · 판별선을 못 넘은
+    실재 claim. 환각만 버리면 그 셋은 `claim_id` 가 살아 있는 채 (2)·(3)·(3b) 하한에
+    걸려, **정직하게 지목한 쪽이 환각보다 나쁜 사유를 받는다**(실측: 빈손·환각은
+    no_signal 인데 센서 지목·약한 후보 지목은 inconclusive 였다).
+
+    **한계 아래에서는 버리지 않는다.** 반려는 LLM 에게 고칠 기회를 주는 것이고,
+    여유가 있는데 버리면 환각을 내고도 종료를 얻어 억제가 사라진다.
+
+    **`claim_id` 만이 아니라 `claim` 도 비운다.** 지금은 버린 뒤 `claim` 을 읽는
+    도달 가능한 경로가 없어서((1)은 위에서 끝나고 (2a)·(2b)는 `not claim_id` 뒤에서만
+    읽는다) 게이트를 통째로 돌리는 테스트로는 이 한 줄이 안 잠긴다 - 남겨 두면 나중에
+    소비자가 하나 붙는 순간 "버렸는데 살아 있는" 값이 조용히 읽힌다. 규칙을 여기
+    한 함수에 모아 **직접** 단언할 수 있게 한 이유다.
+    """
+    if loop < ya_config.MAX_LOOPS or not claim_id or _approvable_pick(claim):
+        return claim_id, claim, None
+    return "", None, (claim_id, _drop_reason(bundle, claim_id, claim))
 
 
 def _superseded_note(bundle, claim_id: str) -> str:
@@ -481,15 +521,14 @@ def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) ->
     """판정에 **버린 지목**을 덧붙여 돌려주는 얇은 껍데기. 판정 자체는 아래 함수다.
 
     루프 한계에서 승인이 못 받는 지목(환각·2단 센서·대체된 이름·판별선 미달)을 버릴 수
-    있는데(`_gate_verdict` 참조), 그 사실은 판정문에
+    있는데(`_drop_unapprovable_pick` 참조), 그 사실은 판정문에
     남아야 한다 - 이 문자열은 findings 를 타고 리포트 LLM 까지 가고 프롬프트는 그것을
     "그대로 인용하라" 고 지시한다. 판정 분기가 여럿이라 각 분기 문구를 고치는 대신
     여기서 한 번만 붙인다.
     """
-    dropped: list[tuple[str, str]] = []
-    verdict = _gate_verdict(args, loop, update, findings, dropped)
+    verdict, dropped = _gate_verdict(args, loop, update, findings)
     if dropped:
-        claim_id, why = dropped[0]
+        claim_id, why = dropped
         # **"루프 한계" 를 사유로 적지 않는다.** 한계는 종료 트리거이고 사유는 위
         # 판정문이 이미 말했다 - 여기에 한계를 또 적으면 그 사유가 루프를 다 썼기
         # 때문인 것처럼 읽힌다.
@@ -498,9 +537,10 @@ def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) ->
     return verdict
 
 
-def _gate_verdict(args: dict, loop: int, update: dict, findings: list[dict],
-                  dropped: list[tuple[str, str]]) -> str:
-    """LLM 의 종료 제안을 코드가 최종 판정한다 (부품 4b).
+def _gate_verdict(args: dict, loop: int, update: dict,
+                  findings: list[dict]) -> tuple[str, tuple[str, str] | None]:
+    """LLM 의 종료 제안을 코드가 최종 판정한다 (부품 4b). **판정문과 버린 지목을 함께
+    돌려준다** - 버린 지목은 최대 하나이고, 없으면 `None` 이다.
 
     승인 실권은 confidence 자기 신고도, LLM 이 쓴 문장도 아니라 **EvidenceBundle
     조회 결과**에 있다. LLM 은 도구가 발급한 claim_id 를 지목하고, 게이트는 그
@@ -534,36 +574,19 @@ def _gate_verdict(args: dict, loop: int, update: dict, findings: list[dict],
       (4) 루프 한계 -> inconclusive (승인이 아니라 '미확정')
       (5) 그 외 -> 반려. 무엇이 모자란지 그대로 돌려준다.
 
-    **루프 한계에서는 위 목록을 타기 전에 지목을 한 번 거른다.** 승인이 못 받는
-    지목(환각·2단 센서·대체된 이름·판별선 미달)은 버리고 빈손으로 본다 - 그러지 않으면 (2a)·(2b)의
-    "정직한 제출" 하한과 (2)·(3)·(3b)의 `not claim_id` 하한에 걸려, 종료 사유가
-    증거 상태가 아니라 **마지막 제출 형태**에 끌려간다. 버린 것은 `dropped` 에
-    (claim_id, 사유) 한 쌍으로 담아 껍데기(`_finalize_gate`)가 판정문에 덧붙인다.
+    **루프 한계에서는 위 목록을 타기 전에 지목을 한 번 거른다**(`_drop_unapprovable_pick`
+    - 규칙과 근거는 그 독스트링에 있고 여기 두 번 적지 않는다). 승인이 못 받는
+    지목(환각·2단 센서·대체된 이름·판별선 미달)은 버리고 빈손으로 본다 - 그러지 않으면
+    (2a)·(2b)의 "정직한 제출" 하한과 (2)·(3)·(3b)의 `not claim_id` 하한에 걸려, 종료
+    사유가 증거 상태가 아니라 **마지막 제출 형태**에 끌려간다. 버린 것은 반환값 둘째
+    자리에 (claim_id, 사유) 한 쌍으로 실어 껍데기(`_finalize_gate`)가 판정문에 덧붙인다.
     """
     bundle = evidence.build_bundle(findings)
     conf, conf_note = _confidence(args.get("confidence", 0.0))
     hypothesis = args.get("hypothesis", "")
     claim_id = (args.get("claim_id") or "").strip()
     claim = bundle.claims.get(claim_id)
-    # **루프 한계는 종료 트리거이지 사유가 아니다.** 승인이 못 받는 지목은 (2a)·(2b)의
-    # "정직한 제출" 하한이나 (2)·(3)·(3b)의 `not claim_id` 하한에 걸려 다섯 문이
-    # 닫히고, 그래서 같은 증거 상태가 **마지막 제출 형태에 따라** 다른 사유로 끝났다
-    # (실측: 빈손이면 weak_signal, 환각이면 inconclusive). 엔지니어가 받는 조치가
-    # 달라진다 - "표본을 늘려라" 와 "분석이 예산 안에 못 끝났다" 는 다른 말이다.
-    # 한계에 닿았으면 지목을 버리고 증거 상태로 판정한다. 버린 사실은 위 껍데기가
-    # 판정문에 남긴다.
-    #
-    # **하한은 `_honest_pick` 이 아니라 `_approvable_pick` 이다.** 정직하지만 승인이
-    # 못 받는 지목이 둘 있다 - 2단 센서 claim 과 대체된 앞 실행의 이름. 환각만 버리면
-    # 그 둘은 `claim_id` 가 살아 있는 채 (2)·(3)·(3b) 하한에 걸려, **정직하게 지목한
-    # 쪽이 환각보다 나쁜 사유를 받는다**(실측: 빈손·환각은 no_signal 인데 센서 지목은
-    # inconclusive 였다).
-    #
-    # **한계 아래에서는 버리지 않는다.** 반려는 LLM 에게 고칠 기회를 주는 것이고,
-    # 여유가 있는데 버리면 환각을 내고도 종료를 얻어 억제가 사라진다.
-    if loop >= ya_config.MAX_LOOPS and claim_id and not _approvable_pick(claim):
-        dropped.append((claim_id, _drop_reason(bundle, claim_id, claim)))
-        claim_id, claim = "", None
+    claim_id, claim, drop = _drop_unapprovable_pick(bundle, loop, claim_id, claim)
     # **반려 경로에서는 상태에 쓰지 않는다.** 쓰면 loop 1 에 종료 제안했다가
     # 반려당하는 흔한 경로에서 `ran: []` 가 굳고, 그 뒤 축을 더 돌려도 갱신은 다음
     # finalize 때만 일어난다 - 마지막 finalize 없이 루프 한계로 끝나면 다 돌린 축을
@@ -604,7 +627,7 @@ def _gate_verdict(args: dict, loop: int, update: dict, findings: list[dict],
             next(c for c in update["final_claims"] if c.get("picked_by_llm")))
         more = (f" 그 밖에 {len(groups) - 1}개 근거를 함께 싣는다."
                 if len(groups) > 1 else "")
-        return f"승인 (근거 확인): {head}.{more} 리포팅으로 진행한다."
+        return f"승인 (근거 확인): {head}.{more} 리포팅으로 진행한다.", drop
 
     # (2a) 약한 신호 - 판별선은 못 넘었지만 아랫선을 넘은 후보가 있다.
     #      "봤고 후보도 났는데 이 표본으로는 확정할 만큼 갈리지 않았다" 는 (2)의
@@ -663,7 +686,7 @@ def _gate_verdict(args: dict, loop: int, update: dict, findings: list[dict],
         return (f"약한 신호 ({_coverage_phrase(coverage)}): {picked_note}"
                 f"판별선을 넘은 원인 후보는 없고, {residual_note}"
                 f"확정이 아니라 '이 표본으로는 갈리지 않았다' 는 뜻이다. "
-                f"리포팅으로 진행한다.")
+                f"리포팅으로 진행한다."), drop
 
     # (2b) 갈리는 항목 없음 - 전축을 대조했는데 비센서 후보가 났고 그 점수가 전부
     #      아랫선 미만이다.
@@ -740,7 +763,7 @@ def _gate_verdict(args: dict, loop: int, update: dict, findings: list[dict],
                 f"없다. {sensor_note}최고 분리 점수 {top:.2f} 로 잔차 "
                 f"아랫선({ya_config.RESIDUAL_MIN_SCORE})에도 미달한다. {reason} "
                 f"lot 내부 대조로는 갈리지 않는다는 뜻이다.{scope_note} lot 밖 "
-                f"대조군 또는 다른 관측축이 필요하다. 리포팅으로 진행한다.")
+                f"대조군 또는 다른 관측축이 필요하다. 리포팅으로 진행한다."), drop
 
     # (2) 신호 없음 - 돌린 축에서 통과 후보가 하나도 없다.
     #     확신도를 보지 않는다: 물러섬 선언에 높은 확신도를 요구하면 모순이다.
@@ -776,9 +799,9 @@ def _gate_verdict(args: dict, loop: int, update: dict, findings: list[dict],
         if unrun or failed:
             return (f"신호 없음 ({_coverage_phrase(coverage)}): 대조한 축에서는 원인을 "
                     f"좁힐 수 없다. 결론은 돌린 축에 한한 것이며 그 사실이 리포트에 "
-                    f"함께 나간다. 리포팅으로 진행한다.")
+                    f"함께 나간다. 리포팅으로 진행한다."), drop
         return (f"신호 없음 ({_coverage_phrase(coverage)}, 분리되는 후보 없음): "
-                f"lot 내부 대조로는 원인을 좁힐 수 없다. 리포팅으로 진행한다.")
+                f"lot 내부 대조로는 원인을 좁힐 수 없다. 리포팅으로 진행한다."), drop
 
     # (3) 계산 불가 - 등록 가설을 다 돌렸는데 전부 그룹 수준 사실(대조 짝 없음·타깃
     #     부족)에서 멈췄다. 사람이 할 일이 다르다(적재/추출 범위 확인).
@@ -804,7 +827,7 @@ def _gate_verdict(args: dict, loop: int, update: dict, findings: list[dict],
         update["coverage"] = coverage
         _record_evidence(update, groups, picked)
         return (f"비교 가능한 데이터 없음 ({', '.join(sorted(ran_statuses))}): "
-                f"대조에 쓸 짝이 없어 계산이 성립하지 않는다. 리포팅으로 진행한다.")
+                f"대조에 쓸 짝이 없어 계산이 성립하지 않는다. 리포팅으로 진행한다."), drop
 
     # (3b) 도구 실패 - 남은 축이 없는데 본 것 중 계산된 것도 없고, 못 본 이유가
     #      **실행 실패**다. (3)과 사실은 겹칠 수 있지만 **엔지니어의 조치가 다르다**:
@@ -823,7 +846,7 @@ def _gate_verdict(args: dict, loop: int, update: dict, findings: list[dict],
         update["coverage"] = coverage
         _record_evidence(update, groups, picked)
         return (f"도구 실패로 미수행 ({', '.join(failed)}): 조회가 실패해 대조를 "
-                f"돌리지 못했다. 데이터가 없는 것이 아니다. 리포팅으로 진행한다.")
+                f"돌리지 못했다. 데이터가 없는 것이 아니다. 리포팅으로 진행한다."), drop
 
     # (4) 루프 한계 도달 강제 종료는 승인이 아니라 '미확정'
     if loop >= ya_config.MAX_LOOPS:
@@ -835,7 +858,10 @@ def _gate_verdict(args: dict, loop: int, update: dict, findings: list[dict],
         # **잔차도 싣는다 - 지금은 보험이다.** 예전에는 `(2a)` 가 환각을 안 받아 줘서
         # 이 경로가 실제로 열렸고, 여기서 안 실으면 "봤고 후보도 났는데 약하다" 가
         # 통째로 소각됐다(실측 재현). **2026-09-12 부터 루프 한계에서 환각 지목을
-        # 버리므로 그 상태는 `(2a)` 가 먼저 받는다** - 잔차가 더해지는 조건
+        # 버리므로 그 상태는 `(2a)` 가 먼저 받는다**(버리기 규칙 자체는 넷으로 더
+        # 넓지만 - `_drop_unapprovable_pick` - `(2a)` 의 하한은 정직한 제출이라
+        # **이 논증에 필요한 것은 환각 한 갈래뿐이다**. 나머지 셋은 원래 정직한
+        # 제출이라 버리지 않아도 하한을 통과한다) - 잔차가 더해지는 조건
         # (`not statistical_passing()` + 잔차 있음)이 곧 `(2a)` 의 앞 두 항이고,
         # 한계에서는 하한(정직한 제출)이 늘 참이기 때문이다. 그래서 아래
         # `carried is not groups` 갈래는 **현재 도달 불가**다. `(2a)` 의 하한이 다시
@@ -862,7 +888,7 @@ def _gate_verdict(args: dict, loop: int, update: dict, findings: list[dict],
             residual_note = _residual_evidence_note(update)
             return (f"미확정 (루프 한계 도달): 판별선을 넘은 후보를 확정하지 못했다. "
                     f"{residual_note}"
-                    f"리포팅으로 진행한다.")
+                    f"리포팅으로 진행한다."), drop
         if carried:
             # **절단 전 `len(carried)` 가 아니라 실제로 실린 수를 말한다(최종
             # 리뷰 I-4).** `_record_evidence` 의 상한(`REPORT_MAX_EVIDENCE`)이
@@ -871,12 +897,14 @@ def _gate_verdict(args: dict, loop: int, update: dict, findings: list[dict],
             # 8건인데 판정문은 "근거 11건").
             return (f"미확정 (루프 한계 도달): 판별선을 넘은 근거 "
                     f"{len(update['final_claims'])}건을 싣되 무엇이 원인인지는 "
-                    f"확정하지 못했다. 리포팅으로 진행한다.")
-        return "미확정 (루프 한계 도달): 확정 근거 없이 리포팅으로 진행한다."
+                    f"확정하지 못했다. 리포팅으로 진행한다."), drop
+        return "미확정 (루프 한계 도달): 확정 근거 없이 리포팅으로 진행한다.", drop
 
     # (5) 반려
+    # 반려 경로는 한계 아래에서만 도달하므로 `drop` 은 늘 None 이다 - 그래도 한 자리로
+    # 맞춘다(여기만 모양이 다르면 다음 사람이 이 갈래를 빠뜨린다).
     return _gate_rejection(claim_id, claim, bundle, coverage, conf, conf_note,
-                           groups, ranks)
+                           groups, ranks), drop
 
 
 def _record_evidence(update: dict, groups, picked) -> None:

@@ -919,6 +919,37 @@ def test_operational_prompt_tells_the_report_what_no_separation_means():
             "않을 뿐 그 후보를 원인으로 확정하지 않았다.") in client.llm.seen_sys
 
 
+def test_operational_prompt_blocks_carrying_a_dropped_pick_into_the_report():
+    """버린 지목이 살아남을 수 있는 **세 판정에도** 같은 한정절이 있어야 한다.
+
+    루프 한계에서 게이트가 승인이 못 받는 지목을 버리고 증거 상태로 판정하게 되면서
+    (`nodes.py` `_approvable_pick`), `no_signal`·`no_comparable_data`·`tool_failure`
+    도 **지목이 살아 있는 채로 도달 가능한** 판정이 됐다. 게이트가 claim_id 를 버려도
+    LLM 이 쓴 `hypothesis` 와 자기 신고 `confidence` 는 `final_hypothesis`·
+    `final_confidence` 로 그대로 리포트 LLM 에 넘어가므로, 한정절이 없으면 게이트가
+    **버린** 후보가 결론문의 주어로 나간다. 종전에는 이 상태가 `inconclusive` 로만
+    갔고 한정절은 `weak_signal`·`no_separation` 에만 있었다 - 규칙을 코드에서 넓히고
+    프롬프트를 안 고치면 안 잠긴다는 이 저장소의 실측 교훈이 걸린 자리다.
+
+    문장 전체를 단언해 가운데 지시 동사를 뒤집는 훼손도 잡는다.
+    """
+    client = _openai_client()
+    client.generate_report(
+        target_wafers=["W1"], target_source="manual", target_group=["W1"],
+        status_summary="s", findings=[], hypothesis="h", confidence=0.9,
+        finalize_status="no_signal", claims=[])
+    assert ("판정이 no_signal 이거나 no_comparable_data 이거나 tool_failure 인데 "
+            "제출된 가설이 특정 후보를 원인으로 지목하고 있어도 그 문장을 그대로 "
+            "옮기지 마라 - 게이트가 루프 한계에서 승인이 못 받는 지목을 버리고 증거 "
+            "상태로 판정한 것이며, 그 후보는 확정된 것이 아니라 **버려진 지목**이다."
+            ) in client.llm.seen_sys
+    # **버린 사실을 어디서 읽는지까지 말한다.** 판정문 끝 괄호(`_finalize_gate`)에
+    # claim_id 와 사유가 실려 findings 를 타고 여기까지 오는데, 그것을 안 가리키면
+    # LLM 은 "지목을 쓰지 마라" 만 받고 다음에 할 일을 못 적는다.
+    assert ("무엇을 왜 버렸는지는 판정문 끝 괄호에 그대로 적혀 있으니 그것을 근거로 "
+            "다음에 할 일을 적어라.") in client.llm.seen_sys
+
+
 def test_operational_prompt_says_inconclusive_can_carry_residuals():
     """(4)가 잔차를 싣게 됐으므로 inconclusive 도 [잔차] 줄을 받을 수 있다.
 

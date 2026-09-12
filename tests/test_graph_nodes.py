@@ -3248,11 +3248,14 @@ def test_a_pick_approval_could_use_is_untouched_at_the_loop_limit():
 def test_loop_limit_drops_every_pick_that_approval_cannot_use():
     """버려야 하는 것은 **환각이 아니라 "(1)이 못 받는 지목" 전체**다.
 
-    `_honest_pick` 은 참이지만 승인으로 이어질 수 없는 지목이 둘 있다 - 2단 센서
-    claim(지목 대상이 아니다)과 대체(superseded)된 앞 실행의 이름(번들에 없다).
-    환각만 버리면 이 둘은 `claim_id` 가 살아 있는 채 (2)·(3)·(3b)의 `not claim_id`
-    하한에 걸려, **정직하게 지목한 쪽이 환각보다 나쁜 사유를 받는다**(실측:
-    빈손·환각은 no_signal 인데 센서 지목은 inconclusive).
+    `_honest_pick` 은 참이지만 승인으로 이어질 수 없는 지목이 셋 있다 - 2단 센서
+    claim(지목 대상이 아니다) · 대체(superseded)된 앞 실행의 이름(번들에 없다) ·
+    판별선을 못 넘은 실재 claim. 환각만 버리면 이 셋은 `claim_id` 가 살아 있는 채
+    (2)·(3)·(3b)의 `not claim_id` 하한에 걸려, **정직하게 지목한 쪽이 환각보다
+    나쁜 사유를 받는다**(실측: 빈손·환각은 no_signal 인데 센서 지목은 inconclusive).
+
+    셋째(판별선 미달)는 부분 커버리지 재현이 필요해 바로 아래
+    `test_loop_limit_also_drops_a_real_candidate_that_missed_the_line` 이 잠근다.
     """
     silent = [EQP_CH_SILENT, PPID_SILENT, STEP_PASSAGE_SILENT, METRO_SILENT]
     for label, findings, cid in [
@@ -3290,9 +3293,15 @@ def test_loop_limit_also_drops_a_real_candidate_that_missed_the_line():
                            {"claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH9_B",
                             "step_seq": "CC002000", "key": "ETCH9_B", "level": "chamber",
                             "passes": False, "reject_reason": "분리 점수 0.1 < 0.5",
-                            "score": 0.1,        # 아랫선(0.25) 미만 - 잔차도 아니다
+                            # 아랫선(0.25) 미만 - 잔차도 아니다. **카운트도 이 점수를
+                            # 낼 수 있는 것으로 적는다**: score 는 도구에서
+                            # coverage_target - coverage_control 이므로
+                            # 1.0 - 0.9 = 0.1 이다. 도구가 못 내는 조합을 적으면
+                            # 게이트가 score 를 직접 읽는 지금은 단언이 서지만,
+                            # 나중에 카운트를 보는 소비자가 붙는 순간 조용히 공허해진다.
+                            "score": 0.1,
                             "target_pass": 4, "target_total": 4,
-                            "control_pass": 3, "control_total": 5}]},
+                            "control_pass": 9, "control_total": 10}]},
             "thought": ""}
     findings = [weak, PPID_SILENT, STEP_PASSAGE_SILENT]   # metro 는 안 돌렸다
 
@@ -3310,20 +3319,64 @@ def test_loop_limit_also_drops_a_real_candidate_that_missed_the_line():
     assert "판별선" in verdict, verdict
 
 
-def test_the_drop_note_says_which_kind_of_pick_it_ignored():
-    """버린 이유가 셋이라 안내도 셋이다 - 다음 행동이 다르기 때문이다.
+def test_dropping_a_pick_clears_the_claim_object_too():
+    """버릴 때 `claim_id` 만이 아니라 **`claim` 객체도** 비운다.
 
-    없는 이름은 "지어내지 마라", 센서는 "가설 도구의 claim 을 지목하라", 대체된
-    이름은 "같은 축을 다시 돌린 결과를 보라" 로 갈린다. 한 문구로 뭉개면 LLM 도
-    사람도 무엇이 잘못됐는지 모른다.
+    게이트를 통째로 돌리는 테스트로는 이 한 줄이 안 잠긴다 - 버린 뒤 `claim` 을 읽는
+    도달 가능한 경로가 지금은 없어서, `claim = None` 을 지워도 전 스위트가 초록이다
+    (리뷰 M-3 이 훼손으로 실측했다). 그래서 규칙을 `_drop_unapprovable_pick` 한
+    함수에 모으고 여기서 **직접** 단언한다. 나중에 버린 뒤 `claim` 을 읽는 소비자가
+    하나라도 붙으면 "버렸는데 살아 있는" 값을 읽게 되는데, 그때 이 단언이 없으면
+    아무것도 안 잡힌다.
+
+    한계 아래에서는 손대지 않는다는 것도 같이 잠근다 - 반려는 고칠 기회를 주는 것이다.
+    """
+    from graph import evidence
+
+    bundle = evidence.build_bundle([EQP_CH_BELOW_LINE])
+    cid = "eqp_ch_commonality:chamber:CC002000:ETCH9_B"
+    claim = bundle.claims[cid]
+    assert claim is not None and not claim.passes      # 승인이 못 받는 지목이다
+
+    claim_id, kept, drop = nodes._drop_unapprovable_pick(
+        bundle, ya_config.MAX_LOOPS, cid, claim)
+    assert claim_id == ""
+    assert kept is None, kept
+    assert drop == (cid, "판별선을 넘지 못해 승인 대상이 아니어서"), drop
+
+    # 한계 **아래**에서는 받은 것을 그대로 돌려준다.
+    assert nodes._drop_unapprovable_pick(
+        bundle, ya_config.MAX_LOOPS - 1, cid, claim) == (cid, claim, None)
+
+    # 승인이 쓸 수 있는 지목(판별선을 넘은 비센서)은 한계에서도 안 버린다.
+    passing = evidence.build_bundle([EVIDENCE_FINDING_NEW])
+    pid = next(iter(passing.claims))
+    assert nodes._drop_unapprovable_pick(
+        passing, ya_config.MAX_LOOPS, pid, passing.claims[pid]
+    ) == (pid, passing.claims[pid], None)
+
+
+def test_the_drop_note_says_which_kind_of_pick_it_ignored():
+    """버린 이유가 **넷**이라 안내도 넷이다 - 다음 행동이 다르기 때문이다.
+
+    없는 이름은 "지어내지 마라", 센서는 "가설 도구의 claim 을 지목하라", 판별선
+    미달은 "넘은 것을 지목하라", 대체된 이름은 "그 축을 다시 돌린 결과를 보라" 로
+    갈린다. 한 문구로 뭉개면 LLM 도 사람도 무엇이 잘못됐는지 모른다.
+
+    **대체 사유는 어느 축인지 이름까지 댄다.** `_superseded_note` 가 같은 정보를
+    쓰면서 여기만 "같은 축" 으로 뭉개면, 리포트 LLM 이 어느 재실행 결과를 보라고
+    말할 수 없다.
     """
     silent = [EQP_CH_SILENT, PPID_SILENT, STEP_PASSAGE_SILENT, METRO_SILENT]
     cases = [
         ("지어낸:claim:id", [*silent], "도구 결과에 없어"),
         ("sensor:CC002000:TEMP_1", [*silent, SENSOR_FINDING], "센서"),
         ("eqp_ch_commonality:chamber:CC002000:ETCH9_B",
+         [EQP_CH_BELOW_LINE, PPID_SILENT, STEP_PASSAGE_SILENT, METRO_SILENT],
+         "판별선을 넘지 못해"),
+        ("eqp_ch_commonality:chamber:CC002000:ETCH9_B",
          [EVIDENCE_FINDING_NEW, EQP_CH_RERUN_SILENT, PPID_SILENT,
-          STEP_PASSAGE_SILENT, METRO_SILENT], "대체"),
+          STEP_PASSAGE_SILENT, METRO_SILENT], "hyp_eqp_ch_commonality 를 다시 돌려 대체"),
     ]
     for cid, findings, expected in cases:
         verdict = nodes._finalize_gate(
@@ -3331,6 +3384,64 @@ def test_the_drop_note_says_which_kind_of_pick_it_ignored():
             loop=ya_config.MAX_LOOPS, update={}, findings=findings)
         assert expected in verdict, (cid, verdict)
         assert cid in verdict, (cid, verdict)
+
+
+def test_the_drop_note_survives_on_every_branch_a_drop_can_reach():
+    """**버린 사실은 판정이 어느 문으로 나가든 판정문에 남아야 한다.**
+
+    버린 것을 안 실어 보내면 왜 지목이 무시됐는지가 사라진다 - 리포트 LLM 은 이
+    문자열을 그대로 인용하므로 엔지니어에게 갈 다음 행동이 통째로 없어진다.
+
+    **자리를 세어서 전부 돈다.** 훼손으로 실측한 구멍이다: `drop` 을 실어 보내는
+    갈래를 하나씩 `None` 으로 바꿔 보니 (2)와 (4)-빈손만 잡히고 **(2b)·(3)·(3b)·
+    (4)-통과근거 네 자리는 전 스위트가 초록이었다.** 이 브랜치의 주제인 "N 자리 중
+    N-1 자리" 가 그 주제를 고치는 테스트에서 또 난 것이라, 한 자리에서 전부 잠근다.
+
+    (1)과 (5)는 뺀다 - 버리면 `claim_id` 가 비므로 (1)은 성립할 수 없고, (5) 반려는
+    한계 **아래**에서만 도달하니 그 자리의 `drop` 은 늘 `None` 이다.
+    `(4)` 의 잔차 갈래도 뺀다 - 도달 불가다(`_evidence_groups` 논증, `nodes.py`).
+    """
+    hallucinated = "지어낸:claim:id"
+    below_line_only = {
+        "loop": 2, "tool": "hyp_eqp_ch_commonality", "args": {},
+        "result": {"hypothesis_id": "eqp_ch_commonality", "status": "ok",
+                   "candidates": [
+                       {"claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH9_B",
+                        "step_seq": "CC002000", "key": "ETCH9_B", "level": "chamber",
+                        "passes": False, "reject_reason": "분리 점수 0.1 < 0.5",
+                        "score": 0.1,      # 아랫선(0.25) 미만 - 잔차가 아니다
+                        "target_pass": 4, "target_total": 4,
+                        "control_pass": 9, "control_total": 10}]},
+        "thought": ""}
+    all_failed = [{**f, "result": "오류: DB 연결 실패", "failed": True}
+                  for f in ALL_SILENT]
+
+    cases = [
+        # (라벨, findings, 지목, 기대 판정, 기대 사유 조각)
+        ("(2a) 잔차가 있다",
+         [EQP_CH_BELOW_LINE, PPID_SILENT, STEP_PASSAGE_SILENT, METRO_SILENT],
+         hallucinated, "weak_signal", "도구 결과에 없어"),
+        ("(2b) 봤는데 안 갈렸다", ALL_WEAK, hallucinated, "no_separation", "도구 결과에 없어"),
+        ("(2) 볼 것이 안 났다", ALL_SILENT, hallucinated, "no_signal", "도구 결과에 없어"),
+        ("(3) 계산이 안 됐다", _ALL_NO_PAIR, hallucinated, "no_comparable_data", "도구 결과에 없어"),
+        ("(3b) 도구가 터졌다", all_failed, hallucinated, "tool_failure", "도구 결과에 없어"),
+        # (4) 는 다섯 문이 **다 닫힌** 두 상태로 온다.
+        ("(4) 통과 근거는 실린다", [EVIDENCE_FINDING_NEW, SENSOR_FINDING],
+         "sensor:CC002000:TEMP_1", "inconclusive", "센서"),
+        # 한 축만 돌렸고(부분 커버리지 -> (2b)·(3)·(3b) 닫힘) 그 축이 ok 로 후보를
+        # 냈으며(no_signal status 없음 -> (2) 닫힘) 점수가 아랫선 미만이다((2a) 닫힘).
+        ("(4) 실을 근거가 없다", [below_line_only],
+         "eqp_ch_commonality:chamber:CC002000:ETCH9_B", "inconclusive", "판별선을 넘지 못해"),
+    ]
+    for label, findings, cid, expected_status, expected_why in cases:
+        update = {}
+        verdict = nodes._finalize_gate(
+            {"claim_id": cid, "hypothesis": "h", "confidence": 0.9},
+            loop=ya_config.MAX_LOOPS, update=update, findings=findings)
+        assert update["finalize_status"] == expected_status, (label, verdict)
+        assert cid in verdict, (label, verdict)
+        assert expected_why in verdict, (label, verdict)
+        assert "무시하고 증거 상태로 판정했다" in verdict, (label, verdict)
 
 
 def test_loop_limit_recovers_tool_failure_and_no_separation_too():
