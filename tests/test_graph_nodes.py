@@ -3181,7 +3181,7 @@ def test_loop_limit_judges_by_state_not_by_the_shape_of_the_submission():
     assert invented["finalize_status"] == empty["finalize_status"] == "weak_signal"
 
 
-def test_loop_limit_recovers_the_no_signal_reason_and_its_coverage(monkeypatch):
+def test_loop_limit_recovers_the_no_signal_reason_and_its_coverage():
     """전축을 봤는데 침묵이면 `no_signal` 이다 - 환각 제출이 그 사실을 못 지운다.
 
     옛 동작에서는 "확정 근거 없이" 로 끝나 **커버리지 문장까지 사라졌다.** 어디까지
@@ -3237,6 +3237,77 @@ def test_an_honest_pick_at_the_loop_limit_is_untouched():
         loop=ya_config.MAX_LOOPS, update=update, findings=[EQP_CH_BELOW_LINE])
     assert update["finalize_status"] == "weak_signal"     # (2a)가 이미 받는다
     assert "무시" not in verdict, verdict
+
+
+def test_loop_limit_drops_every_pick_that_approval_cannot_use(monkeypatch):
+    """버려야 하는 것은 **환각이 아니라 "(1)이 못 받는 지목" 전체**다.
+
+    `_honest_pick` 은 참이지만 승인으로 이어질 수 없는 지목이 둘 있다 - 2단 센서
+    claim(지목 대상이 아니다)과 대체(superseded)된 앞 실행의 이름(번들에 없다).
+    환각만 버리면 이 둘은 `claim_id` 가 살아 있는 채 (2)·(3)·(3b)의 `not claim_id`
+    하한에 걸려, **정직하게 지목한 쪽이 환각보다 나쁜 사유를 받는다**(실측:
+    빈손·환각은 no_signal 인데 센서 지목은 inconclusive).
+    """
+    silent = [EQP_CH_SILENT, PPID_SILENT, STEP_PASSAGE_SILENT, METRO_SILENT]
+    for label, findings, cid in [
+            ("센서 지목", [*silent, SENSOR_FINDING], "sensor:CC002000:TEMP_1"),
+            ("대체된 이름 지목",
+             [EVIDENCE_FINDING_NEW, EQP_CH_RERUN_SILENT, PPID_SILENT,
+              STEP_PASSAGE_SILENT, METRO_SILENT],
+             "eqp_ch_commonality:chamber:CC002000:ETCH9_B")]:
+        update = {}
+        verdict = nodes._finalize_gate(
+            {"claim_id": cid, "hypothesis": "h", "confidence": 0.9},
+            loop=ya_config.MAX_LOOPS, update=update, findings=findings)
+        assert update["finalize_status"] == "no_signal", (label, verdict)
+        assert "등록 축 4개 중 4개" in verdict, (label, verdict)
+        # 버린 지목을 서술의 축으로 남기면 안 된다 - 게이트가 원인으로 확정하지
+        # 않기로 한 후보를 리포트가 "←서술 기준" 으로 찍는다.
+        assert not [c for c in (update.get("final_claims") or [])
+                    if c.get("picked_by_llm")], label
+
+
+def test_the_drop_note_says_which_kind_of_pick_it_ignored():
+    """버린 이유가 셋이라 안내도 셋이다 - 다음 행동이 다르기 때문이다.
+
+    없는 이름은 "지어내지 마라", 센서는 "가설 도구의 claim 을 지목하라", 대체된
+    이름은 "같은 축을 다시 돌린 결과를 보라" 로 갈린다. 한 문구로 뭉개면 LLM 도
+    사람도 무엇이 잘못됐는지 모른다.
+    """
+    silent = [EQP_CH_SILENT, PPID_SILENT, STEP_PASSAGE_SILENT, METRO_SILENT]
+    cases = [
+        ("지어낸:claim:id", [*silent], "도구 결과에 없어"),
+        ("sensor:CC002000:TEMP_1", [*silent, SENSOR_FINDING], "센서"),
+        ("eqp_ch_commonality:chamber:CC002000:ETCH9_B",
+         [EVIDENCE_FINDING_NEW, EQP_CH_RERUN_SILENT, PPID_SILENT,
+          STEP_PASSAGE_SILENT, METRO_SILENT], "대체"),
+    ]
+    for cid, findings, expected in cases:
+        verdict = nodes._finalize_gate(
+            {"claim_id": cid, "hypothesis": "h", "confidence": 0.9},
+            loop=ya_config.MAX_LOOPS, update={}, findings=findings)
+        assert expected in verdict, (cid, verdict)
+        assert cid in verdict, (cid, verdict)
+
+
+def test_loop_limit_recovers_tool_failure_and_no_separation_too():
+    """나머지 두 문((2b)·(3b))도 같은 규칙을 탄다 - 다섯 문 중 셋만 잠그면 모자라다."""
+    # (3b) 전축이 도구 실패 -> 인프라 확인이 조치다
+    failed = [{**f, "result": "오류: DB 연결 실패", "failed": True} for f in
+              [EQP_CH_SILENT, PPID_SILENT, STEP_PASSAGE_SILENT, METRO_SILENT]]
+    update = {}
+    nodes._finalize_gate({"claim_id": "지어낸:claim:id", "hypothesis": "h",
+                          "confidence": 0.9},
+                         loop=ya_config.MAX_LOOPS, update=update, findings=failed)
+    assert update["finalize_status"] == "tool_failure"
+
+    # (2b) 전축을 봤고 후보도 났는데 전부 아랫선 미만 -> "봤는데 안 갈렸다"
+    update = {}
+    nodes._finalize_gate({"claim_id": "지어낸:claim:id", "hypothesis": "h",
+                          "confidence": 0.9},
+                         loop=ya_config.MAX_LOOPS, update=update,
+                         findings=[*ALL_WEAK])
+    assert update["finalize_status"] == "no_separation"
 
 
 def test_loop_limit_still_carries_residuals():

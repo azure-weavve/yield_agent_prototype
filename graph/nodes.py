@@ -367,11 +367,14 @@ def _honest_pick(bundle, claim_id: str) -> bool:
     **대체(superseded)된 앞 실행의 후보도 정직한 제출이다.** `tools_node` 가 도구
     결과를 ToolMessage 로 대화에 실으므로, 축을 다시 돌린 뒤에도 LLM 은 앞 실행의
     claim_id 를 자기 문맥에서 그대로 보고 제출한다 - 지어낸 것이 아니다.
-    `bundle.claims` 조회만으로 하한을 걸면 그 제출이 환각과 **같이** 반려되는데,
-    루프 한계에서는 반려가 가르칠 다음 행동이 없어 **같은 증거가 제출 형태만
-    다르다는 이유로 다른 사유**를 받는다(실측: 빈손이면 `no_separation`, 대체
-    이름이면 `inconclusive` "루프 한계 도달"). 전축을 다 보고 아무것도 안 갈린
-    실행인데 엔지니어는 루프를 다 썼다는 사유를 보게 된다 - M4 가 없앤 문장이다.
+    `bundle.claims` 조회만으로 하한을 걸면 그 제출이 환각과 **같이** 반려된다. 전축을
+    다 보고 아무것도 안 갈린 실행인데, 지목했다는 이유만으로 물러설 길이 닫힌다.
+
+    ⚠️ **이 절이 루프 한계를 막는 것은 아니다**(2026-09-12 이후). 한계에서는
+    `_gate_verdict` 가 승인이 못 받는 지목(환각·센서·대체 이름)을 **버리고** 상태로
+    판정하므로, 대체 이름은 이 절이 없어도 같은 사유로 끝난다. 이 절이 지금 하는
+    일은 **한계 아래**에서 반려 대신 (2a)·(2b)를 여는 것이다 - 반려를 되풀이하다
+    한계에 닿는 왕복 자체를 줄인다.
 
     **규칙을 한 자리에만 적는다.** (2a)·(2b) 두 분기가 같은 하한을 쓰므로 각자
     적으면 한쪽만 고치는 이 저장소의 반복 결함이 그대로 재발한다.
@@ -379,6 +382,28 @@ def _honest_pick(bundle, claim_id: str) -> bool:
     return (not claim_id
             or claim_id in bundle.claims
             or claim_id in bundle.dropped_claims)
+
+
+def _approvable_pick(claim) -> bool:
+    """이 지목으로 (1) 승인이 성립할 수 있는가 - **종류만 본다.**
+
+    확신도나 등수는 안 본다. 그것들은 "지목은 쓸 수 있는데 이번엔 모자랐다" 이고,
+    여기서 묻는 것은 "이 이름으로는 애초에 승인이 성립하지 않는다" 다. 거짓인 경우가
+    셋이다: 번들에 없는 이름(환각) · 대체된 앞 실행의 이름(역시 claims 에 없다) ·
+    2단 센서 claim(근거로는 실리되 지목 대상이 아니다 - (1)의 `kind` 하한).
+    """
+    return claim is not None and claim.kind != "sensor"
+
+
+def _drop_reason(bundle, claim_id: str, claim) -> str:
+    """버린 지목을 판정문에서 어떻게 부를 것인가. **셋을 뭉개지 않는다** - 다음에
+    할 일이 다르다(지어내지 마라 / 가설 도구의 claim 을 지목하라 / 재실행 결과를 보라).
+    """
+    if claim is not None:
+        return "2단 센서 근거라 지목 대상이 아니어서"
+    if claim_id in bundle.dropped_claims:
+        return "같은 축을 다시 돌려 대체된 앞 실행의 후보라"
+    return "도구 결과에 없어"
 
 
 def _superseded_note(bundle, claim_id: str) -> str:
@@ -400,7 +425,7 @@ def _no_separation_state(bundle, coverage: dict) -> bool:
     판정만 만들고 안내를 안 고치면 그 상태에서 "claim_id 를 비우고 finalize
     하라" 가 안 붙어 문이 열려 있는 줄도 모르고 루프 한계까지 왕복한다 -
     (3)이 실제로 겪었던 라이브락이다. 이 함수는 게이트 안이 아니라도(Task 5 가
-    물러섬 안내에서 재사용한다) 참이어야 하므로, `_finalize_gate` 안의 분기
+    물러섬 안내에서 재사용한다) 참이어야 하므로, `_gate_verdict` 안의 분기
     순서(예: (2a)가 먼저 걸러 준다는 것)에 기대지 않고 조건 하나하나가 스스로
     성립해야 한다.
 
@@ -447,11 +472,15 @@ def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) ->
     "그대로 인용하라" 고 지시한다. 판정 분기가 여럿이라 각 분기 문구를 고치는 대신
     여기서 한 번만 붙인다.
     """
-    dropped: list[str] = []
+    dropped: list[tuple[str, str]] = []
     verdict = _gate_verdict(args, loop, update, findings, dropped)
     if dropped:
-        verdict += (f" (루프 한계에서 마지막 제출 claim_id '{dropped[0]}' 는 도구 결과에 "
-                    f"없어 무시하고 증거 상태로 판정했다.)")
+        claim_id, why = dropped[0]
+        # **"루프 한계" 를 사유로 적지 않는다.** 한계는 종료 트리거이고 사유는 위
+        # 판정문이 이미 말했다 - 여기에 한계를 또 적으면 그 사유가 루프를 다 썼기
+        # 때문인 것처럼 읽힌다.
+        verdict += (f" (마지막 제출 claim_id '{claim_id}' 는 {why} 무시하고 증거 "
+                    f"상태로 판정했다.)")
     return verdict
 
 
@@ -490,24 +519,36 @@ def _gate_verdict(args: dict, loop: int, update: dict, findings: list[dict],
           (사실은 (3)과 겹치지만 조치가 다르다: 적재 범위 확인이 아니라 인프라 확인.)
       (4) 루프 한계 -> inconclusive (승인이 아니라 '미확정')
       (5) 그 외 -> 반려. 무엇이 모자란지 그대로 돌려준다.
+
+    **루프 한계에서는 위 목록을 타기 전에 지목을 한 번 거른다.** 승인이 못 받는
+    지목(환각·2단 센서·대체된 이름)은 버리고 빈손으로 본다 - 그러지 않으면 (2a)·(2b)의
+    "정직한 제출" 하한과 (2)·(3)·(3b)의 `not claim_id` 하한에 걸려, 종료 사유가
+    증거 상태가 아니라 **마지막 제출 형태**에 끌려간다. 버린 것은 `dropped` 에
+    (claim_id, 사유) 한 쌍으로 담아 껍데기(`_finalize_gate`)가 판정문에 덧붙인다.
     """
     bundle = evidence.build_bundle(findings)
     conf, conf_note = _confidence(args.get("confidence", 0.0))
     hypothesis = args.get("hypothesis", "")
     claim_id = (args.get("claim_id") or "").strip()
     claim = bundle.claims.get(claim_id)
-    # **루프 한계는 종료 트리거이지 사유가 아니다.** 환각 지목은 (2a)·(2b)의 "정직한
-    # 제출" 하한과 (2)·(3)·(3b)의 `not claim_id` 하한에 동시에 걸려 다섯 문이 전부
+    # **루프 한계는 종료 트리거이지 사유가 아니다.** 승인이 못 받는 지목은 (2a)·(2b)의
+    # "정직한 제출" 하한이나 (2)·(3)·(3b)의 `not claim_id` 하한에 걸려 다섯 문이
     # 닫히고, 그래서 같은 증거 상태가 **마지막 제출 형태에 따라** 다른 사유로 끝났다
     # (실측: 빈손이면 weak_signal, 환각이면 inconclusive). 엔지니어가 받는 조치가
     # 달라진다 - "표본을 늘려라" 와 "분석이 예산 안에 못 끝났다" 는 다른 말이다.
     # 한계에 닿았으면 지목을 버리고 증거 상태로 판정한다. 버린 사실은 위 껍데기가
     # 판정문에 남긴다.
     #
+    # **하한은 `_honest_pick` 이 아니라 `_approvable_pick` 이다.** 정직하지만 승인이
+    # 못 받는 지목이 둘 있다 - 2단 센서 claim 과 대체된 앞 실행의 이름. 환각만 버리면
+    # 그 둘은 `claim_id` 가 살아 있는 채 (2)·(3)·(3b) 하한에 걸려, **정직하게 지목한
+    # 쪽이 환각보다 나쁜 사유를 받는다**(실측: 빈손·환각은 no_signal 인데 센서 지목은
+    # inconclusive 였다).
+    #
     # **한계 아래에서는 버리지 않는다.** 반려는 LLM 에게 고칠 기회를 주는 것이고,
     # 여유가 있는데 버리면 환각을 내고도 종료를 얻어 억제가 사라진다.
-    if loop >= ya_config.MAX_LOOPS and claim_id and not _honest_pick(bundle, claim_id):
-        dropped.append(claim_id)
+    if loop >= ya_config.MAX_LOOPS and claim_id and not _approvable_pick(claim):
+        dropped.append((claim_id, _drop_reason(bundle, claim_id, claim)))
         claim_id, claim = "", None
     # **반려 경로에서는 상태에 쓰지 않는다.** 쓰면 loop 1 에 종료 제안했다가
     # 반려당하는 흔한 경로에서 `ran: []` 가 굳고, 그 뒤 축을 더 돌려도 갱신은 다음
@@ -788,13 +829,12 @@ def _gate_verdict(args: dict, loop: int, update: dict, findings: list[dict],
         # `picked` 는 잔차를 실은 목록에서는 안 붙인다: 그 상태에서 지목할 수
         # 있는 것은 센서나 잔차뿐이고, 그것을 서술의 축으로 삼으면 리포트가 약한
         # 후보를 단정한다((2a)와 같은 이유). 목록이 바뀌면 `is` 비교도 어차피
-        # 안 맞는다. **지금은 이 삼항이 갈리지 않는 보험이다** - `carried is not
-        # groups` 에 닿으려면 `_honest_pick` 이 거짓이어야 하고(그 상태에서 (2a)의
-        # 나머지 두 항은 이미 참이다), 그것은 **환각뿐**이다 - 대체 이름은 이제
-        # `(2a)` 가 받아 이 경로에 못 온다. 환각이면 `claim is None` 이고, 그러면
-        # `find_group` 도 None 이라 `picked` 는 항상 None 이다. `(2a)` 가 실재하는
-        # 통과 센서 claim 의 지목을 거절하도록 좁아져 이 갈래에 닿을 수 있게 되면
-        # 살아난다.
+        # 안 맞는다. **지금은 이 삼항이 갈리지 않는다** - `carried is not groups` 는
+        # 도달 불가이고(위 참조), 그래서 `picked` 가 늘 그대로 넘어간다. 그래도
+        # 위험하지 않은 이유는 **한계에서 승인이 못 받는 지목이 이미 버려졌기**
+        # 때문이다 - 여기 남는 `picked` 는 실재하는 비센서 claim 뿐이라 서술의 축이
+        # 돼도 "약한 후보를 단정" 이 아니다. 버리기 규칙이 좁아지거나 `(2a)` 의
+        # 하한이 다시 좁아지면 이 삼항이 살아난다.
         carried = _evidence_groups(bundle, groups)
         _record_evidence(update, carried, picked if carried is groups else None)
         # **"확정 근거 없이" 는 실은 근거가 없을 때만 참이다.** `carried` 가
