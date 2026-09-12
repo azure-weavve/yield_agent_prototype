@@ -440,6 +440,23 @@ def _no_separation_state(bundle, coverage: dict) -> bool:
 
 
 def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) -> str:
+    """판정에 **버린 지목**을 덧붙여 돌려주는 얇은 껍데기. 판정 자체는 아래 함수다.
+
+    루프 한계에서 환각 지목을 버릴 수 있는데(`_gate_verdict` 참조), 그 사실은 판정문에
+    남아야 한다 - 이 문자열은 findings 를 타고 리포트 LLM 까지 가고 프롬프트는 그것을
+    "그대로 인용하라" 고 지시한다. 판정 분기가 여럿이라 각 분기 문구를 고치는 대신
+    여기서 한 번만 붙인다.
+    """
+    dropped: list[str] = []
+    verdict = _gate_verdict(args, loop, update, findings, dropped)
+    if dropped:
+        verdict += (f" (루프 한계에서 마지막 제출 claim_id '{dropped[0]}' 는 도구 결과에 "
+                    f"없어 무시하고 증거 상태로 판정했다.)")
+    return verdict
+
+
+def _gate_verdict(args: dict, loop: int, update: dict, findings: list[dict],
+                  dropped: list[str]) -> str:
     """LLM 의 종료 제안을 코드가 최종 판정한다 (부품 4b).
 
     승인 실권은 confidence 자기 신고도, LLM 이 쓴 문장도 아니라 **EvidenceBundle
@@ -479,6 +496,19 @@ def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) ->
     hypothesis = args.get("hypothesis", "")
     claim_id = (args.get("claim_id") or "").strip()
     claim = bundle.claims.get(claim_id)
+    # **루프 한계는 종료 트리거이지 사유가 아니다.** 환각 지목은 (2a)·(2b)의 "정직한
+    # 제출" 하한과 (2)·(3)·(3b)의 `not claim_id` 하한에 동시에 걸려 다섯 문이 전부
+    # 닫히고, 그래서 같은 증거 상태가 **마지막 제출 형태에 따라** 다른 사유로 끝났다
+    # (실측: 빈손이면 weak_signal, 환각이면 inconclusive). 엔지니어가 받는 조치가
+    # 달라진다 - "표본을 늘려라" 와 "분석이 예산 안에 못 끝났다" 는 다른 말이다.
+    # 한계에 닿았으면 지목을 버리고 증거 상태로 판정한다. 버린 사실은 위 껍데기가
+    # 판정문에 남긴다.
+    #
+    # **한계 아래에서는 버리지 않는다.** 반려는 LLM 에게 고칠 기회를 주는 것이고,
+    # 여유가 있는데 버리면 환각을 내고도 종료를 얻어 억제가 사라진다.
+    if loop >= ya_config.MAX_LOOPS and claim_id and not _honest_pick(bundle, claim_id):
+        dropped.append(claim_id)
+        claim_id, claim = "", None
     # **반려 경로에서는 상태에 쓰지 않는다.** 쓰면 loop 1 에 종료 제안했다가
     # 반려당하는 흔한 경로에서 `ran: []` 가 굳고, 그 뒤 축을 더 돌려도 갱신은 다음
     # finalize 때만 일어난다 - 마지막 finalize 없이 루프 한계로 끝나면 다 돌린 축을
@@ -747,9 +777,14 @@ def _finalize_gate(args: dict, loop: int, update: dict, findings: list[dict]) ->
         update["final_hypothesis"] = hypothesis
         update["final_confidence"] = conf
         update["coverage"] = coverage
-        # **잔차도 싣는다.** 이 경로는 `(2a)` 가 환각을 안 받아 줄 때 열리므로
-        # 게이트 협조로는 못 막는다 - 여기서 안 실으면 "봤고 후보도
-        # 났는데 약하다" 가 통째로 소각된다(실측 재현).
+        # **잔차도 싣는다 - 지금은 보험이다.** 예전에는 `(2a)` 가 환각을 안 받아 줘서
+        # 이 경로가 실제로 열렸고, 여기서 안 실으면 "봤고 후보도 났는데 약하다" 가
+        # 통째로 소각됐다(실측 재현). **2026-09-12 부터 루프 한계에서 환각 지목을
+        # 버리므로 그 상태는 `(2a)` 가 먼저 받는다** - 잔차가 더해지는 조건
+        # (`not statistical_passing()` + 잔차 있음)이 곧 `(2a)` 의 앞 두 항이고,
+        # 한계에서는 하한(정직한 제출)이 늘 참이기 때문이다. 그래서 아래
+        # `carried is not groups` 갈래는 **현재 도달 불가**다. `(2a)` 의 하한이 다시
+        # 좁아지면 살아난다 - 그때 잔차 소각이 조용히 돌아오지 않도록 남겨 둔다.
         # `picked` 는 잔차를 실은 목록에서는 안 붙인다: 그 상태에서 지목할 수
         # 있는 것은 센서나 잔차뿐이고, 그것을 서술의 축으로 삼으면 리포트가 약한
         # 후보를 단정한다((2a)와 같은 이유). 목록이 바뀌면 `is` 비교도 어차피

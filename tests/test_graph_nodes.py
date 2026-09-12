@@ -3157,19 +3157,103 @@ def test_evidence_groups_keeps_passing_only_when_a_statistical_claim_passed():
     assert "eqp_ch_commonality:chamber:CD004000:PHOTO1_A" not in ids
 
 
+# --- 루프 한계의 사유는 **상태**에서 온다 (제출 형태에 끌려가면 안 된다) -------
+#
+# 실측(2026-09-12): 같은 증거 상태인데 마지막 제출이 빈손이면 `weak_signal`,
+# 환각이면 `inconclusive` 로 갈렸다. (2a)·(2b)의 하한이 "정직한 제출" 이고 (2)·(3)·
+# (3b)의 하한이 `not claim_id` 라, 환각은 다섯 문이 전부 닫혀 (5) 반려 -> 되풀이 ->
+# (4) 루프 한계로만 빠져나가기 때문이다. 엔지니어가 받는 조치가 달라진다:
+# "표본을 늘리거나 대조군을 바꿔라" 와 "분석이 예산 안에 못 끝났다" 는 다른 말이다.
+#
+# **루프 한계는 종료 트리거이지 사유가 아니다.** 한계에 닿았을 때 환각 지목은 버리고
+# 증거 상태로 다시 판정한다. 버렸다는 사실은 판정문에 남는다.
+
+def test_loop_limit_judges_by_state_not_by_the_shape_of_the_submission():
+    """같은 증거 상태면 빈손이든 환각이든 **같은 사유**로 끝나야 한다."""
+    empty, invented = {}, {}
+    nodes._finalize_gate({"claim_id": "", "hypothesis": "h", "confidence": 0.9},
+                         loop=ya_config.MAX_LOOPS, update=empty,
+                         findings=[EQP_CH_BELOW_LINE])
+    nodes._finalize_gate({"claim_id": "eqp_ch_commonality:chamber:CC002000:NOPE",
+                          "hypothesis": "h", "confidence": 0.9},
+                         loop=ya_config.MAX_LOOPS, update=invented,
+                         findings=[EQP_CH_BELOW_LINE])
+    assert invented["finalize_status"] == empty["finalize_status"] == "weak_signal"
+
+
+def test_loop_limit_recovers_the_no_signal_reason_and_its_coverage(monkeypatch):
+    """전축을 봤는데 침묵이면 `no_signal` 이다 - 환각 제출이 그 사실을 못 지운다.
+
+    옛 동작에서는 "확정 근거 없이" 로 끝나 **커버리지 문장까지 사라졌다.** 어디까지
+    봤는지가 리포트에서 빠지면 엔지니어는 안 본 축을 다시 시키게 된다.
+    """
+    update = {}
+    verdict = nodes._finalize_gate(
+        {"claim_id": "지어낸:claim:id", "hypothesis": "h", "confidence": 0.9},
+        loop=ya_config.MAX_LOOPS, update=update,
+        findings=[EQP_CH_SILENT, PPID_SILENT, STEP_PASSAGE_SILENT, METRO_SILENT])
+    assert update["finalize_status"] == "no_signal"
+    assert "등록 축 4개 중 4개" in verdict, verdict
+
+
+def test_loop_limit_recovers_the_no_comparable_data_reason():
+    """전축이 '계산 불가' 로 끝났으면 그 사실이 사유다 - 조치가 적재/추출 확인이다."""
+    update = {}
+    nodes._finalize_gate(
+        {"claim_id": "지어낸:claim:id", "hypothesis": "h", "confidence": 0.9},
+        loop=ya_config.MAX_LOOPS, update=update, findings=_ALL_NO_PAIR)
+    assert update["finalize_status"] == "no_comparable_data"
+
+
+def test_loop_limit_says_it_ignored_the_invented_claim():
+    """버린 사실은 판정문에 남아야 한다 - findings 를 타고 리포트 LLM 까지 간다."""
+    update = {}
+    verdict = nodes._finalize_gate(
+        {"claim_id": "지어낸:claim:id", "hypothesis": "h", "confidence": 0.9},
+        loop=ya_config.MAX_LOOPS, update=update, findings=[EQP_CH_BELOW_LINE])
+    assert "지어낸:claim:id" in verdict, verdict
+    assert "무시" in verdict, verdict
+
+
+def test_a_hallucination_below_the_loop_limit_is_still_rejected():
+    """**경계 반대편.** 여유가 있으면 반려가 맞다 - 고칠 기회를 주는 것이 반려다.
+
+    한계 아래에서도 제출을 버리면 LLM 이 환각을 내고도 종료를 얻어, 억제가 사라진다.
+    """
+    update = {}
+    verdict = nodes._finalize_gate(
+        {"claim_id": "지어낸:claim:id", "hypothesis": "h", "confidence": 0.9},
+        loop=ya_config.MAX_LOOPS - 1, update=update, findings=[EQP_CH_BELOW_LINE])
+    assert update.get("finalize_accepted") is None
+    assert verdict.startswith("반려")
+
+
+def test_an_honest_pick_at_the_loop_limit_is_untouched():
+    """정직한 제출은 이 규칙이 건드리지 않는다 - 버릴 것이 없다."""
+    update = {}
+    verdict = nodes._finalize_gate(
+        {"claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH9_B",
+         "hypothesis": "h", "confidence": 0.9},
+        loop=ya_config.MAX_LOOPS, update=update, findings=[EQP_CH_BELOW_LINE])
+    assert update["finalize_status"] == "weak_signal"     # (2a)가 이미 받는다
+    assert "무시" not in verdict, verdict
+
+
 def test_loop_limit_still_carries_residuals():
     """루프 한계로 끝나도 아랫선을 넘은 잔차는 리포트에 남아야 한다.
 
     실측(2026-09-08): 잔차 2건이 있는데 환각 지목을 되풀이해 loop 7 에 닿으면
     `inconclusive` · `final_claims=0` 으로 끝나 증거가 통째로 소각됐다.
-    이 경로는 `(2a)` 가 환각을 안 받아 주기 때문에 열린다 - 프롬프트로는 못 막는다.
+
+    2026-09-12 부터 한계에서 환각 지목을 버리므로 이 상태는 `(2a)` 가 받는다 -
+    증거가 실리는 것은 그대로이고 **사유가 정확해졌다**(미확정 -> 약한 신호).
     """
     update = {}
     verdict = nodes._finalize_gate(
         {"claim_id": "eqp_ch_commonality:chamber:CC002000:NOPE",
          "hypothesis": "지어낸 것", "confidence": 0.9},
         loop=ya_config.MAX_LOOPS, update=update, findings=[EQP_CH_BELOW_LINE])
-    assert update["finalize_status"] == "inconclusive"
+    assert update["finalize_status"] == "weak_signal"
     ids = [c["claim_id"] for c in update["final_claims"]]
     assert ids == ["eqp_ch_commonality:chamber:CC002000:ETCH9_B"]
     # 판정문이 "확정 근거 없이" 라고 말하면 잔차를 싣고도 거짓이다.
@@ -3188,8 +3272,8 @@ def test_loop_limit_without_residuals_keeps_the_old_sentence():
     verdict = nodes._finalize_gate(
         {"claim_id": "지어낸:claim:id", "hypothesis": "h", "confidence": 0.9},
         loop=ya_config.MAX_LOOPS, update=update, findings=[EQP_CH_SILENT])
-    assert update["finalize_status"] == "inconclusive"
-    assert "확정 근거 없이" in verdict, verdict
+    # 환각 지목도 한계에서는 버려지므로 빈손과 같은 사유로 끝난다(2026-09-12).
+    assert update["finalize_status"] == "no_signal"
     assert "잔차" not in verdict, verdict
 
 
@@ -3249,13 +3333,16 @@ def test_weak_signal_verdict_does_not_claim_residuals_the_cap_dropped(monkeypatc
     assert "[잔차" not in report, report
 
 
-def test_loop_limit_verdict_does_not_claim_residuals_the_cap_dropped(monkeypatch):
-    """(4) 판정문도 (2a)와 같은 결함을 갖고 있었다 - 같은 방식으로 재현한다.
+def test_a_passing_sensor_does_not_close_the_weak_signal_door_at_the_limit(monkeypatch):
+    """통과 **센서**가 있어도 한계에서 (2a)는 열린다 - `statistical_passing()` 이 하한이다.
 
-    `carried is not groups`(잔차가 더해진) 분기로 들어가되, 상한이 통과 근거로
-    다 차 잔차가 0건 실리는 상태를 만든다. claim_id 를 실재하지 않는 이름으로
-    줘 (2a) 를 비켜가게 한다 - `claim is None` 이면 (2a) 의 "정직한 제출" 하한이
-    안 열린다.
+    예전에는 이 상태(환각 지목 + 잔차 + 통과 센서)가 (4)로 떨어져 잔차를 거기서
+    실었고, 그 판정문이 절단 전 건수를 말하는 결함이 있었다. 2026-09-12 부터 한계에서
+    환각을 버리므로 (2a)가 먼저 받는다 - (4)의 잔차 갈래는 도달 불가가 됐다.
+
+    잠그는 것 둘: ① 통과 센서가 물러섬의 문을 닫지 않는다(닫으면 센서만 통과한
+    상태가 다시 미확정으로 끝난다) ② 상한이 잔차를 다 잘랐을 때 판정문이 0건을
+    그대로 말한다((2a)의 쌍둥이 테스트와 같은 결함을 이 경로에서도 잠근다).
     """
     monkeypatch.setattr(ya_config, "REPORT_MAX_EVIDENCE", 1)
     update = {}
@@ -3263,11 +3350,11 @@ def test_loop_limit_verdict_does_not_claim_residuals_the_cap_dropped(monkeypatch
         {"claim_id": "지어낸:claim:id", "hypothesis": "지어낸 것", "confidence": 0.9},
         loop=ya_config.MAX_LOOPS, update=update,
         findings=[EQP_CH_BELOW_LINE, SENSOR_FINDING])
-    assert update["finalize_status"] == "inconclusive"
+    assert update["finalize_status"] == "weak_signal"
     assert not any(not c.get("passes", True) for c in update["final_claims"]), \
         update["final_claims"]
     assert "잔차 1건" not in verdict, verdict
-    assert "확정 근거 없이" not in verdict, verdict   # 통과 센서는 실제로 실렸다
+    assert "무시" in verdict, verdict                 # 버린 지목 사실은 남는다
     # 부정 단언만으로는 문장을 통째로 지워도 초록이다 - 0건 문구가 실제로
     # 나가는 것을 잠근다.
     assert ("아랫선을 넘은 잔차가 있었으나 통과 근거가 상한을 채워 리포트에는 "
@@ -3275,7 +3362,7 @@ def test_loop_limit_verdict_does_not_claim_residuals_the_cap_dropped(monkeypatch
     report = nodes.report_node({
         "target_wafers": ["W1"], "target_source": "manual", "target_group": ["W1"],
         "status_summary": "s", "findings": [], "final_hypothesis": "h",
-        "final_confidence": 0.9, "finalize_status": "inconclusive",
+        "final_confidence": 0.9, "finalize_status": "weak_signal",
         "final_claims": update["final_claims"],
     })["report"]
     assert "[잔차" not in report, report
