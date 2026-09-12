@@ -579,7 +579,11 @@ def find_commonality(target_wafers: list[str], control_wafers: list[str],
  
     반환 status:
       - "insufficient_group": 타깃이 너무 적어 commonality 가 정의상 무의미
-      - "no_paired_stratum" : 타깃과 대조군이 같은 root_lot 에서 짝지어지지 않음
+      - "no_paired_stratum" : 비교할 짝이 없다. **경로가 둘이고 조치가 다르다** —
+                              (1) 대조군이 타깃과 다른 root_lot 에만 있다(이력은
+                              멀쩡하다, 대조군 선정을 다시 한다) (2) step_history 가
+                              있는 짝이 없다(적재·추출 범위를 뒤진다). 가르는 값은
+                              meta.missing_history 다 — (2) 만 결측 wafer 를 댄다.
       - "no_signal"         : 계산은 됐으나 분리되는 후보가 없음
                               → 원인 없음이 아니라 **lot 내부 대조로는 안 보임**.
                                 원인이 root_lot 전체에 걸리면 타깃·대조군이 같은 챔버를
