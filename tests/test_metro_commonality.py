@@ -457,8 +457,9 @@ def test_permutation_p_is_carried_all_the_way_into_the_public_result():
     for c in res["candidates"]:
         # n_reference 가 빠지면 바닥값이 왜 후보마다 다른지 설명할 숫자가 없어져
         # n_permutations_total 과 p_min_possible 이 서로 안 맞아 보인다.
-        for field in ("p_permutation", "p_min_possible", "n_permutations_total",
-                      "n_reference", "split_value", "split_direction", "item"):
+        for field in ("p_permutation", "p_min_possible", "p_at_floor",
+                      "n_permutations_total", "n_reference", "split_value",
+                      "split_direction", "item"):
             assert field in c, field
 
 
@@ -470,6 +471,20 @@ def test_turning_permutations_off_removes_the_p_explanation_from_the_note():
     assert res["candidates"]
     assert "p_permutation" not in res["candidates"][0]
     assert "p_min_possible" not in res["note"]
+
+
+def test_the_note_blames_the_reference_rounds_not_the_sample_for_a_big_floor():
+    """바닥값의 원인은 **참조 회차**다. metro 에서 특히 갈리는 자리다.
+
+    계측 표본이 작아서 줄 수도, 순열 회차 예산이 작아서 줄 수도 있는데 조치가
+    정반대다 - 앞은 계측을 더 걸어야 하고 뒤는 회차를 더 돌려야 한다. note 가
+    표본 탓만 하면 LLM 이 리포트에 한쪽 조치만 적는다.
+    """
+    targets, controls = _metro_groups()
+    res = mc.find_metro_commonality(targets, controls)
+
+    assert "표본이 작아 p" not in res["note"]
+    assert "참조 회차가 적어" in res["note"]
 
 
 # ---------------------------------------------------------------- 배선 (엔진·레지스트리)

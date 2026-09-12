@@ -133,3 +133,14 @@ def test_every_permutation_axis_teaches_p_at_floor_not_a_comparison():
     for spec in registry.load_hypotheses():
         if "p_min_possible" in spec["description"]:
             assert "p_at_floor" in spec["description"], spec["id"]
+
+
+def test_no_axis_blames_the_sample_size_for_a_big_floor():
+    """바닥이 큰 이유는 "참조 회차가 적다" 이지 "표본이 작다" 가 아니다.
+
+    두 말이 갈리는 자리가 있다 - 표본이 커도 순열 회차 예산이 작으면 바닥은
+    올라간다. yaml 이 원인을 표본 탓으로 적으면 LLM 은 리포트에 "wafer 를 더
+    모아야 한다" 고 쓰고, 엔지니어는 늘릴 수 없는 것을 늘리러 간다.
+    """
+    for spec in registry.load_hypotheses():
+        assert "표본이 작아 p" not in spec["description"], spec["id"]

@@ -752,8 +752,11 @@ def find_commonality(target_wafers: list[str], control_wafers: list[str],
             "답할 수 있는 wafer 수이지 타깃 그룹 크기(n_target)가 아니다.")
     if perm:
         note += (" p_permutation 은 라벨을 root_lot 안에서 섞었을 때 이만한 분리가 "
-                 "나오는 비율이다. p_min_possible 이 크면(예: 0.1 이상) 표본이 작아 "
-                 "p 를 그 아래로 내릴 수 없다는 뜻이지 신호가 약하다는 뜻이 아니다.")
+                 "나오는 비율이다. p_min_possible 이 크면(예: 0.1 이상) 참조 회차가 "
+                 "적어 p 를 그 아래로 내릴 수 없다는 뜻이지 신호가 약하다는 뜻이 "
+                 "아니다. 참조 회차는 섞을 배치 자체가 적어도(작은 표본) 줄고 순열 "
+                 "회차 예산이 작아도 줄어든다 - n_reference 를 n_permutations_total "
+                 "과 비교하면 어느 쪽인지 갈린다.")
 
     result = {
         "status": "ok" if candidates else "no_signal",

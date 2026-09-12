@@ -583,10 +583,12 @@ def find_metro_commonality(target_wafers: list[str], control_wafers: list[str],
             "계측값이 있는 wafer 수이지 타깃 그룹 크기(n_target)가 아니다 - metro 는 "
             "lot 당 몇 장만 재므로 이 둘이 크게 다르다.")
     if perm:
-        note += (" p_min_possible 이 크면(예: 0.1 이상) 표본이 작아 p 를 그 아래로 "
-                 "내릴 수 없다는 뜻이지 신호가 약하다는 뜻이 아니다. 이 값은 "
+        note += (" p_min_possible 이 크면(예: 0.1 이상) 참조 회차가 적어 p 를 그 "
+                 "아래로 내릴 수 없다는 뜻이지 신호가 약하다는 뜻이 아니다. 이 값은 "
                  "**후보마다 다르다** - 계측 표본 크기가 그 후보와 같은 귀무 회차만 "
-                 "세기 때문이다.")
+                 "세기 때문이다. 참조 회차는 계측 표본이 작아도 줄고 순열 회차 예산이 "
+                 "작아도 줄어든다 - n_reference 를 n_permutations_total 과 비교하면 "
+                 "어느 쪽인지 갈린다.")
 
     result = {
         "status": "ok" if candidates else "no_signal",

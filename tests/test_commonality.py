@@ -759,6 +759,33 @@ def test_only_the_exhaustive_branch_drops_the_observed_labelling():
     assert any(labels[0][1] == observed_t for labels in sampled)
 
 
+def test_the_note_blames_the_reference_rounds_not_the_sample_for_a_big_floor(
+        tmp_path, monkeypatch):
+    """바닥값을 정하는 것은 **참조 회차**다 - 표본 크기가 아니다.
+
+    10대10 은 섞을 배치가 184,756 가지나 되는데도 순열 회차를 5로 주면 바닥이
+    0.1667 이 된다. 표본이 작아서가 아니라 **예산이 작아서**다. note 가 "표본이
+    작아" 라고 말하면 엔지니어는 늘릴 수 없는 wafer 를 더 모으러 가고, 정작
+    고칠 수 있는 노브(COMMONALITY_PERMUTATIONS)는 건드리지 않는다.
+    """
+    t = [f"T{i}" for i in range(1, 11)]
+    c = [f"C{i}" for i in range(1, 11)]
+    ys = [_y(w, "A45Z5") for w in t + c]
+    hs = [_h(w, "Etch", "ETCH9", "3") for w in t]
+    hs += [_h(w, "Etch", "ETCH8", "1") for w in c]
+    _make_db(tmp_path, monkeypatch, ys, hs)
+
+    res = cm.find_commonality(t, c, n_permutations=5)
+    eq = _find(res, "equipment", "ETCH9")
+    assert eq["n_permutations_total"] == 184756      # 표본은 전혀 작지 않다
+    assert eq["n_reference"] == 5                    # 예산이 정한 참조 회차
+    assert eq["p_min_possible"] == 0.1667
+    # note 첫머리의 "표본이 작아 우연한 분리가 흔하다" 는 별개의 참인 문장이라
+    # 건드리지 않는다. 여기서 막는 것은 **바닥값의 원인**을 표본 탓으로 적는 것뿐이다.
+    assert "표본이 작아 p" not in res["note"]
+    assert "참조 회차가 적어" in res["note"]
+
+
 # -------------------------------------------------------------------- FDR
 
 def _noise_db(tmp_path, monkeypatch, n_steps=10):
