@@ -793,6 +793,27 @@ def test_mock_report_has_no_residual_sentence_for_weak_signal_without_residuals(
     assert "[잔차] 줄" not in report
 
 
+def test_mock_report_has_a_residual_sentence_for_inconclusive():
+    """inconclusive 갈래의 잔차 안내 문장(`llm/client.py:289`)을 목을 직접 불러 잠근다.
+
+    이 문장은 게이트를 안 타는 종료 쪽에서는 이제 못 닿는다 - 잔차가 있으면 그
+    경로는 반드시 weak_signal 로 나가고(2026-09-12 게이트리스 종료 판정), 게이트
+    `(4)` 의 잔차 갈래는 현재 도달 불가로 표시돼 있다. 그래도 `finalize_status` 와
+    `claims` 는 외부에서 넘기는 인자라 목을 직접 부르면 그대로 만들 수 있다 - 산
+    경로가 없어졌다고 문장을 지우면, 도달 불가인 경로가 다시 열릴 때(리뷰가 이미
+    예고한 사건이다) 조용히 사라진 채로 남는다.
+    """
+    from llm.client import ScriptedMockLLMClient
+    report = ScriptedMockLLMClient().generate_report(
+        target_wafers=["W1"], target_source="manual", target_group=["W1"],
+        status_summary="s", findings=[], hypothesis="h", confidence=0.3,
+        finalize_status="inconclusive",
+        claims=[{"claim_id": "a", "passes": False, "rank": 1,
+                 "reject_reason": "score below threshold"}])
+    assert "미확정" in report
+    assert "아래 [잔차] 줄은 판별선을 넘지 못한 후보다" in report
+
+
 def test_operational_prompt_tells_the_report_what_weak_signal_means():
     """운영 리포트 LLM 은 판정 이름만 받는다 - 무엇인지 안 알려주면 잔차를 원인으로
     단정하거나, 반대로 신호 없음으로 뭉갠다. 다음 행동(표본·대조군)까지 적게 한다."""

@@ -1207,7 +1207,7 @@ def _no_candidate_action(bundle, coverage) -> str:
             "2단 센서로 근거를 더 좁히거나 대조군을 다시 보라." + step_back)
 
 
-def _gateless_finalize(audit: list[dict]) -> tuple[str, str, list[dict]]:
+def _gateless_finalize(audit: list[dict], loop_count: int) -> tuple[str, str, list[dict]]:
     """게이트를 안 거치고 끝난 종료의 사유를 **증거 상태에서** 낸다.
 
     돌려주는 것은 `(finalize_status, 판정문, final_claims)`.
@@ -1234,10 +1234,24 @@ def _gateless_finalize(audit: list[dict]) -> tuple[str, str, list[dict]]:
     `build.py` 라우팅과 `tools_node` 는 이미 다 지나왔다), `final_hypothesis` 는 제출이
     없었으니 비어 있는 것이 사실이며, `coverage` 는 `report_node` 가 같은 findings 로
     이미 다시 세고 있다(같은 값을 두 경로로 들이면 나중에 한쪽만 바뀐다).
+
+    **`loop_count` 는 강제와 별개로 진짜 회차를 말하려는 것이다.** `(4)` 분기 판정문은
+    "미확정 (루프 한계 도달)" 이라고 말하는데, 그 "한계" 는 위에서 강제한 것이지 실제
+    회차가 아닐 수 있다 - 입구 2(텍스트 응답 이탈)는 loop 1 에도 일어난다. 통과 후보가
+    있으면 그 상태에서 `(2)`~`(3b)` 가 전부 닫혀 `(4)` 로 떨어지고, 운영 프롬프트는 이
+    판정문을 "그대로 인용하라" 고 지시하므로 실제 회차를 안 밝히면 엔지니어가 받는
+    조치(예산을 늘려 재실행)가 틀린다. 진짜 한계에서 온 경우(`loop_count` 가 실제로
+    `MAX_LOOPS` 다)는 강제와 실제가 같으므로 덧붙일 것이 없다.
     """
     scratch: dict = {}
     verdict = _finalize_gate({"claim_id": "", "hypothesis": "", "confidence": 0.0},
                              ya_config.MAX_LOOPS, scratch, audit)
+    if "루프 한계 도달" in verdict and loop_count < ya_config.MAX_LOOPS:
+        # **강제가 실제와 갈릴 때만 밝힌다.** 위 조건이 참이면 `(4)` 가 진짜 한계가
+        # 아니라 `loop` 강제의 부작용으로 열렸다는 뜻이다 - "루프 한계 도달" 은
+        # `_gate_verdict` 의 (4) 규칙을 재사용했다는 뜻이지 트리거가 아니다.
+        verdict += (f" (실제 loop {loop_count} - 위 '루프 한계 도달' 은 게이트 (4) 규칙을 "
+                    f"재사용했다는 뜻이지 진짜로 한계에 도달했다는 뜻이 아니다.)")
     # **코드가 판정했다는 사실을 판정문에 남긴다.** 증거 상태가 같아도 분석 과정은
     # 다르다 - 이 사실이 필요한 것은 엔지니어가 아니라 프롬프트·스크립트를 고치는
     # 사람이다(LLM 이 종료를 제안하지 않았다는 신호). 판정 이름을 새로 만들지 않는
@@ -1268,11 +1282,14 @@ def report_node(state: dict) -> dict:
     # 없어 `(1)` 이 성립하지 않는다.
     verdict = state.get("finalize_status")
     gateless_verdict = ""
+    # **한 값으로 통일한다.** 아래 합성 레코드의 `loop` 도 같은 값을 써야 한다 -
+    # 두 자리에서 따로 읽으면 어긋날 수 있고, 그 어긋남 자체가 새 거짓말이 된다.
+    loop_count = state.get("loop_count", 0)
     if not verdict:
         # **이 종료에는 finalize 판정이 실린 적이 없다** - 앞 루프에서 반려를
         # 받았을 수는 있지만 그 반려는 `finalize_status` 를 안 찍는다(`(4)` 는
         # 그 필드가 찍힌 상태로도 올 수 있는 경로라 다르다).
-        verdict, gateless_verdict, claims = _gateless_finalize(audit)
+        verdict, gateless_verdict, claims = _gateless_finalize(audit, loop_count)
     # **대체된 실행에 표시를 붙여 넘긴다.** 같은 축을 다시 돌리면 build_bundle 이 앞
     # 후보를 버리는데(그룹이 바뀌면 분모가 달라 거짓이므로 옳다), findings 는 그대로
     # 넘어가고 운영 프롬프트는 그 수치를 "그대로 인용하라" 고 지시한다 - 표시가 없으면
@@ -1290,7 +1307,7 @@ def report_node(state: dict) -> dict:
         # `- 게이트:` 줄로 렌더링하게 한다. **끝에 붙인다** - `bundle.superseded` 는
         # `audit` 안의 위치라, 앞에 끼우면 그 인덱스가 어긋난다.
         sent_findings = [*sent_findings,
-                         {"loop": state.get("loop_count", 0), "tool": "finalize",
+                         {"loop": loop_count, "tool": "finalize",
                           "args": {}, "result": gateless_verdict, "thought": ""}]
     try:
         report = _llm_lazy().generate_report(

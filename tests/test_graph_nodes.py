@@ -611,8 +611,15 @@ def test_report_node_keeps_residuals_when_the_gate_never_judged():
     산문 결론에도 잔차 안내 문장이 붙어야 한다 - mock 결론문의 그 문장은 어느
     테스트에도 안 잠겨 있었다(`llm/client.py` 의 조건부 두 줄을 통째로 지워도
     전체 스위트가 초록이었다, Task 6 리뷰 I-1). `[잔차]` 줄이 실제로 찍혔는데
-    "그 줄이 판별선을 넘지 못한 후보다" 를 말하는 문장이 없으면, 엔지니어가
-    [잔차] 줄을 [근거] 줄과 같은 무게로 읽는다.
+    그 줄이 판별선을 넘지 못한 후보라는 문장이 없으면, 엔지니어가 [잔차] 줄을
+    [근거] 줄과 같은 무게로 읽는다.
+
+    **이 테스트는 지금 weak_signal 갈래의 잔차 문장만 잠근다.** 이 픽스처의 증거
+    상태가 실제로 weak_signal 이기 때문이다(2026-09-12 게이트리스 종료 판정 이후 -
+    게이트를 안 타는 종료에서 잔차가 있으면 반드시 weak_signal 로 나가고, inconclusive
+    갈래는 게이트 `(4)` 를 거쳐야 하는데 그 갈래의 잔차 분기는 지금 도달 불가로
+    표시돼 있다). `llm/client.py:289` 의 inconclusive 갈래 문장은 그래서 이 테스트로는
+    안 걸리고, `tests/test_mock_llm.py` 가 목을 직접 불러 따로 잠근다.
     """
     out = nodes.report_node({"target_wafers": ["W1"], "target_source": "manual",
                              "target_group": ["W1"], "status_summary": "s",
@@ -3948,7 +3955,9 @@ def test_gateless_exit_takes_its_reason_from_the_evidence_state():
         ("볼 것이 아무것도 없음", [], "inconclusive"),
     ]
     for label, findings, expected in cases:
-        status, verdict, _ = nodes._gateless_finalize(findings)
+        # 진짜 한계에서 부른 상황을 대표한다 - loop 강제 문구 뒤에 붙는 실제 회차
+        # 정정문(`test_gateless_verdict_names_the_real_loop_...`)은 따로 잠근다.
+        status, verdict, _ = nodes._gateless_finalize(findings, ya_config.MAX_LOOPS)
         assert status == expected, (label, status, verdict)
 
 
@@ -3960,7 +3969,8 @@ def test_gateless_exit_can_never_approve():
     근거는 그대로 실린다(근거가 있다는 것과 승인 판정을 받았다는 것은 다른 사실이다).
     """
     status, verdict, claims = nodes._gateless_finalize(
-        [EVIDENCE_FINDING_NEW, PPID_SILENT, STEP_PASSAGE_SILENT, METRO_SILENT])
+        [EVIDENCE_FINDING_NEW, PPID_SILENT, STEP_PASSAGE_SILENT, METRO_SILENT],
+        ya_config.MAX_LOOPS)
     assert status == "inconclusive", verdict
     assert claims, "근거는 실려야 한다"
     assert not [c for c in claims if c.get("picked_by_llm")]   # 지목이 없으니 표시도 없다
@@ -3970,20 +3980,30 @@ def test_gateless_exit_carries_the_same_evidence_as_before():
     """근거 목록은 **오늘과 같아야 한다** - 이 변경은 사유만 좁힌다.
 
     사슬을 타면서 근거가 달라지면 잔차나 통과 후보가 조용히 사라질 수 있다. 옛 백스톱이
-    쓰던 호출과 결과가 같은지 직접 견준다.
+    쓰던 호출과 결과가 같은지 직접 견준다. `claim_id` 만 비교하면 `passes`·`rank` 가
+    달라지는 회귀(순서가 같아도 [잔차]/[근거] 라벨이나 등수가 뒤바뀌는 경우)를 못 잡으므로
+    셋을 함께 견준다. `ALL_SILENT` 는 양쪽 다 근거가 비어 `[] == []` 로 아무것도 안
+    잠그므로, 여기서는 비공허 두 케이스만 이 방식으로 견주고 `ALL_SILENT` 는 "비어 있다"
+    는 사실 자체를 따로 단언한다.
     """
+    def _key(c):
+        return (c["claim_id"], c.get("passes"), c.get("rank"))
+
     for findings in ([EQP_CH_BELOW_LINE, PPID_SILENT, STEP_PASSAGE_SILENT, METRO_SILENT],
-                     [EVIDENCE_FINDING_NEW, PPID_SILENT, STEP_PASSAGE_SILENT, METRO_SILENT],
-                     ALL_SILENT):
+                     [EVIDENCE_FINDING_NEW, PPID_SILENT, STEP_PASSAGE_SILENT, METRO_SILENT]):
         from graph import evidence
 
         bundle = evidence.build_bundle(findings)
         before = {}
         nodes._record_evidence(
             before, nodes._evidence_groups(bundle, bundle.ranked_groups()), None)
-        _, _, after = nodes._gateless_finalize(findings)
-        assert [c["claim_id"] for c in after] == \
-               [c["claim_id"] for c in before["final_claims"]], findings
+        _, _, after = nodes._gateless_finalize(findings, ya_config.MAX_LOOPS)
+        assert before["final_claims"], "픽스처가 근거를 안 내면 이 비교는 공허하다"
+        assert [_key(c) for c in after] == \
+               [_key(c) for c in before["final_claims"]], findings
+
+    _, _, all_silent_claims = nodes._gateless_finalize(ALL_SILENT, ya_config.MAX_LOOPS)
+    assert all_silent_claims == []   # 전축 침묵은 근거가 없다는 사실 자체를 잠근다
 
 
 def test_gateless_verdict_says_the_code_judged_it():
@@ -3993,10 +4013,38 @@ def test_gateless_verdict_says_the_code_judged_it():
     이 문장이 없으면 "LLM 이 종료를 제안하지 않았다" 는 사실이 사라지는데, 그것은
     프롬프트나 스크립트를 고쳐야 한다는 신호다.
     """
-    _, verdict, _ = nodes._gateless_finalize(ALL_SILENT)
+    _, verdict, _ = nodes._gateless_finalize(ALL_SILENT, ya_config.MAX_LOOPS)
     assert "LLM 이 종료를 제안하지 않아 코드가 증거 상태로 판정했다" in verdict
     assert "신호 없음" in verdict            # 사유 자체도 그대로 들어 있다
     assert "무시하고 증거 상태로 판정했다" not in verdict   # 버린 지목은 없다
+
+
+def test_gateless_verdict_names_the_real_loop_when_the_limit_rule_fires_early():
+    """`(4)` 가 "루프 한계 도달" 이라고 말해도, 진짜 한계였다는 보장은 없다.
+
+    `loop` 를 한계로 강제하는 것은 `(5) 반려` 를 닫으려는 부작용일 뿐이다 - 입구
+    2(텍스트 응답 이탈)는 loop 1 에도 일어나고, 통과 후보가 있으면 그 상태에서도
+    `(2)`~`(3b)` 가 전부 닫혀 `(4)` 로 떨어진다. 그 상태에서 실제 회차를 안 밝히면
+    운영 프롬프트가 "그대로 인용하라" 는 판정문이 틀린 사유(예산 부족)를 엔지니어에게
+    넘긴다(리뷰 Important 2).
+    """
+    findings = [EVIDENCE_FINDING_NEW, PPID_SILENT, STEP_PASSAGE_SILENT, METRO_SILENT]
+    status, verdict, _ = nodes._gateless_finalize(findings, 1)
+    assert status == "inconclusive", verdict
+    assert "루프 한계 도달" in verdict            # (4) 규칙은 그대로 쓴다
+    assert "실제 loop 1" in verdict, verdict       # 그런데 진짜 회차는 밝힌다
+    assert "게이트 (4) 규칙을 재사용" in verdict, verdict
+
+
+def test_gateless_verdict_does_not_correct_a_genuine_loop_limit():
+    """`loop_count` 가 실제로 `MAX_LOOPS` 면 강제와 실제가 같으므로 정정문이 없다.
+
+    무조건 정정문을 붙이면 진짜 한계에서도 "사실은 한계가 아니었다" 는 거짓 문장이
+    나간다 - 강제와 실제가 갈릴 때만 정정해야 한다.
+    """
+    findings = [EVIDENCE_FINDING_NEW, PPID_SILENT, STEP_PASSAGE_SILENT, METRO_SILENT]
+    _, verdict, _ = nodes._gateless_finalize(findings, ya_config.MAX_LOOPS)
+    assert "실제 loop" not in verdict, verdict
 
 
 def test_report_node_sends_the_gateless_verdict_to_the_client_on_a_copy():
@@ -4038,6 +4086,43 @@ def test_report_node_sends_the_gateless_verdict_to_the_client_on_a_copy():
     # **사본에만 붙었다** - 상태의 감사 기록은 그대로다.
     assert state["findings"] == list(ALL_SILENT)
     assert not [f for f in state["findings"] if f["tool"] == "finalize"]
+
+
+def test_report_node_names_the_real_loop_when_entrance_2_fires_below_the_limit():
+    """`report_node` 배선에서도 실제 회차가 흘러가야 한다(리뷰 Important 2).
+
+    입구 2(텍스트 응답 이탈)는 loop 1 에도 일어난다. 통과 후보가 있으면 `(4)` 로
+    떨어지는데, `loop_count` 를 `state` 에서 안 읽고 상수를 넘기면 판정문이 "루프
+    한계 도달" 이라고 말해 놓고 실제로는 loop 1 이었다는 사실이 사라진다. 합성
+    레코드의 `loop` 와 정정문의 회차가 같은 값(`state["loop_count"]`)에서 나왔는지도
+    함께 본다 - 두 자리가 어긋나면 그 자체가 새 거짓말이다.
+    """
+    received = {}
+
+    class _RecordingClient:
+        def analyze_step(self, messages):
+            raise NotImplementedError
+
+        def generate_report(self, **kwargs):
+            received.update(kwargs)
+            return "고정된 산문 리포트"
+
+    findings = [EVIDENCE_FINDING_NEW, PPID_SILENT, STEP_PASSAGE_SILENT, METRO_SILENT]
+    state = {"target_wafers": ["W2406_02"], "target_source": "manual",
+             "target_group": ["W2406_02"], "status_summary": "요약",
+             "findings": findings, "loop_count": 1}
+    original = nodes._llm
+    nodes._llm = _RecordingClient()
+    try:
+        out = nodes.report_node(state)
+    finally:
+        nodes._llm = original
+
+    assert out["finalize_status"] == "inconclusive"
+    gate_lines = [f for f in received["findings"] if f["tool"] == "finalize"]
+    assert len(gate_lines) == 1, received["findings"]
+    assert gate_lines[0]["loop"] == 1                        # 합성 레코드도 진짜 회차다
+    assert "실제 loop 1" in gate_lines[0]["result"], gate_lines[0]["result"]
 
 
 def test_both_gateless_entrances_route_to_report():

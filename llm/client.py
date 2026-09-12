@@ -285,6 +285,10 @@ class ScriptedMockLLMClient(LLMClient):
             # 이미 있으면 `_evidence_groups` 하한이 잔차를 아예 안 더한다.
             # 무조건 이 문장을 붙이면 실제로 [잔차] 줄이 없는 리포트에도 "[잔차]" 라는
             # 글자가 찍혀, "잔차를 안 섞는다" 는 하한을 문장으로 어긴다.
+            # **지금은 목을 직접 부를 때만 도달한다.** 게이트 미경유 종료에서 잔차가
+            # 있으면 반드시 weak_signal 로 나가고(2026-09-12 게이트리스 종료 판정),
+            # 게이트 `(4)` 의 잔차 갈래는 현재 도달 불가로 표시돼 있다 - 같은 이유의
+            # "보험" 이다. `tests/test_mock_llm.py` 가 이 줄을 직접 잠근다.
             if has_residual_lines:
                 conclusion += " 아래 [잔차] 줄은 판별선을 넘지 못한 후보다."
         elif finalize_status == "weak_signal":
