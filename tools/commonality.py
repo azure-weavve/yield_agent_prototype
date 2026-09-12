@@ -663,7 +663,12 @@ def find_commonality(target_wafers: list[str], control_wafers: list[str],
         return {
             "status": "no_paired_stratum",
             "n_target": len(targets), "n_control": len(controls),
-            "candidates": [], "missing_history": sorted(set(missing)),
+            "candidates": [],
+            # **정상 경로와 같은 자리에 둔다.** 여기서만 최상위에 있으면 소비자는
+            # 경로마다 다른 곳을 봐야 하고, 한쪽을 안 보면 "누가 결측인가" 를 못
+            # 댄다 - `no_paired_stratum` 으로 끝나는 두 경로를 가르는 유일한 값이다
+            # (다른 하나는 대조군 root_lot 이 안 맞는 경우로, 이력은 멀쩡하다).
+            "meta": {"missing_history": sorted(set(missing))},
             "fdr_table": [], "p_family_wise": None, "p_family_wise_min_possible": None,
             "note": "step_history 가 있는 타깃/대조군 짝이 없다 (이력 결측 확인 필요).",
         }

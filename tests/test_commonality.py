@@ -966,6 +966,37 @@ def _db_no_history_at_all(tmp_path, monkeypatch):
     return t, c
 
 
+def test_the_two_no_paired_stratum_paths_are_told_apart(tmp_path, monkeypatch):
+    """`no_paired_stratum` 으로 끝나는 조기 반환이 **둘**이다. 원인이 다르다.
+
+    (1) 대조군이 타깃과 다른 root_lot 에만 있다 -> 이력은 멀쩡하고 짝이 없는 것이다.
+        대조군 선정을 다시 해야 한다.
+    (2) step_history 가 있는 짝이 하나도 없다 -> 적재·추출 범위를 뒤져야 한다.
+
+    status 가 같아서 두 경로를 세우는 테스트가 서로를 대신할 수 있었다. 한쪽을
+    지워도 다른 쪽 단언이 통과하면 아무것도 안 잠긴 것이다. 가르는 것은
+    **meta.missing_history** 다 - (2) 만 결측 wafer 를 댈 수 있다.
+    """
+    # 두 픽스처가 같은 파일명을 쓰므로 DB 를 따로 둔다.
+    first, second = tmp_path / "unpaired", tmp_path / "no_history"
+    first.mkdir(); second.mkdir()
+
+    t, c = _db_unpaired_root_lot(first, monkeypatch)
+    unpaired = cm.find_commonality(t, c)
+    t, c = _db_no_history_at_all(second, monkeypatch)
+    no_history = cm.find_commonality(t, c)
+
+    assert unpaired["status"] == no_history["status"] == "no_paired_stratum"
+    # status 로는 못 가른다. 사유를 말하는 것은 note 이고, **어느 wafer 냐**에
+    # 답할 수 있는 것은 (2) 뿐이다. 결측 wafer 를 못 대면 엔지니어는 어디를
+    # 뒤져야 할지 모른다.
+    assert unpaired["note"] != no_history["note"]
+    assert no_history["meta"]["missing_history"] == ["C1", "C2", "T1", "T2"]
+    # (1) 의 wafer 는 이력이 다 있다. 이 단언은 지금 meta 가 없어 자동으로도
+    # 참이지만, 나중에 이 경로가 meta 를 갖게 될 때 결측을 지어내지 않도록 둔다.
+    assert unpaired.get("meta", {}).get("missing_history", []) == []
+
+
 @pytest.mark.parametrize("build_db", [_db_insufficient_group, _db_unpaired_root_lot,
                                       _db_no_history_at_all])
 def test_early_returns_still_carry_the_top_level_keys(build_db, tmp_path, monkeypatch):
