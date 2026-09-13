@@ -336,8 +336,12 @@ def test_generate_report_renders_inconclusive_status():
         finalize_status="inconclusive",
     )
     assert "미확정" in report
-    assert "한계" in report          # 왜 미확정인지 (루프 한계 도달) - 판정문에서 왔다
-    assert "ETCH-9" in report        # 유력 가설은 후보로 남긴다
+    conclusion = [l for l in report.splitlines() if l.startswith("[결론]")][0]
+    # [분석 과정] 의 `- 게이트:` 줄에도 판정문이 그대로 실리므로 report 전체를 보면
+    # 이 assert 는 그 줄만으로도 통과한다 - 좁혀서 **결론 문장**이 사유를 옮겼는지를
+    # 잠근다.
+    assert "한계" in conclusion      # 왜 미확정인지 (루프 한계 도달) - 판정문에서 왔다
+    assert "ETCH-9" in conclusion    # 유력 가설은 후보로 남긴다
 
 
 def test_generate_report_does_not_invent_a_loop_limit_the_verdict_does_not_claim():

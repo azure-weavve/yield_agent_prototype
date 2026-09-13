@@ -1934,9 +1934,13 @@ def test_report_fallback_does_not_lose_the_gateless_verdict_when_the_llm_dies():
     finally:
         nodes._llm = original
 
+    _, expected_verdict, _ = nodes._gateless_finalize(findings, ya_config.MAX_LOOPS)
     assert out["finalize_status"] == "no_signal"
     assert "[리포트 생성 실패]" in out["report"]
-    assert "LLM 이 종료를 제안하지 않아 코드가 증거 상태로 판정했다" in out["report"], \
+    # **꼬리만이 아니라 판정문 전체가 자기 줄로 들어온다.** `[게이트 판정문]` 은
+    # `gateless_verdict` 를 통째로 찍는 계약이라, 꼬리 문구만 보면 앞부분(사유 자체)이
+    # 잘려도 안 잡힌다.
+    assert f"[게이트 판정문] {expected_verdict}" in out["report"].splitlines(), \
         out["report"]
 
 
@@ -4051,13 +4055,37 @@ def test_gateless_verdict_says_the_code_judged_it():
     """판정문이 **누가 판정했는지**를 말한다.
 
     증거 상태가 같아도 게이트가 판정한 종료와 코드가 메운 종료는 분석 과정이 다르다.
-    이 문장이 없으면 "LLM 이 종료를 제안하지 않았다" 는 사실이 사라지는데, 그것은
-    프롬프트나 스크립트를 고쳐야 한다는 신호다.
+    이 문장이 없으면 "마지막 응답이 finalize 를 부르지 않았다" 는 사실이 사라지는데,
+    그것은 프롬프트나 스크립트를 고쳐야 한다는 신호다. **"LLM 이 종료를 제안하지
+    않았다" 로는 쓰지 않는다** - 앞선 회차에서 finalize 를 제출했다가 반려당하고 이후
+    회차에서 게이트리스 종료에 떨어지는 경로가 있어(최종 리뷰 I-1, 실측 재현), 그
+    문구는 그 경로에서 거짓이 된다.
     """
     _, verdict, _ = nodes._gateless_finalize(ALL_SILENT, ya_config.MAX_LOOPS)
-    assert "LLM 이 종료를 제안하지 않아 코드가 증거 상태로 판정했다" in verdict
+    assert "마지막 응답이 finalize 를 부르지 않아 코드가 증거 상태로 판정했다" in verdict
+    assert "LLM 이 종료를 제안하지 않" not in verdict   # 반려 후 이탈 경로에서 거짓인 문구
     assert "신호 없음" in verdict            # 사유 자체도 그대로 들어 있다
     assert "무시하고 증거 상태로 판정했다" not in verdict   # 버린 지목은 없다
+
+
+def test_gateless_verdict_is_true_even_after_an_earlier_finalize_was_rejected():
+    """반려당한 뒤 게이트리스 종료에 떨어져도 판정문이 "제안하지 않았다" 고 말하지
+    않는다 (최종 리뷰 I-1).
+
+    실측 재현: loop 1 에서 LLM 이 `finalize` 를 불러 `(5) 반려` 를 받고, loop 2 에서
+    도구 호출 없는 텍스트 응답으로 게이트리스 종료에 온다. 이때 감사 기록에는 이미
+    "반려" 문구가 담긴 finalize 레코드가 있다 - 판정문이 "LLM 이 종료를 제안하지
+    않았다" 고 쓰면 바로 위 기록과 스스로 모순된다.
+    """
+    audit = [
+        {"loop": 1, "tool": "finalize", "args": {"claim_id": "", "hypothesis": "h",
+                                                   "confidence": 0.6},
+         "result": "반려: claim_id 미제출 - 이번 회차는 결론을 못 낸다.", "thought": ""},
+        *ALL_SILENT,
+    ]
+    _, verdict, _ = nodes._gateless_finalize(audit, 2)
+    assert "LLM 이 종료를 제안하지 않" not in verdict, verdict
+    assert "마지막 응답이 finalize 를 부르지 않아 코드가 증거 상태로 판정했다" in verdict
 
 
 def test_gateless_verdict_names_the_real_loop_when_the_limit_rule_fires_early():
@@ -4129,11 +4157,16 @@ def test_report_node_sends_the_gateless_verdict_to_the_client_on_a_copy():
     assert out["finalize_status"] == "no_signal"
     gate_lines = [f for f in received["findings"] if f["tool"] == "finalize"]
     assert len(gate_lines) == 1, received["findings"]
-    assert "LLM 이 종료를 제안하지 않아 코드가 증거 상태로 판정했다" in gate_lines[0]["result"]
+    assert "마지막 응답이 finalize 를 부르지 않아 코드가 증거 상태로 판정했다" \
+        in gate_lines[0]["result"]
     assert gate_lines[0]["loop"] == ya_config.MAX_LOOPS
     # **사본에만 붙었다** - 상태의 감사 기록은 그대로다.
     assert state["findings"] == list(ALL_SILENT)
     assert not [f for f in state["findings"] if f["tool"] == "finalize"]
+    # **설계서 §3 동작 3의 "state 로 옮기지 않는다" 가 실제로 지켜졌는지 잠근다**
+    # (스펙 §5 검증표에 없던 자리). `finalize_accepted`·`final_hypothesis`·`coverage`
+    # 가 여기서 새 키로 새면 이 assert 가 깨진다.
+    assert set(out) == {"report", "finalize_status"}, out
 
 
 def test_report_node_names_the_real_loop_when_entrance_2_fires_below_the_limit():
