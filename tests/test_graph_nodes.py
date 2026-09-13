@@ -618,8 +618,9 @@ def test_report_node_keeps_residuals_when_the_gate_never_judged():
     상태가 실제로 weak_signal 이기 때문이다(2026-09-12 게이트리스 종료 판정 이후 -
     게이트를 안 타는 종료에서 잔차가 있으면 반드시 weak_signal 로 나가고, inconclusive
     갈래는 게이트 `(4)` 를 거쳐야 하는데 그 갈래의 잔차 분기는 지금 도달 불가로
-    표시돼 있다). `llm/client.py:289` 의 inconclusive 갈래 문장은 그래서 이 테스트로는
-    안 걸리고, `tests/test_mock_llm.py` 가 목을 직접 불러 따로 잠근다.
+    표시돼 있다). `ScriptedMockLLMClient.generate_report` 의 inconclusive 갈래
+    문장은 그래서 이 테스트로는 안 걸리고, `tests/test_mock_llm.py` 가 목을 직접
+    불러 따로 잠근다.
     """
     out = nodes.report_node({"target_wafers": ["W1"], "target_source": "manual",
                              "target_group": ["W1"], "status_summary": "s",
@@ -4024,27 +4025,34 @@ def test_gateless_verdict_names_the_real_loop_when_the_limit_rule_fires_early():
 
     `loop` 를 한계로 강제하는 것은 `(5) 반려` 를 닫으려는 부작용일 뿐이다 - 입구
     2(텍스트 응답 이탈)는 loop 1 에도 일어나고, 통과 후보가 있으면 그 상태에서도
-    `(2)`~`(3b)` 가 전부 닫혀 `(4)` 로 떨어진다. 그 상태에서 실제 회차를 안 밝히면
-    운영 프롬프트가 "그대로 인용하라" 는 판정문이 틀린 사유(예산 부족)를 엔지니어에게
-    넘긴다(리뷰 Important 2).
+    `(2)`~`(3b)` 가 전부 닫혀 `(4)` 로 떨어진다. **재리뷰 Important 2가 뒤집은 것:**
+    뒤에 정정문을 덧붙이면 "루프 한계 도달" 과 "실은 한계가 아니었다" 가 한 문장에서
+    서로를 부정한다(재리뷰가 `report_node` 로 직접 재현했다) - 그래서 이제는
+    덧붙이지 않고 머리말 자체를 진짜 트리거로 바꿔치기한다.
+
+    findings 의 `loop` 를 진행 중인 회차(1)를 넘지 않게 맞춘다 - 원본 픽스처의
+    loop 2~5 는 loop_count 1보다 나중 회차라 앞뒤가 안 맞는다(재리뷰가 지적한
+    별건).
     """
-    findings = [EVIDENCE_FINDING_NEW, PPID_SILENT, STEP_PASSAGE_SILENT, METRO_SILENT]
+    findings = [{**f, "loop": 1} for f in
+                (EVIDENCE_FINDING_NEW, PPID_SILENT, STEP_PASSAGE_SILENT, METRO_SILENT)]
     status, verdict, _ = nodes._gateless_finalize(findings, 1)
     assert status == "inconclusive", verdict
-    assert "루프 한계 도달" in verdict            # (4) 규칙은 그대로 쓴다
-    assert "실제 loop 1" in verdict, verdict       # 그런데 진짜 회차는 밝힌다
-    assert "게이트 (4) 규칙을 재사용" in verdict, verdict
+    # 없는 트리거를 자기부정 문장으로 남기지 않는다 - 아예 안 쓴다.
+    assert "루프 한계 도달" not in verdict, verdict
+    assert "도구 호출 없는 응답으로 종료 - loop 1" in verdict, verdict
 
 
 def test_gateless_verdict_does_not_correct_a_genuine_loop_limit():
-    """`loop_count` 가 실제로 `MAX_LOOPS` 면 강제와 실제가 같으므로 정정문이 없다.
+    """`loop_count` 가 실제로 `MAX_LOOPS` 면 강제와 실제가 같으므로 머리말을 안 바꾼다.
 
-    무조건 정정문을 붙이면 진짜 한계에서도 "사실은 한계가 아니었다" 는 거짓 문장이
-    나간다 - 강제와 실제가 갈릴 때만 정정해야 한다.
+    무조건 바꿔치기하면 진짜 한계에서도 "사실은 한계가 아니었다" 는 거짓 문장이
+    나간다 - 강제와 실제가 갈릴 때만 바꿔야 한다.
     """
     findings = [EVIDENCE_FINDING_NEW, PPID_SILENT, STEP_PASSAGE_SILENT, METRO_SILENT]
     _, verdict, _ = nodes._gateless_finalize(findings, ya_config.MAX_LOOPS)
-    assert "실제 loop" not in verdict, verdict
+    assert "루프 한계 도달" in verdict, verdict
+    assert "도구 호출 없는 응답으로 종료" not in verdict, verdict
 
 
 def test_report_node_sends_the_gateless_verdict_to_the_client_on_a_copy():
@@ -4089,13 +4097,17 @@ def test_report_node_sends_the_gateless_verdict_to_the_client_on_a_copy():
 
 
 def test_report_node_names_the_real_loop_when_entrance_2_fires_below_the_limit():
-    """`report_node` 배선에서도 실제 회차가 흘러가야 한다(리뷰 Important 2).
+    """`report_node` 배선에서도 실제 트리거·회차가 흘러가야 한다(리뷰 Important 2).
 
     입구 2(텍스트 응답 이탈)는 loop 1 에도 일어난다. 통과 후보가 있으면 `(4)` 로
     떨어지는데, `loop_count` 를 `state` 에서 안 읽고 상수를 넘기면 판정문이 "루프
     한계 도달" 이라고 말해 놓고 실제로는 loop 1 이었다는 사실이 사라진다. 합성
-    레코드의 `loop` 와 정정문의 회차가 같은 값(`state["loop_count"]`)에서 나왔는지도
-    함께 본다 - 두 자리가 어긋나면 그 자체가 새 거짓말이다.
+    레코드의 `loop` 와 판정문에 박힌 회차가 같은 값(`state["loop_count"]`)에서
+    나왔는지도 함께 본다 - 두 자리가 어긋나면 그 자체가 새 거짓말이다.
+
+    findings 의 `loop` 를 진행 중인 회차(1)를 넘지 않게 맞춘다 - 원래 픽스처는
+    loop 2~5 짜리 기록을 `loop_count: 1` 상태에 얹어 "아직 안 지난 회차의 도구
+    호출이 감사 기록에 있다" 는 모순을 갖고 있었다(재리뷰가 지적한 별건).
     """
     received = {}
 
@@ -4107,7 +4119,8 @@ def test_report_node_names_the_real_loop_when_entrance_2_fires_below_the_limit()
             received.update(kwargs)
             return "고정된 산문 리포트"
 
-    findings = [EVIDENCE_FINDING_NEW, PPID_SILENT, STEP_PASSAGE_SILENT, METRO_SILENT]
+    findings = [{**f, "loop": 1} for f in
+                (EVIDENCE_FINDING_NEW, PPID_SILENT, STEP_PASSAGE_SILENT, METRO_SILENT)]
     state = {"target_wafers": ["W2406_02"], "target_source": "manual",
              "target_group": ["W2406_02"], "status_summary": "요약",
              "findings": findings, "loop_count": 1}
@@ -4122,7 +4135,43 @@ def test_report_node_names_the_real_loop_when_entrance_2_fires_below_the_limit()
     gate_lines = [f for f in received["findings"] if f["tool"] == "finalize"]
     assert len(gate_lines) == 1, received["findings"]
     assert gate_lines[0]["loop"] == 1                        # 합성 레코드도 진짜 회차다
-    assert "실제 loop 1" in gate_lines[0]["result"], gate_lines[0]["result"]
+    assert "루프 한계 도달" not in gate_lines[0]["result"], gate_lines[0]["result"]
+    assert ("도구 호출 없는 응답으로 종료 - loop 1"
+            in gate_lines[0]["result"]), gate_lines[0]["result"]
+
+
+def test_report_node_end_to_end_conclusion_does_not_claim_a_loop_limit_that_never_happened():
+    """재리뷰 재현: 실제 목으로 `report_node` 전체를 돌려도 [결론] 줄이 없는 한계를
+    말하면 안 된다.
+
+    재리뷰가 잡은 결함: 정정문은 게이트 줄에만 붙었고, `ScriptedMockLLMClient.
+    generate_report` 의 inconclusive 갈래는 이름(`finalize_status == "inconclusive"`)
+    만 보고 "미확정 (루프 한계 도달)" 을 고정 출력했다 - 게이트 줄은 정정됐는데
+    [결론] 줄은 그것을 부정하는 리포트가 나갔다. 이제는 목도 판정문에서 사유를
+    옮기므로 두 줄이 같은 사실을 말해야 한다.
+    """
+    from llm.client import ScriptedMockLLMClient
+
+    findings = [{**f, "loop": 1} for f in
+                (EVIDENCE_FINDING_NEW, PPID_SILENT, STEP_PASSAGE_SILENT, METRO_SILENT)]
+    state = {"target_wafers": ["W2406_02"], "target_source": "manual",
+             "target_group": ["W2406_02"], "status_summary": "요약",
+             "findings": findings, "loop_count": 1}
+    original = nodes._llm
+    nodes._llm = ScriptedMockLLMClient()
+    try:
+        out = nodes.report_node(state)
+    finally:
+        nodes._llm = original
+
+    assert out["finalize_status"] == "inconclusive"
+    report = out["report"]
+    gate_line = next(l for l in report.splitlines() if l.strip().startswith("- 게이트:"))
+    conclusion = next(l for l in report.splitlines() if l.startswith("[결론]"))
+    assert "루프 한계 도달" not in gate_line, gate_line
+    assert "루프 한계 도달" not in conclusion, conclusion
+    assert "도구 호출 없는 응답으로 종료 - loop 1" in gate_line, gate_line
+    assert "도구 호출 없는 응답으로 종료 - loop 1" in conclusion, conclusion
 
 
 def test_both_gateless_entrances_route_to_report():

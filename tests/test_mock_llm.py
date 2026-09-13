@@ -318,17 +318,52 @@ def test_scripted_never_picks_a_sensor_even_when_it_outranks_the_first_stage():
 
 
 def test_generate_report_renders_inconclusive_status():
-    # 한계 도달(inconclusive) 종료: 결론을 "미확정 + 유력 가설(후보)" 톤으로 표기
+    """한계 도달(inconclusive) 종료: 결론을 "미확정 + 유력 가설(후보)" 톤으로 표기.
+
+    **사유는 판정문에서 가져온다** (재리뷰 Important 2) - findings 의 finalize
+    판정문이 실제로 "루프 한계 도달" 이라고 말할 때만 그 문구가 결론에 실린다.
+    findings 없이 이름만으로 "한계 도달" 을 지어내면, 실제로는 텍스트 응답
+    이탈이었던 게이트리스 종료에서도 없는 트리거를 찍는다.
+    """
     llm = ScriptedMockLLMClient()
+    verdict = "미확정 (루프 한계 도달): 확정 근거 없이 리포팅으로 진행한다."
     report = llm.generate_report(
         target_wafers=["W2406_02"], target_source="manual",
         target_group=TARGET, status_summary="s",
-        findings=[], hypothesis="ETCH-9 rf_power 이상 추정", confidence=0.5,
+        findings=[{"loop": 7, "tool": "finalize", "args": {}, "result": verdict,
+                   "thought": ""}],
+        hypothesis="ETCH-9 rf_power 이상 추정", confidence=0.5,
         finalize_status="inconclusive",
     )
     assert "미확정" in report
-    assert "한계" in report          # 왜 미확정인지 (루프 한계 도달)
+    assert "한계" in report          # 왜 미확정인지 (루프 한계 도달) - 판정문에서 왔다
     assert "ETCH-9" in report        # 유력 가설은 후보로 남긴다
+
+
+def test_generate_report_does_not_invent_a_loop_limit_the_verdict_does_not_claim():
+    """**이름이 아니라 판정문이 사유의 전제다** (재리뷰 Important 2).
+
+    게이트리스 종료가 진짜 한계가 아니면 판정문 머리말이 실제 트리거를 그대로
+    말한다(`graph.nodes._gateless_finalize`). `finalize_status == "inconclusive"`
+    라는 이름만 보고 "루프 한계 도달"을 고정 출력하면, 게이트 줄([분석 과정])과
+    결론이 서로를 부정하는 리포트가 나간다 - 재리뷰가 `report_node` 로 직접
+    재현한 바로 그 결함이다.
+    """
+    llm = ScriptedMockLLMClient()
+    verdict = ("미확정 (도구 호출 없는 응답으로 종료 - loop 1): 확정 근거 없이 "
+               "리포팅으로 진행한다.")
+    report = llm.generate_report(
+        target_wafers=["W2406_02"], target_source="manual",
+        target_group=TARGET, status_summary="s",
+        findings=[{"loop": 1, "tool": "finalize", "args": {}, "result": verdict,
+                   "thought": ""}],
+        hypothesis="ETCH-9 rf_power 이상 추정", confidence=0.5,
+        finalize_status="inconclusive",
+    )
+    conclusion = [l for l in report.splitlines() if l.startswith("[결론]")][0]
+    assert "루프 한계 도달" not in conclusion, conclusion
+    assert "도구 호출 없는 응답으로 종료 - loop 1" in conclusion, conclusion
+    assert "ETCH-9" in conclusion
 
 
 def test_generate_report_does_not_call_a_dropped_pick_a_likely_hypothesis():
@@ -794,7 +829,8 @@ def test_mock_report_has_no_residual_sentence_for_weak_signal_without_residuals(
 
 
 def test_mock_report_has_a_residual_sentence_for_inconclusive():
-    """inconclusive 갈래의 잔차 안내 문장(`llm/client.py:289`)을 목을 직접 불러 잠근다.
+    """inconclusive 갈래의 잔차 안내 문장(`ScriptedMockLLMClient.generate_report`)을
+    목을 직접 불러 잠근다.
 
     이 문장은 게이트를 안 타는 종료 쪽에서는 이제 못 닿는다 - 잔차가 있으면 그
     경로는 반드시 weak_signal 로 나가고(2026-09-12 게이트리스 종료 판정), 게이트
@@ -1050,6 +1086,27 @@ def test_operational_prompt_blocks_carrying_a_dropped_pick_into_the_report():
     # LLM 은 "지목을 쓰지 마라" 만 받고 다음에 할 일을 못 적는다.
     assert ("무엇을 왜 버렸는지도 그 괄호에 있으니 그것을 근거로 다음에 할 일을 "
             "적어라.") in client.llm.seen_sys
+
+
+def test_operational_prompt_does_not_fix_the_inconclusive_reason_by_name():
+    """**이름이 아니라 판정문이 사유의 전제다** (재리뷰 Important 2).
+
+    옛 문구는 "판정이 inconclusive 면 ... '미확정(루프 한계 도달)'" 로 사유를
+    이름에 고정했다 - 게이트리스 종료(실제로는 텍스트 응답 이탈)에서도 없는
+    트리거를 엔지니어에게 넘긴다. 이제는 판정문 머리의 괄호 문구를 그대로
+    옮기라고 지시하고, 이름만 보고 지어내지 말라는 금지문까지 건다.
+    """
+    client = _openai_client()
+    client.generate_report(
+        target_wafers=["W1"], target_source="manual", target_group=["W1"],
+        status_summary="s", findings=[], hypothesis="h", confidence=0.3,
+        finalize_status="inconclusive", claims=[])
+    assert "미확정(루프 한계 도달)" not in client.llm.seen_sys
+    assert ("판정이 inconclusive 면 결론을 확정하지 말고 '미확정' 뒤에 판정문 머리의 "
+            "괄호 문구(종료 경위 - 예: 루프 한계 도달, 또는 도구 호출 없는 응답으로 "
+            "종료)를 그대로 옮겨 붙이고, 유력 후보·추가 조사 필요 항목으로 서술하라 - "
+            "판정 이름만 보고 '루프 한계 도달'을 지어내지 마라."
+            ) in client.llm.seen_sys
 
 
 def test_operational_prompt_says_inconclusive_can_carry_residuals():
