@@ -1332,11 +1332,11 @@ def report_node(state: dict) -> dict:
         # **게이트가 버린 지목은 결론으로 찍지 않는다.** `final_hypothesis` 는 LLM 이
         # 쓴 문장 그대로라 버린 후보를 원인으로 단정한 채 남아 있다 - 산문 LLM 은
         # 판정문으로 그 사실을 받지만 이 폴백은 문장을 그대로 찍으므로, 바로 위
-        # [판정] 줄이 "무시했다" 고 말하는데 [결론] 이 그 후보를 원인이라고 적는
-        # 리포트가 나간다. 확신도도 같이 뺀다 - LLM 자기 신고라 근거가 아니다.
+        # 감사 기록의 게이트 판정문이 "무시했다" 고 말하는데 [결론] 이 그 후보를 원인이라고
+        # 적는 리포트가 나간다. 확신도도 같이 뺀다 - LLM 자기 신고라 근거가 아니다.
         dropped_pick = state.get("dropped_pick")
         conclusion = (f"원인 미확정 (게이트가 마지막 지목 '{dropped_pick}' 을 버렸다 "
-                      f"- 사유는 위 [판정] 줄)"
+                      f"- 사유는 감사 기록의 게이트 판정문)"
                       if dropped_pick else
                       f"{state.get('final_hypothesis') or '원인 미확정'}"
                       f" (확신도 {state.get('final_confidence')})")
@@ -1344,6 +1344,13 @@ def report_node(state: dict) -> dict:
                   f"({type(e).__name__}: {e}). 아래는 코드가 적은 결론이다.\n"
                   f"[판정] {verdict}\n"
                   f"[결론] {conclusion}")
+        if gateless_verdict:
+            # **게이트를 안 거친 종료의 사유는 findings 사본(`sent_findings`)에만 실린다.**
+            # 산문 LLM 이 죽으면 그 사본은 아무도 안 읽는다 - `state["findings"]` 에는
+            # 합성 레코드가 없고(사본에만 붙인다, 위 주석), `main.py` 의 감사 기록 출력도
+            # `state["findings"]` 를 찍으므로 이 사유를 못 메운다. 코드가 낸 판정을
+            # 여기서도 한 줄로 남긴다.
+            report += f"\n[게이트 판정문] {gateless_verdict}"
     # [근거] 줄은 클라이언트(LLM)가 아니라 여기서 코드로 붙인다 - 운영에서도
     # 근거가 리포트에서 사라지지 않게 하려는 것이 이 기능의 목적이다.
     # 여러 줄인 이유: 축이 여럿이면 근거도 여럿이고, 그중 하나만 남기던 것이

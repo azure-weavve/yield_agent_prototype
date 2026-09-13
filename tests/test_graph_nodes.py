@@ -1898,6 +1898,46 @@ def test_report_fallback_does_not_conclude_with_a_pick_the_gate_dropped():
     assert "원인이다" not in conclusion[0], conclusion[0]   # 버린 후보를 단정하지 않는다
     assert "버렸다" in conclusion[0], conclusion[0]
     assert cid in conclusion[0], conclusion[0]              # 무엇을 버렸는지는 말한다
+    # **사유가 있는 곳을 가리켜야 한다.** `[판정]` 줄은 상태 이름만 찍는다
+    # (`[판정] inconclusive`) - 사유가 적힌 산문은 감사 기록의 게이트 판정문에 있다.
+    # e17f223 이 "사유는 위 [판정] 줄" 이라고 적었고 3차 리뷰가 놓쳤다.
+    assert "[판정] 줄" not in conclusion[0], conclusion[0]
+    assert "감사 기록" in conclusion[0], conclusion[0]
+
+
+def test_report_fallback_does_not_lose_the_gateless_verdict_when_the_llm_dies():
+    """게이트를 안 거친 종료의 사유는 `sent_findings` 사본에만 실린다 - 산문 LLM 이
+    죽으면 그 사본은 아무도 안 읽는다.
+
+    `state["findings"]` 에는 합성 finalize 레코드가 안 붙고(사본에만 붙인다는 선례,
+    `test_report_node_sends_the_gateless_verdict_to_the_client_on_a_copy` 참조),
+    `main.py` 의 감사 기록 출력도 `state["findings"]` 를 찍는다 - 산문 LLM 이 죽으면
+    코드가 낸 판정문이 이 리포트에도, 감사 기록에도, 어디에도 안 남아 사유가 통째로
+    사라진다. 폴백은 `[판정]` 에 상태 이름만 찍으므로 이 값만으로는 못 메운다.
+    """
+    class _DeadClient:
+        def analyze_step(self, messages):
+            raise NotImplementedError
+
+        def generate_report(self, **kwargs):
+            raise RuntimeError("LLM down")
+
+    findings = list(ALL_SILENT)
+    state = {"target_wafers": ["W2406_02"], "target_group": ["W2406_02"],
+             "status_summary": "요약", "findings": findings,
+             "loop_count": ya_config.MAX_LOOPS}
+
+    original = nodes._llm
+    nodes._llm = _DeadClient()
+    try:
+        out = nodes.report_node(state)
+    finally:
+        nodes._llm = original
+
+    assert out["finalize_status"] == "no_signal"
+    assert "[리포트 생성 실패]" in out["report"]
+    assert "LLM 이 종료를 제안하지 않아 코드가 증거 상태로 판정했다" in out["report"], \
+        out["report"]
 
 
 # ------------------------------------------------ M3 재리뷰 지적

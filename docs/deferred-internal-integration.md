@@ -25,7 +25,10 @@ git log·코드로 먼저 확인한다 (1·2·3번은 이미 구현 완료 — �
   LLM 이 지목한 `claim_id` 로 `EvidenceBundle` 을 조회해 판정하고, 그 근거 투영(findings →
   Claim 사전)은 `graph/evidence.py` 의 `build_bundle` 이 한다.)
   MAX_LOOPS 강제 종료는 `finalize_status="inconclusive"` 로 구분 기록되고
-  리포트 결론도 "미확정(루프 한계 도달)" 톤으로 분기. 테스트: `tests/test_graph_nodes.py`
+  리포트 결론도 미확정 톤으로 분기한다. **[2026-09-12 갱신]** "미확정(루프 한계 도달)"
+  은 이름이 고정하는 문구가 아니라 게이트 판정문 프로즈에서 그대로 온다 — 실제
+  회차가 루프 한계 아래인 텍스트 응답 이탈이면 "도구 호출 없는 응답으로 종료 - loop N"
+  으로 바뀐다(`_gateless_finalize`). 테스트: `tests/test_graph_nodes.py`
 
 ## 4. TLS 검증 기본값을 켜짐으로 (codex 4번)
 
@@ -62,7 +65,7 @@ git log·코드로 먼저 확인한다 (1·2·3번은 이미 구현 완료 — �
 - `ya_config.py` 상수의 환경변수 오버라이드 (`os.getenv`) — 코드 수정 없는 모드 전환
 - `tools/yield_tools.py` `find_low_yield_lots` 기본 인자가 import 시점 바인딩 — 런타임 threshold 변경이 기본값에 반영 안 됨 → 2026-07-19 status 입력 재설계에서 해소
 - ~~`graph/nodes.py` 모듈 레벨 `_llm = get_llm()` — import 시점에 구현 고정, 지연 획득으로 전환하면 테스트·모드 전환 유연~~ — **2026-07-31 완료.** `_llm_lazy()` 로 전환. `tests/test_graph_nodes.py::test_importing_nodes_does_not_acquire_the_llm` 이 별도 프로세스에서 "import 만으로는 안 잡힌다" 를 고정한다
-- `llm/client.py` 리포트 결론 fallback "원인 미확정"이 원인(수율 이상 lot 없음 vs 루프 한계 도달)을 구분하지 않음 — 이상 없음 경로는 "이상 없음" 문구로 분기하고, 한계 도달은 3번 항목의 "미확정(한계 도달)" 구분 기록과 함께 처리
+- `llm/client.py` 리포트 결론 fallback "원인 미확정"이 원인(수율 이상 lot 없음 vs 루프 한계 도달)을 구분하지 않음 — 이상 없음 경로는 "이상 없음" 문구로 분기하고, 한계 도달은 3번 항목의 구분 기록과 함께 처리(**[2026-09-12 갱신]** 문구는 "미확정(한계 도달)" 로 고정돼 있지 않다 — 게이트 판정문에서 그대로 온다)
 - ~~`README.md` 아키텍처 다이어그램에 status→(대상 없음)→report 분기 미표기 (graph/build.py docstring 다이어그램과 불일치) — 동기화~~ — **2026-07-31 완료.** 다이어그램에 조기 출구 엣지를 넣고, 사유 5종(`no_anomaly`·`unknown_target`·`eds_lookup_failed`·`isolated`·`control_insufficient`)과 "사람이 할 일" 을 표로 추가했다 (README "조기 출구" 절)
 - `tools/eds_search.py` k+1 조회 버퍼는 필터로 제외되는 후보가 많으면 유효 후보가 더 있어도 k 미만을 반환할 수 있음 (Local 도 동일, 계약상 허용) — 6번 실측 검증 때 함께 확인
 - 빈 대조 그룹(`control_group=[]`) lot 에서는 `ScriptedMockLLMClient._groups` 정규식이 매칭 실패해 ValueError — 현재 시드 데이터에서는 도달 불가 경로라 미룸. 사내 실데이터 연동 시 seed 라인 파싱/그룹 부재 처리 필요. → 2026-07-19 status 입력 재설계에서 해소 (GROUPS_JSON 라인으로 대체)
