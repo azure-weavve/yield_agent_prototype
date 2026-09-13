@@ -24,11 +24,13 @@ git log·코드로 먼저 확인한다 (1·2·3번은 이미 구현 완료 — �
   이 substring 매칭은 2026-08-01 "게이트 강화(EvidenceBundle)" 에서 없어졌다 — 현재는
   LLM 이 지목한 `claim_id` 로 `EvidenceBundle` 을 조회해 판정하고, 그 근거 투영(findings →
   Claim 사전)은 `graph/evidence.py` 의 `build_bundle` 이 한다.)
-  MAX_LOOPS 강제 종료는 `finalize_status="inconclusive"` 로 구분 기록되고
-  리포트 결론도 미확정 톤으로 분기한다. **[2026-09-12 갱신]** "미확정(루프 한계 도달)"
-  은 이름이 고정하는 문구가 아니라 게이트 판정문 프로즈에서 그대로 온다 — 실제
-  회차가 루프 한계 아래인 텍스트 응답 이탈이면 "도구 호출 없는 응답으로 종료 - loop N"
-  으로 바뀐다(`_gateless_finalize`). 테스트: `tests/test_graph_nodes.py`
+  MAX_LOOPS 강제 종료도 증거 상태로 사유를 정한다(가를 사유가 없을 때만
+  `finalize_status="inconclusive"` 로 기록된다 — `no_signal`·`no_separation` 등으로
+  갈릴 수 있다). 리포트 결론도 그 사유별 톤으로 분기한다. **[2026-09-12 갱신]**
+  "미확정(루프 한계 도달)" 은 이름이 고정하는 문구가 아니라 게이트 판정문 프로즈에서
+  그대로 온다 — 실제 회차가 루프 한계 아래인 텍스트 응답 이탈이면 "도구 호출 없는
+  응답으로 종료 - loop N" 으로 바뀐다(`_gateless_finalize`). 테스트:
+  `tests/test_graph_nodes.py`
 
 ## 4. TLS 검증 기본값을 켜짐으로 (codex 4번)
 

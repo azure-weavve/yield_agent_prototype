@@ -489,8 +489,11 @@ Run: `python data/generate_dummy.py && python -m pytest -q`
 > **[2026-09-12 갱신]** "미확정(루프 한계 도달)" 은 `inconclusive` 라는 이름이 고정하는
 > 문구가 아니다 — 지금은 게이트 판정문 프로즈에서 그대로 온다. 실제 회차가 루프
 > 한계 아래인 채로(텍스트 응답 이탈) 이 판정에 오면 문구가 "도구 호출 없는 응답으로
-> 종료 - loop N" 으로 바뀐다(`graph/nodes.py::_gateless_finalize`). 위 케이스는 진짜
-> 루프 한계였으므로 그대로 맞다.
+> 종료 - loop N" 으로 바뀐다(`graph/nodes.py::_gateless_finalize`). **위 "루프 한계에서
+> 미확정" 은 당시(2026-07-25) 관측으로는 참이었다 - 지금은 아니다.** 같은 케이스 4
+> (`tests/test_adversarial_dummy.py::test_case4_end_to_end_reports_no_signal_not_loop_exhaustion`)
+> 는 이제 `no_signal` 로 루프 한계 전에 끝난다(`loop_count < MAX_LOOPS`) - 이후 커밋이
+> `no_signal` 판정을 추가해 이 경로 자체가 바뀌었다.
 
 부수 확인: `finalize_accepted` 는 **승인 신호가 아니다** — 루프 한계에서도 True 가 된다
 (`graph/nodes.py:188`). 확정 여부 판정에는 `finalize_status` 를 써야 한다.
