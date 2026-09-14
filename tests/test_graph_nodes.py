@@ -4122,7 +4122,7 @@ def test_gateless_verdict_leaves_the_headline_when_loop_count_equals_max_loops()
     입구 2(텍스트 응답 이탈)도 하필 마지막 회차에 일어나면 같은 값을 만들어, 강제와
     실제가 우연히 같아진 경우와 정말 `_after_tools` 가드레일이 걸린 경우를 이 함수는
     구분하지 않는다(구분할 신호가 없다) - 두 경우 모두 판정문은 "미확정 (루프 한계
-    도달)" 로 똑같이 나간다(`_gateless_finalize` 독스트링, `graph/nodes.py:1247-1252`).
+    도달)" 로 똑같이 나간다(`_gateless_finalize` 독스트링).
     무조건 바꿔치기하면 진짜 한계에서도 "사실은 한계가 아니었다" 는 거짓 문장이
     나간다 - 강제와 표시가 갈릴 때(`loop_count < MAX_LOOPS`)만 바꿔야 한다는 것만
     이 테스트가 잠근다.
