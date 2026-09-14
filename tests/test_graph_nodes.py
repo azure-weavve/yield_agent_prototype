@@ -4076,12 +4076,16 @@ def test_gateless_verdict_is_true_even_after_an_earlier_finalize_was_rejected():
     도구 호출 없는 텍스트 응답으로 게이트리스 종료에 온다. 이때 감사 기록에는 이미
     "반려" 문구가 담긴 finalize 레코드가 있다 - 판정문이 "LLM 이 종료를 제안하지
     않았다" 고 쓰면 바로 위 기록과 스스로 모순된다.
+
+    findings 의 `loop` 를 진행 중인 회차(2)를 넘지 않게 맞춘다 - 원본 `ALL_SILENT`
+    의 loop 3~5 는 loop_count 2보다 나중 회차라 아직 안 지난 회차의 도구 호출이
+    감사 기록에 있는 모순이었다(형제 테스트가 고친 것과 같은 유형, 재리뷰 지적).
     """
     audit = [
         {"loop": 1, "tool": "finalize", "args": {"claim_id": "", "hypothesis": "h",
                                                    "confidence": 0.6},
          "result": "반려: claim_id 미제출 - 이번 회차는 결론을 못 낸다.", "thought": ""},
-        *ALL_SILENT,
+        *[{**f, "loop": 2} for f in ALL_SILENT],
     ]
     _, verdict, _ = nodes._gateless_finalize(audit, 2)
     assert "LLM 이 종료를 제안하지 않" not in verdict, verdict
@@ -4111,11 +4115,17 @@ def test_gateless_verdict_names_the_real_loop_when_the_limit_rule_fires_early():
     assert "도구 호출 없는 응답으로 종료 - loop 1" in verdict, verdict
 
 
-def test_gateless_verdict_does_not_correct_a_genuine_loop_limit():
-    """`loop_count` 가 실제로 `MAX_LOOPS` 면 강제와 실제가 같으므로 머리말을 안 바꾼다.
+def test_gateless_verdict_leaves_the_headline_when_loop_count_equals_max_loops():
+    """`loop_count` 가 `MAX_LOOPS` 와 같으면 바꿀 것이 없다 - 단 이것이 "진짜 한계
+    가드레일이었다" 는 보장은 아니다.
 
+    입구 2(텍스트 응답 이탈)도 하필 마지막 회차에 일어나면 같은 값을 만들어, 강제와
+    실제가 우연히 같아진 경우와 정말 `_after_tools` 가드레일이 걸린 경우를 이 함수는
+    구분하지 않는다(구분할 신호가 없다) - 두 경우 모두 판정문은 "미확정 (루프 한계
+    도달)" 로 똑같이 나간다(`_gateless_finalize` 독스트링, `graph/nodes.py:1247-1252`).
     무조건 바꿔치기하면 진짜 한계에서도 "사실은 한계가 아니었다" 는 거짓 문장이
-    나간다 - 강제와 실제가 갈릴 때만 바꿔야 한다.
+    나간다 - 강제와 표시가 갈릴 때(`loop_count < MAX_LOOPS`)만 바꿔야 한다는 것만
+    이 테스트가 잠근다.
     """
     findings = [EVIDENCE_FINDING_NEW, PPID_SILENT, STEP_PASSAGE_SILENT, METRO_SILENT]
     _, verdict, _ = nodes._gateless_finalize(findings, ya_config.MAX_LOOPS)

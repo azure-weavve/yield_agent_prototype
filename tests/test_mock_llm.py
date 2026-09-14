@@ -370,6 +370,42 @@ def test_generate_report_does_not_invent_a_loop_limit_the_verdict_does_not_claim
     assert "ETCH-9" in conclusion
 
 
+def test_generate_report_reads_the_last_finalize_record_not_the_first():
+    """findings 에 finalize 기록이 여럿이면 **마지막** 것을 판정문으로 본다
+    (`llm/client.py` 클래스 독스트링·sys 프롬프트가 선언한 M-4 계약, 최종 리뷰 I-2).
+
+    실측 재현 구도: loop 1 에서 LLM 이 `finalize` 를 불러 `(5) 반려` 를 받고(claim_id
+    미제출), loop 2 에서 도구 호출 없는 텍스트 응답으로 게이트리스 종료에 온다 -
+    findings 에는 반려 기록과 게이트리스 합성 판정문이 **함께** 남는 정상 조합이다
+    (`graph.nodes._gateless_finalize`, `tests/test_graph_nodes.py::
+    test_gateless_verdict_is_true_even_after_an_earlier_finalize_was_rejected`).
+    첫 기록에서 사유를 읽으면(`gate_lines[0]`) 괄호가 없어 사유가 통째로 사라지고,
+    뒤엣것을 읽어야(`gate_lines[-1]`) loop 2 의 실제 트리거가 결론에 실린다.
+    """
+    llm = ScriptedMockLLMClient()
+    rejected = ("반려: claim_id 미제출 - 이번 회차는 결론을 못 낸다.")
+    gateless = ("미확정 (도구 호출 없는 응답으로 종료 - loop 2): 확정 근거 없이 "
+                "리포팅으로 진행한다.")
+    report = llm.generate_report(
+        target_wafers=["W2406_02"], target_source="manual",
+        target_group=TARGET, status_summary="s",
+        findings=[
+            {"loop": 1, "tool": "finalize", "args": {}, "result": rejected,
+             "thought": ""},
+            {"loop": 2, "tool": "finalize", "args": {}, "result": gateless,
+             "thought": ""},
+        ],
+        hypothesis="ETCH-9 rf_power 이상 추정", confidence=0.5,
+        finalize_status="inconclusive",
+    )
+    conclusion = [l for l in report.splitlines() if l.startswith("[결론]")][0]
+    # 뒤엣것(loop 2)의 괄호 문구를 옮긴다.
+    assert "도구 호출 없는 응답으로 종료 - loop 2" in conclusion, conclusion
+    # 앞엣것(loop 1)의 문구는 안 나온다 - 꼬리만 잠그지 않는다.
+    assert "claim_id 미제출" not in conclusion, conclusion
+    assert "반려" not in conclusion, conclusion
+
+
 def test_generate_report_does_not_call_a_dropped_pick_a_likely_hypothesis():
     """**게이트가 버린 지목은 목에서도 유력 가설이 아니다.**
 
