@@ -5,6 +5,7 @@
 
 from dataclasses import asdict
 
+import ya_config
 from graph import evidence
 
 
@@ -1489,3 +1490,37 @@ def test_ranked_groups_can_rank_a_given_list():
         "eqp_ch_commonality:chamber:CC002000:ETCH9_B",       # 점수 0.4 - 1등
         "eqp_ch_commonality:chamber:CD004000:ETCH9_C",       # 점수 0.3 - 2등
     ]
+
+
+def test_thin_sample_and_residuals_partition_nonpassing_candidates():
+    """T10: 표본 수 경계 양쪽과 점수·센서·status 하한을 직접 잠근다."""
+    def candidate(claim_id, target_pass, score, kind="statistical"):
+        return {"claim_id": claim_id, "step_seq": "S", "key": claim_id,
+                "level": "chamber", "passes": False, "reject_reason": "미통과",
+                "score": score, "target_pass": target_pass, "target_total": 4,
+                "control_pass": 0, "control_total": 4, "kind": kind}
+
+    good = _finding("hyp_eqp_ch_commonality", "eqp_ch_commonality", "ok", [
+        candidate("thin", ya_config.COMMONALITY_PASS_MIN_TARGET - 1,
+                  ya_config.RESIDUAL_MIN_SCORE),
+        candidate("residual", ya_config.COMMONALITY_PASS_MIN_TARGET,
+                  ya_config.RESIDUAL_MIN_SCORE),
+        candidate("too_weak", ya_config.COMMONALITY_PASS_MIN_TARGET - 1,
+                  ya_config.RESIDUAL_MIN_SCORE - 0.01),
+    ])
+    bad_status = _finding("hyp_ppid_commonality", "ppid_commonality", "failed", [
+        candidate("bad_status", 1, 1.0)])
+    sensor = _sensor_finding("S", [_sensor_cand(
+        "S", "TEMP", ya_config.RESIDUAL_MIN_SCORE, passes=False)])
+    bundle = evidence.build_bundle([good, bad_status, sensor])
+    # status 하한과 kind 하한을 각각 독립적으로 잠근다. 센서 status 는 일반 빌드가
+    # statuses 에 싣지 않으므로, 여기서는 status 조건을 일부러 만족시켜 kind 제거
+    # 훼손(M3)이 다른 하한 뒤에 숨지 못하게 한다.
+    bundle.statuses["compare_sensor_distribution"] = "ok"
+    thin = {c.claim_id for c in bundle.thin_sample()}
+    residual = {c.claim_id for c in bundle.residuals()}
+    assert thin == {"thin"}
+    assert residual == {"residual"}
+    assert thin.isdisjoint(residual)
+    group = bundle.ranked_groups(bundle.thin_sample())[0]
+    assert evidence.group_to_dict(group)["thin_sample"] is True

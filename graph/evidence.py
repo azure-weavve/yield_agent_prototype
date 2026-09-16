@@ -70,6 +70,14 @@ _FIRST_CLASS_FIELDS = frozenset({
 })
 
 
+def _is_thin_sample_claim(claim: Claim) -> bool:
+    """실행 status 를 제외한 표본 미달 후보의 구조적 조건."""
+    return (not claim.passes
+            and claim.kind != "sensor"
+            and claim.target_pass < ya_config.COMMONALITY_PASS_MIN_TARGET
+            and claim.score >= ya_config.RESIDUAL_MIN_SCORE)
+
+
 @dataclass(frozen=True)
 class ClaimGroup:
     """**같은 wafer 집합**을 가리키는 claim 들을 하나로 접은 묶음.
@@ -324,6 +332,16 @@ class Bundle:
                 and c.target_pass >= ya_config.COMMONALITY_PASS_MIN_TARGET
                 and c.score >= ya_config.RESIDUAL_MIN_SCORE]
 
+    def thin_sample(self) -> list[Claim]:
+        """점수는 아랫선을 넘었지만 타깃 표본 수가 판정 하한에 못 미친 후보.
+
+        `residuals()` 와 표본 수 부등호가 반대라 두 목록은 교집합이 없다. 센서와
+        계산 실패 실행은 각각 다른 계약을 가지므로 포함하지 않는다.
+        """
+        return [c for c in self.claims.values()
+                if _is_thin_sample_claim(c)
+                and self.statuses.get(c.tool) == "ok"]
+
     def ranked_groups(self, claims: list[Claim] | None = None) -> list[ClaimGroup]:
         """통과 후보를 wafer 집합으로 접고 순위를 매긴다 — **코드가 하는 판단.**
 
@@ -393,6 +411,9 @@ def group_to_dict(group: ClaimGroup, picked: bool = False) -> dict:
         # 분모는 남긴다 - 효과크기는 표본 수와 함께 읽어야 하고 근거 줄이 그 값을 쓴다.
         del lead["target_pass"], lead["control_pass"]
     lead["picked_by_llm"] = picked
+    # 구조화된 사실로 내보낸다. 리포트가 reject_reason 문장을 파싱해 판정 종류를
+    # 추측하면 도구 문구 변경 하나로 의미가 뒤집힌다.
+    lead["thin_sample"] = _is_thin_sample_claim(group.lead)
     # 접힌 쪽도 **자기 수치를 그대로 들고 간다.** 이름만 남기면 접기가 곧 정보
     # 손실이 된다 - 같은 wafer 를 가리켜도 분모(target_total)와 p 는 다를 수 있고,
     # 그 차이가 "어느 이름으로 의뢰할 것인가" 를 정하는 재료다. 예를 들어 계측

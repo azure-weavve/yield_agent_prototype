@@ -51,9 +51,14 @@ class LLMClient(ABC):
         뜻이다 - 그 항목의 후보는 판별선을 넘었더라도 근거가 아니므로 인용하면 안 된다.
         구현이 findings 를 LLM 에 넘긴다면 이 키를 함께 넘기고 그 뜻도 지시해야 한다.
         claims 는 게이트가 접고 줄 세운 근거 **목록**이다 - 수치를 그대로 인용하고
-        바꾸지 않는다. 일부 판정(weak_signal·inconclusive)에서는 `passes: false`
-        인 항목(잔차 - 판별선을 못 넘은 후보)이 섞여 온다 - 확정 근거로 세지 말고
-        '아직 갈리지 않은 후보' 로 적어라. 하나만 고르지 마라: 순위는 코드가 매긴
+        바꾸지 않는다. 일부 판정(weak_signal·thin_sample·inconclusive)에서는
+        `passes: false` 인 항목이 섞여 온다 - 확정 근거로 세지 말고 '아직 갈리지
+        않은 후보' 로 적어라. 그 항목은 **두 종류이고 구조 플래그 `thin_sample` 이
+        가른다**: true 면 타깃 표본이 판정 하한에 못 미친 후보(분리 점수는 판별선을
+        넘었을 수도 있다)이고, false 면 판별선을 못 넘은 잔차다. 조치가 다르므로
+        구분해 적어라 - 앞쪽은 타깃 표본을 채워 재확인하는 것이고 뒤쪽은 타깃/대조군을
+        넓히는 것이다. `reject_reason` 문장을 파싱해 종류를 추측하지 마라.
+        하나만 고르지 마라: 순위는 코드가 매긴
         것이고, `picked_by_llm` 이 붙은 것은 서술의 축일 뿐 나머지가 덜 중요하다는
         뜻이 아니다.
         `confounded_with` 가 있는 항목은 **같은 wafer 를 다른 이름으로도 설명할 수
@@ -261,7 +266,8 @@ class ScriptedMockLLMClient(LLMClient):
             if f["tool"] == "finalize":
                 lines.append(f"     - 게이트: {f['result']}")
         # 두 갈래(inconclusive·weak_signal)가 같은 술어를 쓴다 - 앞에서 한 번만 센다.
-        has_residual_lines = any(not c.get("passes", True) for c in (claims or []))
+        has_residual_lines = any(not c.get("passes", True) and not c.get("thin_sample")
+                                 for c in (claims or []))
         suppress_conf = False
         if finalize_status == "inconclusive":
             # **게이트가 버린 지목을 유력 가설로 찍지 않는다.** 목은 프롬프트를 따르는
@@ -316,6 +322,10 @@ class ScriptedMockLLMClient(LLMClient):
             # 줄을 가리키는 거짓 문장이 나간다.
             if has_residual_lines:
                 conclusion += " 아래 [잔차] 줄이 그 후보들이다."
+        elif finalize_status == "thin_sample":
+            conclusion = ("표본 미달 - 갈릴 가능성이 있는 후보는 있으나 타깃 표본 수가 "
+                          "판정 하한에 못 미쳐 원인으로 확정할 수 없다. 타깃 표본을 "
+                          "채워 재확인해야 한다.")
         elif finalize_status == "no_signal":
             # "설비/챔버/PPID 가 없다" 로 단정하지 않는다 - 전축 실행이 전제 조건이
             # 아니게 되면서 부분 커버리지로 끝나는 분석이 정상이 됐다. 무엇을 봤고
@@ -512,6 +522,9 @@ class OpenAILLMClient(LLMClient):
             "판정이 weak_signal 인데 제출된 가설이 특정 후보를 원인으로 지목하고 "
             "있어도 그 문장을 그대로 옮기지 마라 - 게이트는 그 후보를 원인으로 "
             "확정하지 않았다. "
+            "판정이 thin_sample 이면 '표본 미달'로 서술하라 - 분리 점수는 충분하지만 "
+            "타깃 표본 수가 판정 하한에 못 미친 후보가 있다는 뜻이다. 후보를 원인으로 "
+            "확정하지 말고 타깃 표본을 채워 재확인하라는 후속 조치를 적어라. "
             "판정이 no_signal 이면 '신호 없음'으로 서술하라 - 원인 없음이 아니라 "
             "대조한 축에서는 보이지 않는다는 뜻이며 lot 밖 대조군이 필요하다는 "
             "후속 조치를 명시하고, 확정 결론을 쓰지 마라. "
@@ -547,7 +560,8 @@ class OpenAILLMClient(LLMClient):
             "지목을 반려하지 않을 뿐 그 후보를 원인으로 확정하지 않았다. "
             "판정이 inconclusive 에도 잔차가 실릴 수 있다 - 확정 근거가 아니라는 "
             "뜻이지 근거가 한 줄도 없다는 뜻이 아니니, passes 가 false 인 항목은 "
-            "근거로 세지 말고 '아직 갈리지 않은 후보' 로 적어라. "
+            "근거로 세지 말고 '아직 갈리지 않은 후보' 로 적어라. 단 thin_sample 이 "
+            "true 인 항목은 그 일반 표현 대신 '표본이 부족한 후보' 로 적어라. "
             "판정이 llm_call_failed 면 '분석 미수행 - LLM 분석 호출 실패'로 서술하라 - "
             "분석 루프가 아예 안 돌았으니 확정 결론을 쓰지 말고 재실행을 권하라. "
             "판정이 no_anomaly 면 '이상 없음'으로 서술하라. "
@@ -598,9 +612,10 @@ class OpenAILLMClient(LLMClient):
                      f"kind 가 sensor 인 항목은 2단 센서 근거다 - 2x2 도 순열 p 도 없고 "
                      f"효과크기와 두 분포뿐이며 다중비교 보정을 하지 않은 후보다. "
                      f"'왜' 를 채우는 근거로 인용하되 확정 결론의 주어로 쓰지 마라. "
-                     f"passes 가 false 인 항목은 판별선을 넘지 못한 잔차다(reject_reason 이 "
-                     f"왜 약한지를 말한다) - 근거로 세지 말고 '아직 갈리지 않은 후보' 로 "
-                     f"적어라): "
+                     f"passes 가 false 인 항목은 근거가 아니다. thin_sample 이 true 면 "
+                     f"표본 수가 부족한 후보이고, 그 밖에는 판별선을 넘지 못한 잔차다"
+                     f"(reject_reason 이 미통과 이유를 말한다) - 둘을 구분해 서술하고 "
+                     f"근거로 세지 마라): "
                      f"{json.dumps(claims, ensure_ascii=False)}")
         resp = self.llm.invoke([SystemMessage(content=sys), HumanMessage(content=user)])
         return resp.content.strip()

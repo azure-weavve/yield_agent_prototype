@@ -7,7 +7,7 @@ import sys
 from langchain_core.messages import AIMessage, ToolMessage
 
 import ya_config
-from graph import nodes
+from graph import evidence, nodes
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -403,8 +403,13 @@ def test_analyze_prompt_tells_the_llm_the_two_outcomes_of_naming_a_weak_candidat
     기존 가드(`test_analyze_prompt_tells_the_llm_to_step_back_on_weak_candidates`)는
     같은 불릿의 다른 곳에 있는 "판별선을 넘지 못한 후보만"·"잔차" 만 보므로, 이
     불릿을 통째로 예전 문구(하한이 `not claim_id` 이던 시절의 것)로 되돌려도 안
-    잡힌다. 지금 계약은 두 상태를 가른다: 잔차가 있으면(최신 도구 결과에 실재하는
-    이름을 지목한 한) 지목해도 받아 주고, 잔차마저 없으면 반려된다.
+    잡힌다. 지금 계약은 **세 상태**를 가른다: 잔차가 있으면(최신 도구 결과에 실재하는
+    이름을 지목한 한) 지목해도 받아 주고, **잔차가 없어도 표본 미달 후보가 있으면
+    `(2c)` 가 같은 하한으로 받아 주며**, 둘 다 없을 때 비로소 반려된다.
+
+    ⚠️ **꼬리 절의 항 수를 세라.** `(2c)` 가 생기기 전의 단언은 "잔차마저 없는
+    상태에서 지목하면 반려되고" 였는데, 그 문장은 표본 미달 후보가 있는 상태에서
+    **게이트와 반대**를 말한다 - 프롬프트가 아니라 이 단언이 옛 계약을 붙잡고 있었다.
 
     한정절은 **출처**를 말한다 - "지어내지 않았는가" 다. 하한(`_honest_pick`)이
     `bundle.claims` **와** `bundle.dropped_claims` 를 둘 다 보므로, 대체(superseded)된
@@ -414,7 +419,7 @@ def test_analyze_prompt_tells_the_llm_the_two_outcomes_of_naming_a_weak_candidat
     """
     prompt = nodes.ANALYZE_SYSTEM_PROMPT
     assert "네가 도구 결과에서 실제로 받은 이름을 지목한 한" in prompt, prompt
-    assert "잔차마저 없는 상태에서 지목하면 반려되고" in prompt, prompt
+    assert "잔차도 표본 미달 후보도 없는 상태에서 지목하면 반려되고" in prompt, prompt
 
 
 def test_gate_declares_no_signal_without_running_every_axis():
@@ -3662,7 +3667,7 @@ def test_weak_signal_verdict_does_not_claim_residuals_the_cap_dropped(monkeypatc
     assert "잔차 1건" not in verdict, verdict
     # 부정 단언만으로는 문장을 통째로 지워도 초록이다 - 0건 문구가 실제로
     # 나가는 것을 잠근다.
-    assert ("아랫선을 넘은 잔차가 있었으나 통과 근거가 상한을 채워 리포트에는 "
+    assert ("아랫선을 넘은 잔차가 있었으나 표시 상한에 밀려 리포트에는 "
             "실리지 않는다") in verdict, verdict
     report = nodes.report_node({
         "target_wafers": ["W1"], "target_source": "manual", "target_group": ["W1"],
@@ -3697,7 +3702,7 @@ def test_a_passing_sensor_does_not_close_the_weak_signal_door_at_the_limit(monke
     assert "무시" in verdict, verdict                 # 버린 지목 사실은 남는다
     # 부정 단언만으로는 문장을 통째로 지워도 초록이다 - 0건 문구가 실제로
     # 나가는 것을 잠근다.
-    assert ("아랫선을 넘은 잔차가 있었으나 통과 근거가 상한을 채워 리포트에는 "
+    assert ("아랫선을 넘은 잔차가 있었으나 표시 상한에 밀려 리포트에는 "
             "실리지 않는다") in verdict, verdict
     report = nodes.report_node({
         "target_wafers": ["W1"], "target_source": "manual", "target_group": ["W1"],
@@ -3835,6 +3840,139 @@ def test_a_thin_but_fully_separated_candidate_does_not_open_no_separation():
         loop=2, update=update, findings=ALL_THIN)
     assert update.get("finalize_status") != "no_separation", verdict
     assert "갈리는 항목 없음" not in verdict, verdict
+
+
+def test_thin_sample_verdict_for_empty_and_named_submissions():
+    """T1/T2: 얇은 표본은 빈손과 실제 후보 지목 모두 (2c)로 끝난다."""
+    claim_id = "eqp_ch_commonality:chamber:CC002000:ETCH9_B"
+    for submitted in ("", claim_id):
+        update = {}
+        verdict = nodes._finalize_gate(
+            {"claim_id": submitted, "hypothesis": "h", "confidence": 0.9},
+            loop=2, update=update, findings=[ALL_THIN[0], PPID_SILENT])
+        assert update["finalize_status"] == "thin_sample", verdict
+        assert any(c.get("thin_sample") for c in update["final_claims"])
+        assert "타깃 표본을 채워 재확인" in verdict
+        if submitted:
+            assert submitted in verdict
+
+
+def test_thin_sample_hallucination_rejects_before_limit_and_recovers_at_limit():
+    """T3: 환각은 여유가 있으면 반려하고 한계에서는 버린 뒤 상태로 판정한다."""
+    args = {"claim_id": "invented", "hypothesis": "h", "confidence": 0.9}
+    early = {}
+    verdict = nodes._finalize_gate(args, loop=2, update=early, findings=[ALL_THIN[0]])
+    assert "finalize_status" not in early
+    assert "도구 결과에 없다" in verdict
+    late = {}
+    verdict = nodes._finalize_gate(
+        args, loop=ya_config.MAX_LOOPS, update=late, findings=[ALL_THIN[0]])
+    assert late["finalize_status"] == "thin_sample"
+    assert "무시하고 증거 상태로 판정" in verdict
+
+
+def test_weak_signal_precedes_thin_sample_and_carries_both():
+    """T4: 잔차와 표본 미달이 함께 있으면 (2a)가 이기되 둘 다 리포트로 간다."""
+    update = {}
+    verdict = nodes._finalize_gate(
+        {"claim_id": "", "hypothesis": "h", "confidence": 0.3}, loop=2,
+        update=update, findings=[EQP_CH_BELOW_LINE, ALL_THIN[1]])
+    assert update["finalize_status"] == "weak_signal", verdict
+    assert sum(not c.get("passes", True) and not c.get("thin_sample")
+               for c in update["final_claims"]) == 1
+    assert sum(bool(c.get("thin_sample")) for c in update["final_claims"]) == 1
+    assert "잔차 1건" in verdict
+    assert "표본 미달 후보 1건" in verdict
+
+
+def test_mixed_weak_and_thin_cap_reports_what_is_actually_shown(monkeypatch):
+    """R1/R2: 두 종류의 표시 건수와 0건 사유는 절단 뒤 목록을 따라야 한다."""
+    monkeypatch.setattr(ya_config, "REPORT_MAX_EVIDENCE", 1)
+    update = {}
+    verdict = nodes._finalize_gate(
+        {"claim_id": "", "hypothesis": "h", "confidence": 0.3}, loop=2,
+        update=update, findings=[EQP_CH_BELOW_LINE, ALL_THIN[1]])
+    assert update["finalize_status"] == "weak_signal"
+    assert len(update["final_claims"]) == 1
+    assert update["final_claims"][0]["thin_sample"] is True
+    assert "잔차가 있었으나 표시 상한에 밀려" in verdict
+    assert "통과 근거가 상한을 채워" not in verdict
+    assert "표본 미달 후보 1건" in verdict
+
+    with_sensor = {}
+    verdict = nodes._finalize_gate(
+        {"claim_id": "", "hypothesis": "h", "confidence": 0.3}, loop=2,
+        update=with_sensor, findings=[EQP_CH_BELOW_LINE, ALL_THIN[1], SENSOR_FINDING])
+    assert with_sensor["final_claims"][0]["kind"] == "sensor"
+    assert "잔차가 있었으나 표시 상한에 밀려" in verdict
+    assert "표본 미달 후보가 있었으나 표시 상한에 밀려" in verdict
+
+
+def test_mixed_verdict_pick_notes_use_the_picked_claims_actual_failure():
+    """R3: 판정 이름이 아니라 지목 후보 자체의 미통과 조건을 설명한다."""
+    thin_id = "ppid_commonality:ppid:CC002000:P1"
+    weak_update = {}
+    weak_verdict = nodes._finalize_gate(
+        {"claim_id": thin_id, "hypothesis": "h", "confidence": 0.3}, loop=2,
+        update=weak_update, findings=[EQP_CH_BELOW_LINE, ALL_THIN[1]])
+    assert weak_update["finalize_status"] == "weak_signal"
+    assert f"네가 지목한 {thin_id} 는 타깃 표본 1건이 판정 하한(2)에 못 미쳐" in weak_verdict
+    assert "판별선을 넘지 못해 원인으로" not in weak_verdict
+
+    low_id = "ppid_commonality:ppid:CC002000:P1"
+    thin_update = {}
+    thin_verdict = nodes._finalize_gate(
+        {"claim_id": low_id, "hypothesis": "h", "confidence": 0.3}, loop=2,
+        update=thin_update, findings=[ALL_THIN[0], ALL_WEAK[1]])
+    assert thin_update["finalize_status"] == "thin_sample"
+    assert (f"네가 지목한 {low_id} 는 판별선을 넘지 못해(미통과 사유: "
+            "분리 점수 0.1 < 0.5)") in thin_verdict
+    assert f"네가 지목한 {low_id} 는 타깃 표본" not in thin_verdict
+
+
+def test_thin_sample_verdict_reports_actual_target_count():
+    """R4: 최고 점수 후보의 실제 target_pass와 판정 하한을 함께 보인다."""
+    update = {}
+    verdict = nodes._finalize_gate(
+        {"claim_id": "", "hypothesis": "h", "confidence": 0.3}, loop=2,
+        update=update, findings=[ALL_THIN[0]])
+    assert update["finalize_status"] == "thin_sample"
+    assert "최고 분리 점수는 1.00 이지만 타깃 표본 1건이 판정 하한(2)에 못 미친다" in verdict
+
+
+def test_thin_sample_does_not_override_a_passing_candidate():
+    """T6: 다른 축에 통과 후보가 있으면 (2c)는 열리지 않는다."""
+    passing = {}
+    nodes._finalize_gate(
+        {"claim_id": "", "hypothesis": "h", "confidence": 0.3}, loop=2,
+        update=passing, findings=[EVIDENCE_FINDING_NEW, ALL_THIN[1]])
+    assert passing.get("finalize_status") != "thin_sample"
+
+
+def test_thin_sample_report_label_drop_reason_and_step_back(monkeypatch):
+    """T7/T8/T9: 구조 플래그가 표시·지목 폐기·반려 안내까지 이어진다."""
+    update = {}
+    claim_id = "eqp_ch_commonality:chamber:CC002000:ETCH9_B"
+    nodes._finalize_gate(
+        {"claim_id": "", "hypothesis": "h", "confidence": 0.3}, loop=2,
+        update=update, findings=[ALL_THIN[0]])
+    monkeypatch.setattr(nodes, "_llm_lazy", lambda: __import__("llm.client", fromlist=["MockLLMClient"]).MockLLMClient())
+    report = nodes.report_node({
+        "target_wafers": ["W1"], "target_source": "manual", "target_group": ["W1"],
+        "status_summary": "s", "findings": [ALL_THIN[0]], "final_hypothesis": "h",
+        "final_confidence": 0.3, "finalize_status": "thin_sample",
+        "final_claims": update["final_claims"],
+    })["report"]
+    assert "[표본 미달 1]" in report
+    assert "(미통과:" in report
+    assert "[잔차" not in report
+    assert "판별선 미달:" not in report
+
+    bundle = evidence.build_bundle([ALL_THIN[0]])
+    claim = bundle.claims[claim_id]
+    assert "표본 수가 판정 하한에 못 미쳐" in nodes._drop_reason(bundle, claim_id, claim)
+    action = nodes._no_candidate_action(bundle, nodes._coverage(bundle))
+    assert "claim_id 를 비우고 finalize" in action
 
 
 def test_a_superseded_claim_id_opens_no_separation():

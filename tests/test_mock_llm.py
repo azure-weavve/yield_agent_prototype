@@ -951,16 +951,17 @@ def test_operational_client_tells_the_report_what_a_residual_claim_is():
     # claims JSON 에 "passes": false 가 이미 있으므로 문자열 'passes' 만 세면 공허하다 -
     # **지시 문장**을 찾는다.
     assert "판별선을 넘지 못한 잔차다" in client.llm.seen
-    assert "아직 갈리지 않은 후보" in client.llm.seen
+    assert "thin_sample 이 true 면 표본 수가 부족한 후보" in client.llm.seen
     # **어느 항목인가를 정하는 머리 절부터 가운데 지시 동사를 지나 꼬리까지
     # 문장 전체를 잠근다.** 머리 절과 꼬리 조각만 단언하면 가운데 지시 동사
     # ("근거로 세지 말고" -> "근거로 세고")를 뒤집는 훼손이 통과한다 - sys
     # 프롬프트 쪽 동형 문구는 이미 잠겨 있었는데(Task 6 리뷰 I-B) user 프롬프트
     # 쪽은 안 잠겨 있었다(최종 리뷰 Minor 13 정정 - Task 7 훼손 실험 표의 #1 은
     # `_evidence_groups` 훼손이다. 가운데 동사 미잠금을 실측한 것은 Task 7 리뷰).
-    assert ("passes 가 false 인 항목은 판별선을 넘지 못한 잔차다(reject_reason 이 "
-            "왜 약한지를 말한다) - 근거로 세지 말고 '아직 갈리지 않은 후보' 로 "
-            "적어라)") in client.llm.seen
+    assert ("passes 가 false 인 항목은 근거가 아니다. thin_sample 이 true 면 "
+            "표본 수가 부족한 후보이고, 그 밖에는 판별선을 넘지 못한 잔차다"
+            "(reject_reason 이 미통과 이유를 말한다) - 둘을 구분해 서술하고 "
+            "근거로 세지 마라)") in client.llm.seen
 
 
 def test_analyze_prompt_tells_the_llm_to_step_back_on_weak_candidates():
@@ -1192,3 +1193,72 @@ def test_analyze_prompt_knows_the_full_axis_case_is_received_not_rejected():
     assert ("등록 축을 도구 실패 없이 다 돌렸고 가설 도구 후보가 났는데 그 "
             "분리 점수가 전부 아랫선에도 못 미치면 게이트가 '갈리는 항목 없음' "
             "으로 받으니 그때는 빈손으로 물러서라") in nodes.ANALYZE_SYSTEM_PROMPT
+
+
+def test_analyze_prompt_knows_a_thin_sample_pick_is_received_not_rejected():
+    """R5: `(2c)` 가 생긴 뒤로 "잔차마저 없으면 반려" 는 **게이트와 반대 계약**이다.
+
+    잔차가 없어도 표본 미달 후보가 있고 그 이름을 정직하게 지목하면 `(2c)` 가
+    **루프 한계 전에** 받는다(`tests/test_graph_nodes.py` 의 T2). 프롬프트가 그것을
+    반려라고 가르치면 LLM 은 물러설 수 있는 자리에서 축을 더 부르며 예산을 태운다.
+
+    단언이 **옛 절의 부재까지** 보는 이유: 새 문장을 덧붙이고 옛 문장을 안 지우면
+    프롬프트가 자기모순인 채로 초록이 된다. 그리고 반려 조건은 **연언으로** 잠근다 -
+    한쪽(잔차)만 적으면 이 저장소가 세 라운드 연속 겪은 "넓혀 적어 반대 방향으로
+    거짓" 이 그대로 재발한다.
+    """
+    from graph import nodes
+    assert "잔차마저 없는 상태에서 지목하면" not in nodes.ANALYZE_SYSTEM_PROMPT
+    # 머리 절(어떤 후보인가)부터 꼬리(조치)까지 한 문장으로 본다 - 꼬리만 잠그면
+    # 주어를 뒤집는 훼손이 통과한다(이 저장소가 세 번 실측한 자리다).
+    assert ("잔차가 없어도 타깃 표본이 판정 하한에 못 미쳐 미통과된 후보가 있으면 "
+            "역시 실제로 받은 이름을 지목한 한 게이트가 '표본 미달' 로 받아 상한이 "
+            "남는 한 그 후보를 근거로 싣고 타깃 표본을 채워 재확인하라고 답한다"
+            ) in nodes.ANALYZE_SYSTEM_PROMPT
+    assert ("잔차도 표본 미달 후보도 없는 상태에서 지목하면 반려되고"
+            ) in nodes.ANALYZE_SYSTEM_PROMPT
+
+
+def test_report_contract_docstring_splits_thin_sample_from_residual():
+    """R5: 추상 계약(`LLMClient.generate_report`)이 `passes: false` 를 전부 잔차로
+    부르면, 그 계약을 읽고 구현하는 쪽은 표본 미달 후보를 잔차로 서술하게 된다.
+
+    운영 프롬프트(`OpenAILLMClient`)는 이미 구조 플래그로 가르는데 **계약 문서만
+    옛 분류에 남아 있으면** 둘이 어긋난다. 여기서 잠그는 것은 문장이 아니라
+    "종류를 가르는 것은 `thin_sample` 플래그다" 라는 판별 규칙이다.
+    """
+    from llm.client import LLMClient
+    # 줄바꿈 위치는 계약이 아니다 - 공백을 접어 문장으로 본다.
+    doc = " ".join((LLMClient.generate_report.__doc__ or "").split())
+    assert "weak_signal·thin_sample·inconclusive" in doc
+    assert "두 종류이고 구조 플래그 `thin_sample` 이 가른다" in doc
+    assert "`reject_reason` 문장을 파싱해 종류를 추측하지 마라" in doc
+
+
+def test_mock_report_and_operational_prompt_explain_thin_sample():
+    """T7/M15: 결론과 운영 규칙 모두 표본 미달의 의미와 조치를 고정한다."""
+    mock = ScriptedMockLLMClient()
+    report = mock.generate_report(
+        target_wafers=["W1"], target_source="manual", target_group=["W1"],
+        status_summary="s", findings=[], hypothesis="h", confidence=0.3,
+        finalize_status="thin_sample", claims=[])
+    assert "표본 미달" in report
+    assert "타깃 표본을 채워 재확인" in report
+
+    client = _openai_client()
+    client.generate_report(
+        target_wafers=["W1"], target_source="manual", target_group=["W1"],
+        status_summary="s", findings=[], hypothesis="h", confidence=0.3,
+        finalize_status="thin_sample", claims=[])
+    assert "판정이 thin_sample 이면 '표본 미달'로 서술하라" in client.llm.seen_sys
+    assert "thin_sample 이 true 인 항목" in client.llm.seen_sys
+
+
+def test_mock_does_not_call_a_thin_sample_line_a_residual():
+    """R2: 표본 미달만 실린 weak_signal 결론에 없는 [잔차] 줄을 가리키지 않는다."""
+    report = ScriptedMockLLMClient().generate_report(
+        target_wafers=["W1"], target_source="manual", target_group=["W1"],
+        status_summary="s", findings=[], hypothesis="h", confidence=0.3,
+        finalize_status="weak_signal",
+        claims=[{"claim_id": "thin", "passes": False, "thin_sample": True}])
+    assert "아래 [잔차] 줄" not in report

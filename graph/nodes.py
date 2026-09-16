@@ -45,7 +45,7 @@ ANALYZE_SYSTEM_PROMPT = """너는 반도체 수율 분석 전문가다. 불량 �
 - 원인을 좁혔고 근거가 충분하면 finalize(claim_id, hypothesis, confidence) 로 종료를 제안하라. claim_id 는 가설 도구 결과의 후보에 실려 온 값을 **그대로** 옮겨야 한다 - 지어내거나 문장으로 대신하면 반려된다. 지목할 근거가 없어 물러설 때는 claim_id 를 비우고 낮은 확신도로 제출하라.
 - **claim_id 는 결론 하나를 고르는 것이 아니라 서술의 축을 정하는 것이다.** 판별선을 넘은 후보는 게이트가 상한 안에서는 전부 접어서 줄 세워 리포트에 싣고, 상한을 넘는 것은 건수만 알린다 - 다른 축의 근거를 버릴까 걱정해 지목을 미루지 마라. 다만 순위 1등이 아닌 것을 지목하면 반려된다.
 - **2단 센서(compare_sensor_distribution) 후보의 claim_id 는 근거 인용용이다.** finalize 로 지목할 수 있는 것은 가설 도구(hyp_*)가 발급한 claim_id 뿐이다 - 센서는 스텝당 수백 개라 다중비교 보정 없이 효과크기 순위만으로는 우연한 분리를 가릴 수 없어, 지목해도 원인으로 확정되지 않는다. 통과한 가설 도구(hyp_*) 후보가 있는데도 센서를 지목하면 그 이유로 반려된다 - 그럴 때는 통과한 hyp_* 후보를 대신 지목하라. 그렇다고 안 돌려도 된다는 뜻은 아니다: '왜' 를 채우는 근거이고, 그중 효과크기가 판별선을 넘은(passes=true) 후보만 게이트가 리포트에 함께 싣는다.
-- **판별선을 넘지 못한 후보만 있으면 지목하지 마라.** 판단상 더 볼 축이 남아 있다면 그것부터 돌려보고, 그러고도 판별선을 넘는 후보가 없을 때 물러서라. 억지로 지목해도 게이트는 그 후보를 원인으로 확정하지 않는다. 아랫선을 넘은 잔차가 있으면 네가 도구 결과에서 실제로 받은 이름을 지목한 한 상한이 남는 한 그것을 근거로 싣지만, 잔차마저 없는 상태에서 지목하면 반려되고 같은 반려를 되풀이하면 루프 예산만 태운다 - 다만 등록 축을 도구 실패 없이 다 돌렸고 가설 도구 후보가 났는데 그 분리 점수가 전부 아랫선에도 못 미치면 게이트가 '갈리는 항목 없음' 으로 받으니 그때는 빈손으로 물러서라. 어느 쪽이든 물러서는 쪽이 낫다 - 빈손으로 내면 약한 후보를 원인으로 단언하는 문장을 애초에 쓰지 않게 된다.
+- **판별선을 넘지 못한 후보만 있으면 지목하지 마라.** 판단상 더 볼 축이 남아 있다면 그것부터 돌려보고, 그러고도 판별선을 넘는 후보가 없을 때 물러서라. 억지로 지목해도 게이트는 그 후보를 원인으로 확정하지 않는다. 아랫선을 넘은 잔차가 있으면 네가 도구 결과에서 실제로 받은 이름을 지목한 한 상한이 남는 한 그것을 근거로 싣지만, 잔차가 없어도 타깃 표본이 판정 하한에 못 미쳐 미통과된 후보가 있으면 역시 실제로 받은 이름을 지목한 한 게이트가 '표본 미달' 로 받아 상한이 남는 한 그 후보를 근거로 싣고 타깃 표본을 채워 재확인하라고 답한다. 잔차도 표본 미달 후보도 없는 상태에서 지목하면 반려되고 같은 반려를 되풀이하면 루프 예산만 태운다 - 다만 등록 축을 도구 실패 없이 다 돌렸고 가설 도구 후보가 났는데 그 분리 점수가 전부 아랫선에도 못 미치면 게이트가 '갈리는 항목 없음' 으로 받으니 그때는 빈손으로 물러서라. 어느 쪽이든 물러서는 쪽이 낫다 - 빈손으로 내면 약한 후보를 원인으로 단언하는 문장을 애초에 쓰지 않게 된다.
 - **등록된 가설 도구를 전부 돌릴 의무는 없다.** 한 축을 더 깊이 파는 것과 다음 축으로 넘어가는 것 중 무엇이 원인에 가까운지 매 단계 네가 고른다. 어디까지 봤는지는 코드가 세어 리포트에 함께 싣는다.
 - 수치는 tool 결과를 그대로 인용하고 절대 임의로 만들지 마라."""
 
@@ -353,10 +353,10 @@ def _evidence_groups(bundle, passing_groups: list) -> list:
     네 자리((2a)·(2b)·(4)·백스톱)가 같은 규칙을 쓴다. 규칙을 네 번 적으면 한 자리를
     빠뜨리는 것이 이 저장소의 반복 결함이다.
     """
-    residuals = bundle.residuals()
-    if bundle.statistical_passing() or not residuals:
+    weak = bundle.residuals() + bundle.thin_sample()
+    if bundle.statistical_passing() or not weak:
         return passing_groups
-    return bundle.ranked_groups(bundle.passing() + residuals)
+    return bundle.ranked_groups(bundle.passing() + weak)
 
 
 def _honest_pick(bundle, claim_id: str) -> bool:
@@ -419,6 +419,8 @@ def _drop_reason(bundle, claim_id: str, claim) -> str:
     # 챔버 후보를 "2단 센서" 라고 부르게 된다(재리뷰 I-1 이 실제로 잡은 자리다).
     if claim is not None and claim.kind == "sensor":
         return "2단 센서 근거라 지목 대상이 아니어서"
+    if claim is not None and claim in bundle.thin_sample():
+        return "타깃 표본 수가 판정 하한에 못 미쳐 원인으로 확정할 수 없어서"
     if claim is not None:
         return "판별선을 넘지 못해 승인 대상이 아니어서"
     if claim_id in bundle.dropped_claims:
@@ -471,6 +473,23 @@ def _superseded_note(bundle, claim_id: str) -> str:
     """
     return (f"네가 지목한 {claim_id} 는 {bundle.dropped_claims[claim_id]} 를 다시 "
             f"돌려 대체된 앞 실행의 후보라 원인으로 확정하지 않았다. ")
+
+
+def _unconfirmed_pick_note(bundle, claim_id: str, claim) -> str:
+    """물러섬 판정에서 정직한 지목을 확정하지 않은 실제 이유."""
+    if not claim_id:
+        return ""
+    if claim is None:
+        return _superseded_note(bundle, claim_id)
+    if claim.kind == "sensor":
+        return f"네가 지목한 {claim_id} 는 2단 센서라 원인으로 확정하지 않았다. "
+    if claim in bundle.thin_sample():
+        return (f"네가 지목한 {claim_id} 는 타깃 표본 {claim.target_pass}건이 판정 "
+                f"하한({ya_config.COMMONALITY_PASS_MIN_TARGET})에 못 미쳐 원인으로 "
+                f"확정하지 않았다. ")
+    return (f"네가 지목한 {claim_id} 는 판별선을 넘지 못해(미통과 사유: "
+            f"{claim.reject_reason}) "
+            f"원인으로 확정하지 않았다. ")
 
 
 def _no_separation_state(bundle, coverage: dict) -> bool:
@@ -672,25 +691,16 @@ def _gate_verdict(args: dict, loop: int, update: dict,
         # 않기로** 했기 때문이다. picked_by_llm 을 붙이면 리포트가 그 후보를
         # 서술의 축으로 삼아 단정하게 된다.
         _record_evidence(update, _evidence_groups(bundle, groups), None)
-        if not claim_id:
-            picked_note = ""
-        elif claim is None:
-            # 하한을 통과했는데 번들에 없다면 **대체된 이름뿐**이다 - 환각은
-            # `_honest_pick` 이 이미 걸렀다.
-            picked_note = _superseded_note(bundle, claim_id)
-        elif claim.kind == "sensor":
-            picked_note = f"네가 지목한 {claim_id} 는 2단 센서라 원인으로 확정하지 않았다. "
-        else:
-            picked_note = (f"네가 지목한 {claim_id} 는 판별선을 넘지 못해 "
-                           f"원인으로 확정하지 않았다. ")
+        picked_note = _unconfirmed_pick_note(bundle, claim_id, claim)
         # **절단 전 `len(residuals)` 가 아니라 실제로 실린 수를 말한다.**
         # `_record_evidence` 의 상한은 통과 근거(여기서는 통과한 2단 센서)를 먼저
         # 예약하고 남는 자리만 잔차로 채우므로, 통과 근거가 상한을 채우면 잔차는
         # 한 건도 안 실릴 수 있다 - 그런데도 절단 전 수를 찍으면 리포트에 없는
         # [잔차] 줄을 가리키는 판정문이 나간다(Task 6 리뷰 I-2).
         residual_note = _residual_evidence_note(update)
+        thin_note = _thin_sample_evidence_note(update, bool(bundle.thin_sample()))
         return (f"약한 신호 ({_coverage_phrase(coverage)}): {picked_note}"
-                f"판별선을 넘은 원인 후보는 없고, {residual_note}"
+                f"판별선을 넘은 원인 후보는 없고, {residual_note}{thin_note}"
                 f"확정이 아니라 '이 표본으로는 갈리지 않았다' 는 뜻이다. "
                 f"리포팅으로 진행한다."), drop
 
@@ -771,6 +781,26 @@ def _gate_verdict(args: dict, loop: int, update: dict,
                 f"아랫선({ya_config.RESIDUAL_MIN_SCORE})에도 미달한다. {reason} "
                 f"lot 내부 대조로는 갈리지 않는다는 뜻이다.{scope_note} lot 밖 "
                 f"대조군 또는 다른 관측축이 필요하다. 리포팅으로 진행한다."), drop
+
+    # (2c) 표본 미달 - 점수는 충분하지만 타깃 표본 수가 판정 하한보다 작다.
+    thin = bundle.thin_sample()
+    if (not bundle.statistical_passing() and thin
+            and _honest_pick(bundle, claim_id)):
+        update["finalize_accepted"] = True
+        update["finalize_status"] = "thin_sample"
+        update["final_hypothesis"] = hypothesis
+        update["final_confidence"] = conf
+        update["coverage"] = coverage
+        _record_evidence(update, _evidence_groups(bundle, groups), None)
+        picked_note = _unconfirmed_pick_note(bundle, claim_id, claim)
+        evidence_note = _thin_sample_evidence_note(update, True)
+        top = max(thin, key=lambda c: c.score)
+        return (f"표본 미달 ({_coverage_phrase(coverage)}): {picked_note}"
+                f"판별선을 넘은 원인 후보는 없고, {evidence_note}"
+                f"최고 분리 점수는 {top.score:.2f} 이지만 타깃 표본 "
+                f"{top.target_pass}건이 판정 하한({ya_config.COMMONALITY_PASS_MIN_TARGET})에 "
+                f"못 미친다. 타깃 표본을 "
+                f"채워 재확인해야 한다. 리포팅으로 진행한다."), drop
 
     # (2) 신호 없음 - 돌린 축에서 통과 후보가 하나도 없다.
     #     확신도를 보지 않는다: 물러섬 선언에 높은 확신도를 요구하면 모순이다.
@@ -980,10 +1010,21 @@ def _residual_evidence_note(update: dict) -> str:
     되면 통과 근거가 하나도 없어도 이 갈래에 들어와 "상한을 채워" 가 거짓이
     되지만, 그런 설정 오용에 대한 방어는 넣지 않는다.
     """
-    n = sum(1 for c in update["final_claims"] if not c.get("passes", True))
+    n = sum(1 for c in update["final_claims"]
+            if not c.get("passes", True) and not c.get("thin_sample"))
     if n:
         return f"아랫선을 넘은 잔차 {n}건을 근거로 싣는다. "
-    return "아랫선을 넘은 잔차가 있었으나 통과 근거가 상한을 채워 리포트에는 실리지 않는다. "
+    return "아랫선을 넘은 잔차가 있었으나 표시 상한에 밀려 리포트에는 실리지 않는다. "
+
+
+def _thin_sample_evidence_note(update: dict, existed: bool) -> str:
+    """실제로 표시된 표본 미달 수와 상한에 밀린 사실을 따로 말한다."""
+    if not existed:
+        return ""
+    n = sum(1 for c in update["final_claims"] if c.get("thin_sample"))
+    if n:
+        return f"표본 미달 후보 {n}건을 리포트에 싣는다. "
+    return "표본 미달 후보가 있었으나 표시 상한에 밀려 리포트에는 실리지 않는다. "
 
 
 def _coverage(bundle) -> dict:
@@ -1172,12 +1213,13 @@ def _no_candidate_action(bundle, coverage) -> str:
     uncomputable = ran_statuses <= cm.NO_DATA_STATUSES
     opens_no_signal = "no_signal" in ran_statuses                       # (2)
     opens_weak = bool(bundle.residuals())                                # (2a)
+    opens_thin = bool(bundle.thin_sample())                              # (2c)
     opens_no_data = (bool(ran_statuses) and not unrun                    # (3)
                      and not failed and uncomputable)
     opens_tool_failure = bool(failed) and not unrun and uncomputable     # (3b)
     opens_no_separation = _no_separation_state(bundle, coverage)         # (2b)
     step_back = (" 지목할 것이 없어 물러설 때는 claim_id 를 비우고 finalize 하라."
-                 if opens_no_signal or opens_weak or opens_no_data
+                 if opens_no_signal or opens_weak or opens_thin or opens_no_data
                  or opens_tool_failure or opens_no_separation
                  else "")
     # 축이 0개 돌아간 상태를 **먼저** 가른다. 아래 "하나를 더 보거나" 는 사실과 안 맞고,
@@ -1368,7 +1410,8 @@ def report_node(state: dict) -> dict:
         # 통과한 것과 글자 하나 다르지 않아, 엔지니어가 그 줄을 보고 설비를 세운다.
         # 기본값이 True 인 이유: 이 자리를 지나는 dict 는 전부 게이트가 만든 것이라
         # `passes` 가 늘 있지만, 없으면 '근거' 로 읽는 쪽이 옛 동작과 같다.
-        label = "근거" if group.get("passes", True) else "잔차"
+        label = ("근거" if group.get("passes", True) else
+                 "표본 미달" if group.get("thin_sample") else "잔차")
         # 번호는 위치가 아니라 **등수**다. 동점이 1·2 로 찍히면 앞선 것이 더 강해
         # 보이는데, 그 오독을 막으려고 등수를 따로 계산해 둔 것이다.
         report += (f"\n[{label} {group.get('rank', '?')}]{mark} "
@@ -1376,7 +1419,8 @@ def report_node(state: dict) -> dict:
         # 왜 약한지를 같은 줄에 남긴다 - 수치만 보면 0.4 가 강한지 약한지 못 읽는다.
         # 문구를 새로 짓지 않는다: `_passes` 가 만든 문장이 이미 정확하다.
         if not group.get("passes", True) and group.get("reject_reason"):
-            report += f" (판별선 미달: {group['reject_reason']})"
+            reason = "미통과" if group.get("thin_sample") else "판별선 미달"
+            report += f" ({reason}: {group['reject_reason']})"
         if group.get("more_below"):
             # 중립어를 쓴다 - `근거` 도 `잔차` 도 아니고, 마지막 표시 항목의
             # label 을 재사용하면 숨겨진 것들이 그것과 같은 종류라는 근거 없는
