@@ -152,6 +152,21 @@ def test_no_axis_blames_the_sample_size_for_a_big_floor():
         assert "표본이 작아 p" not in spec["description"], spec["id"]
 
 
+def test_step_passage_description_warns_the_zero_score_claim_is_conditional():
+    """tm7(2026-09-21 3차 리뷰) — step_passage_commonality 의 "전원 통과 스텝은
+    분리 점수 0" 문장은 root_lot(stratum)별 커버리지가 같을 때만 참이다(m4,
+    2026-09-17 리뷰). 그 조건과 예외(심슨의 역설)가 **LLM 이 읽는 문장 자체에**
+    있어야 잠긴다 - 이 저장소가 반복해서 겪은 함정("프롬프트만 고치고 단언을
+    안 넣으면 안 잠긴다")대로, 지금까지는 문면만 있고 이 사실을 지키는 테스트가
+    없어 조용히 삭제돼도 아무것도 안 걸렸다.
+    """
+    spec = {s["id"]: s for s in registry.load_hypotheses()}["step_passage_commonality"]
+    d = spec["description"]
+    assert "Mantel-Haenszel 가중도 0" in d
+    assert "root_lot(stratum)별로 커버리지가 같을 때만 참이다" in d
+    assert "심슨의 역설" in d
+
+
 def test_every_permutation_axis_qualifies_the_family_wise_comparison():
     """family-wise 쌍은 **코드가 아니라 이 문장으로만** 한계를 알린다.
 

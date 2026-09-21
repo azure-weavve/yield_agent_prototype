@@ -602,9 +602,41 @@ class OpenAILLMClient(LLMClient):
                      f"세면 안 된다. failed 는 도구가 터져 아예 못 돈 축이다 - "
                      f"'안 돌린 축' 이 아니라 '실패한 축' 으로 적어라.")
         if claims:
+            # **commonality(step_history) 항목에만 참인 문장이다.** claims 는
+            # commonality·metro·sensor 세 종류를 한 리스트로 받는데, metro 는
+            # 이번 변경 범위 밖이라 여전히 crude pooling(score 가 stratum 합산)
+            # 이고 sensor 의 score 자리에는 효과크기가 온다 - 조건 없이 적으면
+            # 셋 중 둘에 거짓말이 된다(2026-09-17 리뷰 R-M-c). `extra.score_pooled`
+            # **값이 null 이 아닌지**로 가른다 - `graph/evidence.py::_strata_suffix`
+            # 와 같은 판별자다. ⚠️ **키 유무가 아니다**(RR-B1, 2026-09-20 재리뷰):
+            # `domain/engine.py::evaluate` 는 metro 후보에도 `score_pooled` 키를
+            # 무조건 달아 보낸다(값은 None) - `.get()` 이 기본값을 못 찾아 그대로
+            # 실리기 때문이다. 그래서 metro claim 도 `extra` 에 `score_pooled`
+            # **키는 있다**(값만 null). "필드가 있는 항목만" 이라고 적으면 metro
+            # 항목도 그 조건을 통과해 crude pooling 인 metro 에 "가중" 딱지가
+            # 붙는다 - 아래 문장은 **값**을 기준으로 적는다(metro 도 `n_strata`
+            # 는 실어 그것만으로는 못 가른다, m7). ⚠️ metro 를 MH 로 옮길 때
+            # `score_pooled` 부터 싣기 시작하면 그 순간 이 판별자도 거짓이
+            # 된다 - metro 값도 null 이 아니게 되어 이 조건으로는 못 가른다.
+            mh_weighted = any((c.get("extra") or {}).get("score_pooled") is not None
+                              for c in claims)
+            mh_note = (
+                "score_pooled 값이 null 이 아닌 항목만 score 가 stratum(root_lot)별 "
+                "Mantel-Haenszel 가중 평균이다 - 그 항목의 target_pass/target_total 로 "
+                "score 를 다시 계산하지 마라(stratum 이 여럿이면 그 값은 score 와 "
+                "다르다. score_pooled 자체는 단순 합산값이고 설명용일 뿐 score 를 "
+                "대신하지 않는다. strata_detail 의 stratum 이 2개 이상이고 그 "
+                "모양(타깃·대조군 표본 수)이 서로 다른 항목은 그 안의 stratum 별 "
+                "d 도 단순 평균하면 안 된다 - stratum 마다 가중치가 달라 가중치 "
+                "없는 평균은 score 와 다르다). score_pooled 값이 null 인 항목(metro "
+                "계측·kind가 sensor 인 항목 - **키는 있어도 값이 null 이면 여기 "
+                "속한다**)의 score/effect_size 는 이 규칙과 무관하다 - metro 는 "
+                "여전히 stratum 합산값이고 센서는 효과크기다. "
+            ) if mh_weighted else ""
             user += (f"\n게이트가 확인한 항목 {len(claims)}건 "
                      f"(순위는 코드가 매겼다. 수치를 그대로 인용하고, 하나만 고르지 말고 "
-                     f"전부 서술하라. rank 가 같은 항목은 우열을 가릴 수 없다는 뜻이고, "
+                     f"전부 서술하라. {mh_note}"
+                     f"rank 가 같은 항목은 우열을 가릴 수 없다는 뜻이고, "
                      f"confounded_with 가 있으면 같은 wafer 를 다른 이름으로도 설명할 수 "
                      f"있다는 뜻이니 둘 중 하나로 단정하지 마라. rolled_up_as 는 같은 "
                      f"설명을 굵은/세밀한 해상도로 부른 것뿐이니(방향은 resolution, 상대는 "

@@ -430,7 +430,15 @@ def group_to_dict(group: ClaimGroup, picked: bool = False) -> dict:
             return base
         return {**base, "p_permutation": c.p_permutation,
                 "target_pass": c.target_pass, "target_total": c.target_total,
-                "control_pass": c.control_pass, "control_total": c.control_total}
+                "control_pass": c.control_pass, "control_total": c.control_total,
+                # FR-5(2026-09-21 4차 리뷰) — 없으면 이 접힌 항목은
+                # `llm/client.py` 의 재계산 금지("score_pooled 값이 null 이 아닌
+                # 항목만")를 가르는 키 자체가 없는 모양이 되고, 그 모양이 "값이
+                # null" 과 같은 것으로 읽혀 metro/sensor 면제 갈래에 잘못 묶일 수
+                # 있다 - lead(대표) 쪽은 R-M-d/RR-B1 이 이미 고쳤는데 접힌 쪽은
+                # 그대로였다(N-1 자리).
+                "score_pooled": c.extra.get("score_pooled"),
+                "n_strata": c.extra.get("n_strata")}
 
     # **접힌 이유를 두 갈래로 나눈다.** 굵은 해상도로 부른 같은 설명(설비 ⊃ 챔버)과
     # 다른 두 설명(챔버 vs 레시피)은 엔지니어에게 완전히 다른 정보다 - 앞의 것은 조사할
@@ -567,12 +575,61 @@ _TIE_REASONS = {
 }
 
 
+def _score_diverges_from_pooled(score, score_pooled) -> bool:
+    """score(MH 가중)와 score_pooled(단순 합산)가 **갈리는가** (pooling-mh-score D4).
+
+    "갈린다" 의 정의는 임의 상수가 아니라 이미 계약에 있는 두 선이다:
+    ①둘이 판별선(`COMMONALITY_PASS_MIN_SCORE`)·잔차 아랫선(`RESIDUAL_MIN_SCORE`)이
+    나누는 세 구간을 서로 다르게 가로지르거나, ②부호가 다를 때. ①만 보면 놓치는
+    경우가 있다 - 심슨 픽스처의 pooled -0.357 과 MH +0.122 는 **둘 다** 잔차
+    아랫선(0.25) 밑이라 같은 구간이지만, 부호가 반대라 "갈린다" 가 맞다.
+
+    ⚠️ 여기 들어오는 `score` 는 후보에 실린 **반올림된**(3자리) 값이다(2026-09-17
+    리뷰 m2). 참값이 `0 < |s| < 0.0005` 구간이면 `round(s, 3) == 0.0` 이 되어
+    부호가 가려진다 - pooled 가 뚜렷이 음수인데 MH 참값이 아주 작은 양수인
+    심슨 사례가 ②를 피해 간다(둘 다 반올림 0.0 대 -0.357 이 아니라, score 만
+    0.0 으로 뭉개지는 경우). `score == 0.0` 이면서 `score_pooled != 0.0` 이면
+    반올림이 부호를 삼켰을 수 있다고 보수적으로 갈린 것으로 친다 - 엔지니어에게
+    "이 반올림된 0.0 은 pooled 와 다르다" 는 사실을 보여 주는 편이, 조용히 숨는
+    것보다 안전하다.
+    """
+    if score_pooled is None:
+        return False
+    thresholds = (ya_config.RESIDUAL_MIN_SCORE, ya_config.COMMONALITY_PASS_MIN_SCORE)
+    band = lambda s: sum(1 for t in thresholds if s >= t)
+    if band(score) != band(score_pooled):
+        return True
+    if score == 0.0 and score_pooled != 0.0:
+        return True
+    return (score > 0) != (score_pooled > 0)
+
+
 def format_group_line(group: dict) -> str:
     """묶음 하나를 사람이 읽는 근거 줄로. 교락·동점이면 그 사실을 함께 적는다."""
     line = format_evidence_line(group)
     wafers = group.get("target_wafers") or ()
     if wafers:
         line += f" · 대상 {', '.join(wafers)}"
+    # **층별 내역은 갈릴 때만 적는다** (pooling-mh-score D4). 거는 조건은 둘이다 -
+    # 층 상세가 **2개 이상**이고(`len(strata_detail) >= 2`) score 와 score_pooled 가
+    # **갈린다**(`_score_diverges_from_pooled`). metro 후보도 `score_pooled` **키는**
+    # 갖는다(`domain/engine.py::evaluate` 가 무조건 싣는다) - 다만 값이 None 이라
+    # 둘째 조건이 거짓이 되고 strata_detail 도 빈 리스트라 첫째 조건에서 먼저 떨어진다
+    # (`tests/test_engine.py::test_evaluate_never_defaults_metro_score_pooled_away_from_none`).
+    # tm1(2026-09-21 3차 리뷰) - 예전 주석은 "metro 는 키가 없다" 고 적어 RR-B1 이
+    # 고친 사실(판별은 키 유무가 아니라 값)과 어긋났다.
+    extra = group.get("extra") or {}
+    strata_detail = extra.get("strata_detail") or []
+    score_pooled = extra.get("score_pooled")
+    if (len(strata_detail) >= 2
+            and _score_diverges_from_pooled(group.get("score"), score_pooled)):
+        detail = "; ".join(
+            f"{d['root_lot_id']} 타깃 {d['target_pass']}/{d['target_total']} · "
+            f"대조군 {d['control_pass']}/{d['control_total']} · d={d['d']}"
+            for d in strata_detail)
+        line += (f"\n        층별로 보면 {detail} - 합산(pooled) 점수는 "
+                 f"{score_pooled} 인데 가중(MH) 점수는 {group.get('score')} 로 "
+                 f"갈린다(심슨의 역설 가능성이 있다) - 층 내역을 먼저 확인하라")
     others = group.get("confounded_with") or []
     if others:
         # 여기가 이 기능의 요점이다. 같은 wafer 를 두 이름으로 부르는 것을 근거 둘로
@@ -631,6 +688,29 @@ def _folded_detail(o: dict) -> str:
     return detail
 
 
+def _strata_suffix(claim: dict) -> str:
+    """`(층 N개 가중)` — stratum 이 둘 이상인 commonality(step_history) 후보에만 붙는다.
+
+    `extra.score_pooled` **값이 null 이 아닌지**로 가른다 - 키가 있는지가 아니다
+    (RR-B1, 2026-09-20 재리뷰). `domain/engine.py::evaluate` 는 metro 후보에도
+    이 키를 무조건 붙이므로(값은 None) 키 유무만 보면 metro 도 걸린다. n_strata
+    만 보는 것도 마찬가지로 안 된다 — metro 는 이번 변경 범위 밖(사용자 결정)
+    이라 여전히 crude pooling 이므로 "가중" 딱지를 붙이면 거짓말이 된다. 층
+    1개면(또는 옛 상태처럼 이 키가 아예 없으면) 빈 문자열이라 근거 줄이 옛
+    문자열과 완전히 같다(회귀 단언, pooling-mh-score T7).
+
+    ⚠️ **metro 를 MH 로 옮길 때 `score_pooled` 부터 싣기 시작하면 그 순간 이
+    판별자가 거짓이 된다**(m7, 2026-09-17 리뷰) — metro 값도 null 이 아니게
+    되어 `score_pooled` 만으로는 두 도구를 못 가른다. 그때는 도구 이름이나
+    `hypothesis_id` 처럼 출처를 직접 말하는 값으로 판별자를 바꿔야 한다.
+    """
+    extra = claim.get("extra") or {}
+    n_strata = extra.get("n_strata")
+    if extra.get("score_pooled") is None or not n_strata or n_strata < 2:
+        return ""
+    return f" (층 {n_strata}개 가중)"
+
+
 def format_evidence_line(claim: dict) -> str:
     """Claim 사전(`asdict(Claim)` 결과)을 사람이 읽는 근거 한 줄로 렌더링한다.
 
@@ -648,7 +728,7 @@ def format_evidence_line(claim: dict) -> str:
         return (f"{claim['claim_id']} · 효과크기 {claim['score']} · "
                 f"타깃 n={claim['target_total']} 평균 {ex['target_mean']} · "
                 f"대조군 n={claim['control_total']} 평균 {ex['control_mean']}")
-    line = (f"{claim['claim_id']} · 분리 점수 {claim['score']} · "
+    line = (f"{claim['claim_id']} · 분리 점수 {claim['score']}{_strata_suffix(claim)} · "
             f"타깃 {claim['target_pass']}/{claim['target_total']} 통과 · "
             f"대조군 {claim['control_pass']}/{claim['control_total']} 통과")
     p = claim.get("p_permutation")

@@ -71,6 +71,13 @@ def evaluate(spec: dict, group_ids: list[str], control_ids: list[str]) -> dict:
             "control_pass": cand["control_pass"], "control_total": cand["control_total"],
             "coverage_target": cand["coverage_target"],
             "coverage_control": cand["coverage_control"],
+            # pooling-mh-score — 화이트리스트라 안 옮기면 게이트·리포트가 이 값들을
+            # 아예 못 본다(n_strata 가 그 상태였다, 2026-09-16 확인). score_pooled 는
+            # **설명용이지 판정용이 아니다**(_passes 는 절대 이 키를 읽지 않는다) -
+            # score(MH 가중)와 갈리면 심슨의 역설이 있다는 뜻이라 근거 줄이 보여 준다.
+            "n_strata": cand.get("n_strata"),
+            "score_pooled": cand.get("score_pooled"),
+            "strata_detail": cand.get("strata_detail", []),
             # 이 후보가 가리키는 실제 wafer. 카운트만으로는 두 후보가 같은 wafer 를
             # 말하는지(교락) 다른 wafer 를 말하는지(독립 근거) 구분할 수 없다 —
             # 축이 여럿일 때 그 둘이 게이트에게 똑같아 보이는 것이 문제였다.

@@ -77,7 +77,11 @@ def test_collect_bits_changes_outputs_only_never_the_counts():
 
     assert rep_off == rep_on
     assert set(off) == set(on)
-    counts = ("a", "b", "c", "d", "strata")
+    # mh_num/mh_den/mh_scale(T5) — MH 가중 누적자(2026-09-17 R-B1 이후 정수쌍
+    # 세 필드)도 플래그와 무관해야 한다. 셋 중 하나라도 빠뜨리면 그 필드로 새는
+    # 훼손(M5 계열)이 이 테스트를 그냥 통과한다 - 예전에 mh_scale 을 안 넣어서
+    # 실제로 그 자리가 비어 있었다(N-1 자리만 고치는 함정).
+    counts = ("a", "b", "c", "d", "strata", "mh_num", "mh_den", "mh_scale")
     for key in off:
         assert {k: off[key][k] for k in counts} == {k: on[key][k] for k in counts}, key
 
@@ -86,8 +90,10 @@ def test_collect_bits_changes_outputs_only_never_the_counts():
     for key, e in on.items():
         assert e["a_bits"].bit_count() == e["a"]
         assert e["c_bits"].bit_count() == e["c"]
+        assert "strata_detail" in e            # 켠 쪽만 층별 상세를 갖는다
     # 끈 쪽은 키 자체가 없다 — 귀무 경로의 dict 를 원래 크기로 두려는 의도적 형태다.
     assert all("a_bits" not in e and "c_bits" not in e for e in off.values())
+    assert all("strata_detail" not in e for e in off.values())
 
 
 def test_search_scope_defaults_match_config():
@@ -398,6 +404,529 @@ def test_counts_pooled_across_root_lots(tmp_path, monkeypatch):
     assert {s["root_lot_id"] for s in res["strata"]} == {"AAAAA", "BBBBB"}
 
 
+# ---------------------------------------------------- Mantel-Haenszel 가중 (pooling-mh-score)
+
+def test_single_stratum_mh_score_matches_the_old_pooled_formula(tmp_path, monkeypatch):
+    """T1 — stratum 이 하나면 새 MH 점수가 옛 pooled 식(a/nt - c/nc)과
+    **대수적으로**(실수값으로) 같다 — `_score_map` 독스트링과 같은 표현이다.
+
+    ⚠️ **"비트 단위로 같다" 가 아니다** — 2026-09-20 재리뷰(RR-M1)가 실측했다.
+    정수 정확 산술(R-B1)을 거치면 값이 `(a·nc-c·nt)/(nt·nc)` 라
+    `fl(a/nt) - fl(c/nc)` 와 **다른 double** 이 나온다(`nt,nc<=79` 전수의 51%).
+    옛 값과 비트 단위로 같게 만드는 float 분기를 한때 넣었다가
+    **되돌렸다**(동점 손실 — `_aggregate` 독스트링의 "RR-M4" 절).
+
+    ⚠️ **`round(.,3)` 기준으로도 일반적으로 같지 않다**(2026-09-21 3차 리뷰
+    TR-M3 — RR-M1 이 처음 지적한 것을 다시 정정한다). `nt,nc<=79` 전수에서
+    반올림 후에도 갈리는 조합이 **5,528건**이다(예: `nt=3, a=1, nc=48, c=7` 에서
+    `score 0.188` vs `score_pooled 0.187`). 아래 `ch["score_pooled"] ==
+    ch["score"] == 0.417` 는 **성질이 아니라 이 픽스처(2/3, 1/4)의 우연**이다 —
+    다른 수치를 넣으면 이 등식이 깨질 수 있다.
+    """
+    t, c = ["T1", "T2", "T3"], ["C1", "C2", "C3", "C4"]
+    ys = [_y(w, "A45Z5") for w in t + c]
+    hs = [_h(w, "Etch", "ETCH9", "3") for w in ["T1", "T2"]]     # 타깃 2/3
+    hs += [_h("T3", "Etch", "ETCH8", "1")]
+    hs += [_h(w, "Etch", "ETCH9", "3") for w in ["C1"]]          # 대조군 1/4
+    hs += [_h(w, "Etch", "ETCH8", "1") for w in ["C2", "C3", "C4"]]
+    _make_db(tmp_path, monkeypatch, ys, hs)
+
+    res = cm.find_commonality(t, c)
+    ch = _find(res, "chamber", "ETCH9_3")
+    assert (ch["target_pass"], ch["target_total"]) == (2, 3)
+    assert (ch["control_pass"], ch["control_total"]) == (1, 4)
+    # 옛 pooled 식: 2/3 - 1/4 = 0.41666... -> round(.,3) = 0.417
+    assert ch["score"] == 0.417
+    assert ch["n_strata"] == 1
+    # ⚠️ 아래 등식은 "단일 stratum 이므로 pooled == MH" 라는 성질이 아니다
+    # (TR-M3) — 반올림 경로가 다른 두 계산(정수 정확 나눗셈 한 번 vs 별도로
+    # 반올림된 float 뺄셈)이 **이 특정 수치(2/3, 1/4)에서 우연히** 같은
+    # 3자리 값을 냈을 뿐이다. 위 독스트링의 5,528건 반례가 그 증거다.
+    assert ch["score_pooled"] == ch["score"] == 0.417
+
+
+def test_pooled_equals_mh_when_all_strata_have_the_same_shape(tmp_path, monkeypatch):
+    """T2 — 모든 stratum 의 (타깃 수, 대조군 수) 가 같으면(3/17, 3/17) 어떤 후보든
+    pooled == MH 다 — **실수값으로는** 대수적 사실이다(2026-09-16 실측 1차, 후보
+    18개 전부 차이 0.000). 가중치 w_i 가 stratum 마다 같아지므로 MH 가중평균이
+    단순평균으로 무너지고, 그 단순평균이 실수값으로는 pooled 값과 같다.
+
+    ⚠️ 이것도 **반올림 후까지** 항상 같다는 뜻은 아니다(TR-M3, 2026-09-21 3차
+    리뷰 — T1 과 같은 문제). MH 는 정수 정확 나눗셈 한 번, pooled 는 별도로
+    반올림된 float 뺄셈이라 반올림 경로가 다르다. 아래 `cand["score"] ==
+    cand["score_pooled"]` 가 이 픽스처의 후보 전부에서 성립하는 것은 이 특정
+    수치(3/17 조합)들이 우연히 일치했기 때문일 수 있다.
+    """
+    ta = [f"TA{i}" for i in range(1, 4)]
+    ca = [f"CA{i}" for i in range(1, 18)]
+    tb = [f"TB{i}" for i in range(1, 4)]
+    cb = [f"CB{i}" for i in range(1, 18)]
+    ys = [_y(w, "LOTA") for w in ta + ca] + [_y(w, "LOTB") for w in tb + cb]
+    hs = []
+    # stratum A: 타깃 2/3, 대조군 5/17 이 ETCH9
+    hs += [_h(w, "Etch", "ETCH9", "1") for w in ta[:2]] + [_h(ta[2], "Etch", "ETCH8", "1")]
+    hs += [_h(w, "Etch", "ETCH9", "1") for w in ca[:5]]
+    hs += [_h(w, "Etch", "ETCH8", "1") for w in ca[5:]]
+    # stratum B: 타깃 1/3, 대조군 10/17 이 ETCH9 (비율이 A 와 다르다 — 그래도 크기는 같다)
+    hs += [_h(tb[0], "Etch", "ETCH9", "1")] + [_h(w, "Etch", "ETCH8", "1") for w in tb[1:]]
+    hs += [_h(w, "Etch", "ETCH9", "1") for w in cb[:10]]
+    hs += [_h(w, "Etch", "ETCH8", "1") for w in cb[10:]]
+    _make_db(tmp_path, monkeypatch, ys, hs)
+
+    res = cm.find_commonality(ta + tb, ca + cb)
+    assert res["candidates"]                      # 검증할 후보가 있어야 한다
+    for cand in res["candidates"]:
+        assert cand["score"] == cand["score_pooled"], cand["key"]
+        assert cand["n_strata"] == 2
+
+
+def test_simpsons_paradox_fixture_flips_sign_between_pooled_and_mh(tmp_path, monkeypatch):
+    """T3 — 심슨 픽스처(`docs/2026-09-16-pooling-전제-측정.md` 2차 실측 재현).
+
+    LOT2405: 타깃 2/2 · 대조 18/18 (stratum 차 d=0.000)
+    LOT2406: 타깃 1/4 · 대조 0/3   (stratum 차 d=+0.250)
+    두 stratum 다 타깃이 불리하지 않은데(0.000, +0.250) **pooled 로 합치면 -0.357**
+    로 뒤집힌다 - 교과서적 심슨의 역설. MH 가중은 +0.122 로 부호를 지킨다.
+    """
+    t2405, c2405 = ["T1", "T2"], [f"C{i}" for i in range(1, 19)]        # 대조 18장
+    t2406, c2406 = ["T3", "T4", "T5", "T6"], ["D1", "D2", "D3"]         # 대조 3장
+    ys = ([_y(w, "LOT2405") for w in t2405 + c2405]
+          + [_y(w, "LOT2406") for w in t2406 + c2406])
+    hs = []
+    # LOT2405: 타깃 전원 + 대조군 전원 ETCH9 (d = 0.000)
+    hs += [_h(w, "Etch", "ETCH9", "1") for w in t2405 + c2405]
+    # LOT2406: 타깃 1/4 · 대조 0/3 이 ETCH9, 나머지는 다른 설비(분모용 이력)
+    hs += [_h("T3", "Etch", "ETCH9", "1")]
+    hs += [_h(w, "Etch", "ETCH8", "1") for w in ["T4", "T5", "T6"]]
+    hs += [_h(w, "Etch", "ETCH8", "1") for w in c2406]
+    _make_db(tmp_path, monkeypatch, ys, hs)
+
+    res = cm.find_commonality(t2405 + t2406, c2405 + c2406)
+    eq = _find(res, "equipment", "ETCH9")
+    assert eq["n_strata"] == 2
+    assert eq["score"] == 0.122          # MH 가중 — 양수, 부호를 지킨다
+    assert eq["score_pooled"] == -0.357  # pooled — 음수로 뒤집힌다(심슨의 역설)
+    assert eq["score"] > 0 and eq["score_pooled"] < 0
+    by_root = {d["root_lot_id"]: d for d in eq["strata_detail"]}
+    assert by_root["LOT2405"]["d"] == 0.0
+    assert by_root["LOT2406"]["d"] == 0.25
+    # FR-3/C1·C2(2026-09-21 4차 리뷰) — 층별 상세는 `d` 외에도 target/control
+    # 의 pass/total 네 값을 싣는다(`_aggregate` 의 collect_bits 블록). 위 `d`
+    # 만 잠그면 그 네 값이 조용히 틀려도 `d` 가 우연히 맞아떨어지는 훼손을
+    # 놓친다 - stratum 마다 값으로 직접 잠근다.
+    assert by_root["LOT2405"] == {
+        "root_lot_id": "LOT2405", "target_pass": 2, "target_total": 2,
+        "control_pass": 18, "control_total": 18, "d": 0.0}
+    assert by_root["LOT2406"] == {
+        "root_lot_id": "LOT2406", "target_pass": 1, "target_total": 4,
+        "control_pass": 0, "control_total": 3, "d": 0.25}
+
+
+def test_exact_stratum_cancellation_does_not_leak_a_near_zero_candidate(tmp_path, monkeypatch):
+    """T10(R-M-a) — 층 간 상쇄로 참값이 **정확히 0** 인 후보는 절단을 통과하면 안 된다.
+
+    stratum A(타깃 9/12·대조 2/3, `contrib`(=w·d)=+0.2 아니라 원 d=9/12-2/3≈0.083,
+    w=2.4)와 stratum B(타깃 1/3·대조 3/7, `contrib`=-0.2 아니라 원
+    d=1/3-3/7≈-0.095, w=2.1)를 골라 **가중 기여분(w·d) 자체가 +0.2/-0.2 로
+    정확히 상쇄**되게 만들었다 — 정수쌍으로는 `term_n1*m2 + term_n2*m1 == 0`
+    이지만 `1/3`·`2/3` 등이 이진 부동소수점으로 딱 안 떨어져 float 로 누적하면
+    실제로 `+8.3e-17` 잔여가 남는다(직접 검증). 이 잔여가 `s > MIN_SCORE(0.0)` 를
+    통과시켜 **`status: ok`(score 0.0 인 가짜 후보)로 뒤집히는 것을 이 픽스처로
+    재현했다**(2026-09-17 리뷰, 2층 조합 7,572개가 이 상태였다고 실측). 정수
+    정확 산술이면 분자가 정확히 정수 0 이라 절단에 걸려 후보 자체가 안 생긴다.
+    """
+    ta = [f"TA{i}" for i in range(1, 13)]     # 12장 — 9장이 TESTEQ
+    ca = [f"CA{i}" for i in range(1, 4)]      # 3장 — 2장이 TESTEQ
+    tb = [f"TB{i}" for i in range(1, 4)]      # 3장 — 1장이 TESTEQ
+    cb = [f"CB{i}" for i in range(1, 8)]      # 7장 — 3장이 TESTEQ
+    ys = [_y(w, "ROOTA") for w in ta + ca] + [_y(w, "ROOTB") for w in tb + cb]
+    hs = []
+    hs += [_h(w, "Etch", "TESTEQ") for w in ta[:9]] + [_h(w, "Etch", "OTHEREQ") for w in ta[9:]]
+    hs += [_h(w, "Etch", "TESTEQ") for w in ca[:2]] + [_h(w, "Etch", "OTHEREQ") for w in ca[2:]]
+    hs += [_h(w, "Etch", "TESTEQ") for w in tb[:1]] + [_h(w, "Etch", "OTHEREQ") for w in tb[1:]]
+    hs += [_h(w, "Etch", "TESTEQ") for w in cb[:3]] + [_h(w, "Etch", "OTHEREQ") for w in cb[3:]]
+    _make_db(tmp_path, monkeypatch, ys, hs)
+
+    res = cm.find_commonality(ta + tb, ca + cb)
+    assert ("equipment", "TESTEQ") not in _keys(res)
+    assert ("equipment", "OTHEREQ") not in _keys(res)     # 상쇄는 대칭이라 둘 다 0
+    assert res["status"] == "no_signal"
+
+
+def test_stratum_skip_excludes_strata_where_the_candidate_never_appears(tmp_path, monkeypatch):
+    """RR-M5(2026-09-20 재리뷰, 사용자 결정: 문장만 좁히고 동작은 유지) — 후보가
+    아예 나타나지 않은 stratum 은 MH 가중평균에서 통째로 빠진다
+    (`_aggregate` 의 `a == 0 and c_ == 0` 스킵). pooled 시절에는 "분자·분모
+    양쪽에서 대칭으로 뺀다" 로 옳았지만, 가중평균에서는 `d_i=0` 이고 `w_i>0`
+    인 **정보 있는** stratum 을 평균에서 빼는 것이라 점수가 부풀 수 있다.
+
+    stratum A(타깃 2/2 · 대조군 0/2 - 완전 분리, d=1.0)와 stratum B(타깃·
+    대조군 전원이 다른 설비를 써서 이 후보가 아예 안 나타남)를 만든다. 지금
+    동작은 B 를 빼고 A 만으로 score=1.0 을 낸다 - B 를 `d=0, w=6*6/12=3.0`
+    으로 포함했다면(`w_A=2*2/4=1.0`) 가중평균은
+    `(1.0*1.0 + 3.0*0.0)/(1.0+3.0) = 0.25` 로 내려갔을 것이다(수기 계산).
+    이 테스트는 그 **현재 동작**(스킵 유지)을 잠근다 - 추정량을 고치는 것은
+    이번 재리뷰의 사용자 결정으로 범위 밖이다.
+    """
+    ta, ca = ["TA1", "TA2"], ["CA1", "CA2"]
+    tb = [f"TB{i}" for i in range(1, 7)]
+    cb = [f"CB{i}" for i in range(1, 7)]
+    ys = [_y(w, "AAAAA") for w in ta + ca] + [_y(w, "BBBBB") for w in tb + cb]
+    hs = []
+    # stratum A: 타깃 전원 SPECIAL, 대조군은 아무도 안 감(완전 분리, d=1.0)
+    hs += [_h(w, "Etch", "SPECIAL", "1") for w in ta]
+    hs += [_h(w, "Etch", "OTHEREQ", "1") for w in ca]
+    # stratum B: 전원 OTHEREQ - SPECIAL 은 아예 안 나타난다(스킵 대상)
+    hs += [_h(w, "Etch", "OTHEREQ", "1") for w in tb + cb]
+    _make_db(tmp_path, monkeypatch, ys, hs)
+
+    res = cm.find_commonality(ta + tb, ca + cb)
+    special = _find(res, "equipment", "SPECIAL")
+    assert special["n_strata"] == 1          # stratum B 는 안 셈해진다(스킵)
+    assert special["score"] == 1.0           # stratum A 만으로 낸 값
+
+    # 참고용 수기 계산 — stratum B 를 포함했다면 나왔을 값과 다르다는 것을
+    # 남겨 둔다(현재 동작이 이 값을 안 낸다는 것 자체가 잠기는 사실이다).
+    w_a, w_b = 1.0, 3.0
+    hypothetical_if_included = (w_a * 1.0 + w_b * 0.0) / (w_a + w_b)
+    assert hypothetical_if_included == 0.25
+    assert special["score"] != hypothetical_if_included
+
+
+def test_mh_recurrence_is_exact_for_three_or_more_strata(tmp_path, monkeypatch):
+    """M14(TR-M1, 2026-09-21 3차 리뷰) — MH 점화식(`_aggregate` 의 mh_num/mh_den/
+    mh_scale 누적)이 S>=3 에서 잠겨 있지 않았다. `e["mh_scale"] = scale * m` 를
+    `= m` 로 바꾸면(누적곱을 빼고 직전 stratum 의 m 만 남긴다) S<=2 에서는
+    수학적 항등이라 T1~T3·T10 이 전부 그대로 통과하고, S>=3 인 관측 후보가
+    78,078건 실재하는데도 그 훼손을 잡는 단언이 하나도 없었다.
+
+    3개 stratum (3/4, 2/6)·(2/3, 0/6)·(1/4, 0/3) 의 정답 MH 값을 손으로 미리
+    구했다(`w_i·d_i`·`w_i` 를 stratum 마다 계산해 합산):
+
+        stratum1: term_n=3*6-2*4=10, term_d=4*6=24, m=10
+        stratum2: term_n=2*6-0*3=12, term_d=3*6=18, m=9
+        stratum3: term_n=1*3-0*4=3,  term_d=4*3=12, m=7
+        Σ term_n/m = 1 + 4/3 + 3/7 = 58/21
+        Σ term_d/m = 12/5 + 2 + 12/7 = 214/35
+        score = (58/21)/(214/35) = 2030/4494 = 145/321 = 0.4517133...
+
+    점화식으로 재현한 값(mh_num=1740, mh_den=3852 -> 1740/3852 = 145/321)과
+    일치한다 — round(.,3) = **0.452**. 훼손판(`mh_scale=m`)으로 손으로 다시
+    돌리면 mh_num=1497, mh_den=2880 -> **0.520**(판별선 0.5 를 **넘어 버린다** -
+    "정답 MH 0.4517(미달) 인데 훼손값은 0.5198(통과)" 가 이 사례다). 두 값이
+    3자리 반올림에서도 뚜렷이 갈리므로 이 하드코딩된 기대값이 훼손을 잡는다.
+    """
+    t1, c1 = ["T1", "T2", "T3", "T4"], [f"C{i}" for i in range(1, 7)]
+    t2, c2 = ["T5", "T6", "T7"], [f"C{i}" for i in range(7, 13)]
+    t3, c3 = ["T8", "T9", "T10", "T11"], [f"C{i}" for i in range(13, 16)]
+    ys = ([_y(w, "ROOT1") for w in t1 + c1]
+          + [_y(w, "ROOT2") for w in t2 + c2]
+          + [_y(w, "ROOT3") for w in t3 + c3])
+    hs = []
+    # ROOT1: 타깃 3/4 · 대조군 2/6 이 ETCH9
+    hs += [_h(w, "Etch", "ETCH9", "1") for w in ["T1", "T2", "T3"]]
+    hs += [_h("T4", "Etch", "ETCH8", "1")]
+    hs += [_h(w, "Etch", "ETCH9", "1") for w in ["C1", "C2"]]
+    hs += [_h(w, "Etch", "ETCH8", "1") for w in ["C3", "C4", "C5", "C6"]]
+    # ROOT2: 타깃 2/3 · 대조군 0/6 이 ETCH9
+    hs += [_h(w, "Etch", "ETCH9", "1") for w in ["T5", "T6"]]
+    hs += [_h("T7", "Etch", "ETCH8", "1")]
+    hs += [_h(w, "Etch", "ETCH8", "1") for w in c2]
+    # ROOT3: 타깃 1/4 · 대조군 0/3 이 ETCH9
+    hs += [_h("T8", "Etch", "ETCH9", "1")]
+    hs += [_h(w, "Etch", "ETCH8", "1") for w in ["T9", "T10", "T11"]]
+    hs += [_h(w, "Etch", "ETCH8", "1") for w in c3]
+    _make_db(tmp_path, monkeypatch, ys, hs)
+
+    res = cm.find_commonality(t1 + t2 + t3, c1 + c2 + c3, n_permutations=0)
+    eq = _find(res, "equipment", "ETCH9")
+    assert eq["n_strata"] == 3
+    assert (eq["target_pass"], eq["target_total"]) == (6, 11)      # 3+2+1, 4+3+4
+    assert (eq["control_pass"], eq["control_total"]) == (2, 15)    # 2+0+0, 6+6+3
+    assert eq["score"] == 0.452          # 145/321, round(.,3) — 판별선 0.5 미달
+    assert eq["score"] < 0.5
+
+
+def test_strata_detail_d_is_rounded_to_three_places(tmp_path, monkeypatch):
+    """FR-8/C3(2026-09-21 4차 리뷰) — `strata_detail` 의 stratum 별 `d` 는
+    **표시용**이라 3자리로 반올림한다(`_aggregate` 의 `collect_bits` 블록
+    주석). 타깃 1/3 은 `0.3333...` 이라 반올림 없이 그대로 실리면 이 값과
+    다르다 - 3자리 반올림이 실제로 일어나는지를 값으로 잠근다.
+    """
+    t, c = ["T1", "T2", "T3"], ["C1", "C2", "C3", "C4", "C5", "C6", "C7"]
+    ys = [_y(w, "A45Z5") for w in t + c]
+    hs = [_h("T1", "Etch", "ETCH9", "3")]                 # 타깃 1/3
+    hs += [_h(w, "Etch", "ETCH8", "1") for w in ["T2", "T3"]]
+    hs += [_h(w, "Etch", "ETCH8", "1") for w in c]         # 대조군 0/7
+    _make_db(tmp_path, monkeypatch, ys, hs)
+
+    res = cm.find_commonality(t, c, n_permutations=0)
+    ch = _find(res, "chamber", "ETCH9_3")
+    assert ch["strata_detail"][0]["d"] == 0.333            # round(1/3 - 0/7, 3)
+    assert ch["strata_detail"][0]["d"] != 1 / 3            # 반올림 안 하면 이 값이었다
+
+
+def test_find_commonality_candidate_list_and_order_are_invariant_to_score_pooled(
+        tmp_path, monkeypatch):
+    """FR-2(2026-09-21 4차 리뷰, "도구 불변") — 이전 라운드는 자리마다 따로
+    잠가서(TR-M4 의 `commonality.py:911` 훼손 등) 새 자리가 생길 때마다 뚫렸다.
+    한 성질로 대신 잠근다: **`extra.score_pooled` 를 흔들어도 `find_commonality`
+    의 후보 목록과 순서가 같다.**
+
+    `score_pooled` 는 도구 내부에서 원시 2x2 로부터 파생되는 출력이라 외부
+    입력처럼 직접 주입할 수 없다 - 대신 MH 점수(`score`)는 **똑같이 0.5 로
+    묶이는데** `score_pooled` 는 **서로 다른 세 값**이 나오도록 stratum 모양을
+    설계해 같은 효과를 낸다(심슨류 구성, T3 와 같은 기법). 후보가 `round(score,3)`
+    으로 **동률**이 되도록 만들어 정렬의 **동점 깨기**(`-coverage_target`)와
+    `top_k` 절단까지 같은 픽스처로 겨눈다.
+
+    stratum 모양(타깃 2/대조 4, 타깃 6/대조 2)을 세 후보(EQA·EQB·EQC)가
+    공유하되 어느 wafer 가 각 설비를 지났는지만 다르게 짜서:
+
+        EQA(step S_A, 단층 - LOT2 에는 아예 안 나타남): score=0.5, score_pooled=0.5
+        EQB(step S_B, 2층): score=0.5, score_pooled=0.292
+        EQC(step S_C, 2층): score=0.5, score_pooled=0.708
+
+    셋 다 `score` 가 0.500 으로 동률이라 실제 정렬은 둘째 키
+    `-coverage_target`(EQC 0.875 > EQB 0.625 > EQA 0.5)로 갈린다 - **실제
+    순서는 [EQC, EQB]** 이고 `top_k=2` 면 EQA 가 잘린다. `score_pooled` 를
+    대신 읽는 훼손이라면 `-score_pooled` 로 정렬해 **[EQC, EQA]** 가 나오고
+    EQB 가 잘렸을 것이다(0.708 > 0.5 > 0.292) - 두 정렬이 실제로 갈리는
+    지점을 검산해 픽스처가 공허하지 않음을 확인했다.
+    """
+    t1, c1 = ["T1", "T2"], ["C1", "C2", "C3", "C4"]
+    t2, c2 = ["T3", "T4", "T5", "T6", "T7", "T8"], ["D1", "D2"]
+    ys = [_y(w, "LOT1") for w in t1 + c1] + [_y(w, "LOT2") for w in t2 + c2]
+    hs = []
+    # step S_A — LOT2 wafer 는 전혀 안 나온다 -> EQA 는 단층 후보다.
+    hs += [_h("T1", "S_A", "EQA"), _h("T2", "S_A", "OTHERA")]
+    hs += [_h(w, "S_A", "OTHERA") for w in c1]
+    # step S_B — 두 stratum 모두. LOT1 타깃 2/2·대조 2/4, LOT2 타깃 3/6·대조 0/2.
+    hs += [_h(w, "S_B", "EQB") for w in ["T1", "T2"]]
+    hs += [_h("C1", "S_B", "EQB"), _h("C2", "S_B", "EQB")]
+    hs += [_h("C3", "S_B", "OTHERB"), _h("C4", "S_B", "OTHERB")]
+    hs += [_h(w, "S_B", "EQB") for w in ["T3", "T4", "T5"]]
+    hs += [_h(w, "S_B", "OTHERB") for w in ["T6", "T7", "T8"]]
+    hs += [_h(w, "S_B", "OTHERB") for w in ["D1", "D2"]]
+    # step S_C — 두 stratum 모두. LOT1 타깃 1/2·대조 0/4, LOT2 타깃 6/6·대조 1/2.
+    hs += [_h("T1", "S_C", "EQC"), _h("T2", "S_C", "OTHERC")]
+    hs += [_h(w, "S_C", "OTHERC") for w in c1]
+    hs += [_h(w, "S_C", "EQC") for w in t2]
+    hs += [_h("D1", "S_C", "EQC"), _h("D2", "S_C", "OTHERC")]
+    _make_db(tmp_path, monkeypatch, ys, hs)
+
+    res = cm.find_commonality(t1 + t2, c1 + c2, top_k=2, n_permutations=0)
+    eqa = next((c for c in res["candidates"] if c["key"] == "EQA"), None)
+    eqb = _find(res, "equipment", "EQB")
+    eqc = _find(res, "equipment", "EQC")
+
+    # 동률과 score_pooled 발산부터 검산한다 - 이게 안 맞으면 아래 순서 단언이
+    # 공허해진다.
+    assert eqb["score"] == eqc["score"] == 0.5
+    assert (eqb["score_pooled"], eqc["score_pooled"]) == (0.292, 0.708)
+
+    ranked = [c["key"] for c in res["candidates"] if c["level"] == "equipment"]
+    assert ranked == ["EQC", "EQB"]                 # score 기준 순서 + top_k 절단
+    assert eqa is None                               # score 기준이면 EQA 가 잘린다
+    assert res["truncated"] == 1
+
+
+def test_n_strata_matches_the_length_of_strata_detail(tmp_path, monkeypatch):
+    """FR-4/C38(2026-09-21 4차 리뷰) — `n_strata` 는 `e["strata"]` 누적으로 세고
+    `strata_detail` 은 `collect_bits` 로 별도 리스트에 모은다. 둘이 같은 값이 되는
+    것은 **둘 다 `nt == 0 or nc == 0` 스킵을 통과한 stratum 만 세기** 때문이다.
+    `e["strata"] += 1` 이 그 스킵 **앞**으로 옮겨지면 `n_strata` 만 부푼다.
+
+    ⚠️ 그 훼손은 "후보가 그 stratum 에 나타났는데(`a` 또는 `c_` > 0) 한쪽이 그
+    스텝에 답하지 못한" stratum 에서만 드러난다 - 그런 stratum 이 없으면 이 단언은
+    공허하다(Claude main 실측 2026-09-21: 두 stratum 모두 대조군이 그 스텝을 지나던
+    처음 픽스처에서는 이 훼손이 SURVIVED). 그래서 CCCCC 의 대조군은 Etch 를 아예
+    안 거치게 둔다 - ETCH9_3 은 그 stratum 의 타깃 2장에 나타나지만(a=2) nc=0 이라
+    건너뛴다.
+    """
+    ys = [_y(w, "AAAAA") for w in ["T1", "T2", "C1", "C2"]]
+    ys += [_y(w, "BBBBB") for w in ["T3", "T4", "C3", "C4"]]
+    ys += [_y(w, "CCCCC") for w in ["T5", "T6", "C5", "C6"]]
+    hs = [_h(w, "Etch", "ETCH9", "3") for w in ["T1", "T2", "T3", "T4", "T5", "T6"]]
+    hs += [_h(w, "Etch", "ETCH8", "1") for w in ["C1", "C2", "C3", "C4"]]
+    # CCCCC 대조군은 Etch 를 안 거친다. 다른 이력은 있어야 stratum 자체가 성립한다.
+    hs += [_h(w, "Depo", "DEPO1", "1") for w in ["C5", "C6"]]
+    _make_db(tmp_path, monkeypatch, ys, hs)
+
+    res = cm.find_commonality(["T1", "T2", "T3", "T4", "T5", "T6"],
+                              ["C1", "C2", "C3", "C4", "C5", "C6"])
+    ch = _find(res, "chamber", "ETCH9_3")
+    assert ch["n_strata"] == 2                      # CCCCC 는 nc=0 이라 세지 않는다
+    assert ch["n_strata"] == len(ch["strata_detail"])
+    assert {d["root_lot_id"] for d in ch["strata_detail"]} == {"AAAAA", "BBBBB"}
+
+
+def test_candidate_ranking_uses_score_not_score_pooled(tmp_path, monkeypatch):
+    """TR-M4(e, 2026-09-21 3차 리뷰) — `commonality.py:911` 의 후보 정렬 키가
+    score 대신 score_pooled 를 쓰는 훼손이 SURVIVED 했다. 정렬은 바로 뒤
+    `candidates[:top_k]` 절단으로 이어져 **후보의 존재 여부 자체**를 정하는
+    판정 자리인데, 잠그는 단언이 없었다.
+
+    후보 A(심슨 픽스처, score=0.122·score_pooled=-0.357, 다층)와 후보
+    B(단층, score=score_pooled=0.1)를 함께 넣는다. score 로 정렬하면 A 가
+    1등(0.122 > 0.1)인데, score_pooled 로 정렬했다면 B 가 1등이었을 것이다
+    (0.1 > -0.357) - 두 정렬이 실제로 갈리는 값을 골랐다.
+    """
+    t2405, c2405 = ["T1", "T2"], [f"C{i}" for i in range(1, 19)]
+    t2406, c2406 = ["T3", "T4", "T5", "T6"], ["D1", "D2", "D3"]
+    tb = [f"TB{i}" for i in range(1, 11)]
+    cb = [f"CB{i}" for i in range(1, 11)]
+    ys = ([_y(w, "LOT2405") for w in t2405 + c2405]
+          + [_y(w, "LOT2406") for w in t2406 + c2406]
+          + [_y(w, "LOT9") for w in tb + cb])
+    hs = []
+    # 후보 A(equipment, ETCH9) — T3 심슨 픽스처 그대로
+    hs += [_h(w, "Etch", "ETCH9", "1") for w in t2405 + c2405]
+    hs += [_h("T3", "Etch", "ETCH9", "1")]
+    hs += [_h(w, "Etch", "ETCH8", "1") for w in ["T4", "T5", "T6"]]
+    hs += [_h(w, "Etch", "ETCH8", "1") for w in c2406]
+    # 후보 B(equipment, DEPOX) — 단층, 타깃 1/10 · 대조군 0/10
+    hs += [_h("TB1", "Depo", "DEPOX", "1")]
+    hs += [_h(w, "Depo", "OTHERDEPO", "1") for w in tb[1:]]
+    hs += [_h(w, "Depo", "OTHERDEPO", "1") for w in cb]
+    _make_db(tmp_path, monkeypatch, ys, hs)
+
+    res = cm.find_commonality(t2405 + t2406 + tb, c2405 + c2406 + cb, n_permutations=0)
+    a = _find(res, "equipment", "ETCH9")
+    b = _find(res, "equipment", "DEPOX")
+    assert (a["score"], a["score_pooled"]) == (0.122, -0.357)
+    assert (b["score"], b["score_pooled"]) == (0.1, 0.1)
+    # score 기준: A(0.122)가 B(0.1)를 이긴다. score_pooled 였다면 B(0.1)가
+    # A(-0.357)를 이겼을 것 — 그 반대 결과를 이 순서 단언이 잡는다.
+    ranked = [c["key"] for c in res["candidates"] if c["level"] == "equipment"]
+    assert ranked.index("ETCH9") < ranked.index("DEPOX")
+
+
+def test_score_map_does_not_round(tmp_path, monkeypatch):
+    """tm4(2026-09-21 3차 리뷰) — `_score_map` 독스트링의 "반올림하지 않는다"
+    계약이 안 잠겨 있었다. 나눗셈 결과를 `round(...,3)` 으로 미리 반올림해도
+    스위트가 그대로 통과했다 - 귀무와 관측이 절단(`s > MIN_SCORE`)을 반올림
+    전 정밀도로 공유해야 한다는 계약(설계 §1-4)이 이 자리에서 안 지켜져도
+    아무것도 안 걸렸다는 뜻이다.
+    """
+    agg = {("k",): {"mh_num": 1, "mh_den": 3}}     # 1/3 = 0.3333... (3자리와 다르다)
+    out = cm._score_map(agg)
+    assert out[("k",)] == 1 / 3
+    assert out[("k",)] != round(1 / 3, 3)
+
+
+def test_null_distribution_shares_the_score_function_with_the_observed_path(
+        tmp_path, monkeypatch):
+    """T4 — 관측과 귀무가 `_score_map` 한 함수를 같이 탄다(설계 §1-4, D1/D3).
+
+    `_score_map` 을 감시용 래퍼로 바꿔치기해 실측한다: 관측 1회 + 순열 회차만큼
+    불려야 하고, 매 호출의 agg 항목이 mh_num/mh_den 을 갖고 있어야 한다.
+
+    ⚠️ **정정(R-B2, 2026-09-17 리뷰)** — 이 호출 횟수·키 존재 검사는 "귀무만
+    옛 pooled 로 갈아치우는 분기(M3b)" 를 **잡지 못한다**(625건 SURVIVED 로
+    실측됨). `_score_map` 안에서 `"strata_detail" in e` 로 갈라도 호출은 여전히
+    한 번씩 일어나고 agg 항목에는 mh_num/mh_den 키가 그대로 있기 때문이다 -
+    이 테스트는 "같은 함수를 호출한다" 만 잠그고 "그 함수가 같은 값을 낸다" 는
+    잠그지 못한다. 값으로 잠그는 것은 바로 아래
+    `test_score_map_gives_the_identical_value_regardless_of_collect_bits` 다.
+    """
+    t2405, c2405 = ["T1", "T2"], [f"C{i}" for i in range(1, 19)]
+    t2406, c2406 = ["T3", "T4", "T5", "T6"], ["D1", "D2", "D3"]
+    ys = ([_y(w, "LOT2405") for w in t2405 + c2405]
+          + [_y(w, "LOT2406") for w in t2406 + c2406])
+    hs = [_h(w, "Etch", "ETCH9", "1") for w in t2405 + c2405]
+    hs += [_h("T3", "Etch", "ETCH9", "1")]
+    hs += [_h(w, "Etch", "ETCH8", "1") for w in ["T4", "T5", "T6"]]
+    hs += [_h(w, "Etch", "ETCH8", "1") for w in c2406]
+    _make_db(tmp_path, monkeypatch, ys, hs)
+
+    calls = []
+    real_score_map = cm._score_map
+
+    def _spy(agg):
+        calls.append(agg)
+        return real_score_map(agg)
+
+    monkeypatch.setattr(cm, "_score_map", _spy)
+    res = cm.find_commonality(t2405 + t2406, c2405 + c2406, n_permutations=50)
+    eq = _find(res, "equipment", "ETCH9")
+    assert eq["p_permutation"] is not None            # 순열이 실제로 돌았다
+
+    # 1회(관측) + 순열 회차만큼(전수 열거면 더 적을 수 있으나 최소 관측보다는 많다)
+    assert len(calls) > 1
+    assert all("mh_num" in e and "mh_den" in e for agg in calls for e in agg.values())
+
+
+def test_score_map_gives_the_identical_value_regardless_of_collect_bits(tmp_path, monkeypatch):
+    """T4(R-B2 보강) — "같은 함수" 를 **값으로** 확인한다.
+
+    2026-09-17 리뷰: 위 호출-횟수 테스트는 `_score_map` 내부에서
+    `"strata_detail" in e` 로 갈라 **귀무만 옛 pooled 를 쓰게 하는 훼손(M3b)** 을
+    못 잡았다(625건 전부 SURVIVED). 원인은 기존 `test_collect_bits_changes_
+    outputs_only_never_the_counts` 의 픽스처가 stratum 1개라 pooled == MH 로
+    우연히 같았기 때문이다 - **층 모양이 달라 pooled != MH 인** 심슨 픽스처로
+    collect_bits on/off(= 관측 모양 vs 귀무 모양)의 `_score_map` 결과가 **값으로**
+    같아야 하고, 그 값이 실제로 MH(0.122)여야 한다(우연한 일치가 아님을 증명).
+    """
+    t2405, c2405 = ["T1", "T2"], [f"C{i}" for i in range(1, 19)]
+    t2406, c2406 = ["T3", "T4", "T5", "T6"], ["D1", "D2", "D3"]
+    ys = ([_y(w, "LOT2405") for w in t2405 + c2405]
+          + [_y(w, "LOT2406") for w in t2406 + c2406])
+    hs = [_h(w, "Etch", "ETCH9", "1") for w in t2405 + c2405]
+    hs += [_h("T3", "Etch", "ETCH9", "1")]
+    hs += [_h(w, "Etch", "ETCH8", "1") for w in ["T4", "T5", "T6"]]
+    hs += [_h(w, "Etch", "ETCH8", "1") for w in c2406]
+    _make_db(tmp_path, monkeypatch, ys, hs)
+
+    wafers_all = t2405 + t2406 + c2405 + c2406
+    bits = {w: 1 << i for i, w in enumerate(wafers_all)}
+    with cm._conn() as conn:
+        rows = cm._history(conn, wafers_all, cm.EQP_CH_LEGEND)
+    passed, answer, seen, _colmap = cm._build_index(rows, bits, cm.EQP_CH_LEGEND)
+
+    def _mask(wafers):
+        m = 0
+        for w in wafers:
+            m |= bits[w]
+        return m
+
+    masks = [("LOT2405", _mask(t2405), _mask(c2405)),
+             ("LOT2406", _mask(t2406), _mask(c2406))]
+    off, _ = cm._aggregate(masks, passed, answer, seen, set())
+    on, _ = cm._aggregate(masks, passed, answer, seen, set(), collect_bits=True)
+
+    key = ("equipment", "Etch", "ETCH9")
+    assert "strata_detail" not in off[key]      # 귀무 경로의 모양(off)
+    assert "strata_detail" in on[key]           # 관측 경로의 모양(on)
+    scores_off, scores_on = cm._score_map(off), cm._score_map(on)
+    assert scores_off == scores_on              # 모양이 달라도 같은 함수 = 같은 값
+    assert round(scores_off[key], 3) == round(scores_on[key], 3) == 0.122
+    assert round(scores_off[key], 3) != -0.357  # pooled 로 조용히 안 갈아탔다
+
+
+def test_score_map_gives_the_identical_value_for_equivalent_integer_fractions():
+    """M11(RR-M2, 2026-09-20 재리뷰) — 같은 유리수를 다른 (분자, 분모) 쌍으로
+    나타내도 `_score_map` 이 비트 단위로 같은 값을 내야 한다.
+
+    `float(e["mh_num"]) / float(e["mh_den"])` 로 미리 float 변환하는 훼손은
+    참값 0 도 T3(심슨 픽스처)도 그냥 통과해 버렸다(재리뷰 실측 - 631 passed 로
+    SURVIVED). 정수 그대로 파이썬 `int / int` 나눗셈을 쓰는 것만이 "같은
+    유리수는 항상 같은 double" 을 보장한다 - 누적자가 2^53 을 넘으면(m≈30 에서
+    stratum 11개) 같은 유리수의 다른 (num, den) 표현이 실제로 다른 double 이
+    될 수 있다. 아래 숫자는 무작위 탐색으로 찾은 실제 반례다 - `float` 로
+    먼저 변환해 나누면 두 표현이 갈린다(마지막 단언이 그 사실 자체를 확인한다).
+    """
+    num, den, k = 853513164, 911666163, 844721699730106015
+    small = {("k",): {"mh_num": num, "mh_den": den}}
+    scaled = {("k",): {"mh_num": num * k, "mh_den": den * k}}
+    out_small = cm._score_map(small)
+    out_scaled = cm._score_map(scaled)
+    assert out_small[("k",)] == out_scaled[("k",)]
+    # 이 반례가 실제로 float 변환에서 갈린다는 것도 함께 확인해 둔다 - 안 그러면
+    # "우연히 두 표현이 뭘 해도 같다" 는 반례를 못 배제한다.
+    assert float(num * k) / float(den * k) != out_small[("k",)]
+
+
 # ------------------------------------------------------------------ 정렬·절단
 
 def test_larger_sample_ranks_first_on_score_tie(tmp_path, monkeypatch):
@@ -659,6 +1188,41 @@ def test_observed_labeling_is_not_part_of_the_null(tmp_path, monkeypatch):
     label_sets = list(cm._iter_label_sets(strata, n_total, 0, rng, seen))
     assert len(label_sets) == 5                         # 관측 하나가 빠졌다
     assert all(labels[0][1] != 0b0011 for labels in label_sets)
+
+
+def test_note_warns_against_recomputing_score_from_coverage(tmp_path, monkeypatch):
+    """m5(2026-09-17 리뷰) — `note` 가 coverage_target/coverage_control 로 score 를
+    재계산하지 말라고 명시해야 한다. 이 둘은 score 바로 옆에 나란히 실리는 숫자라
+    "차를 내면 score" 로 착각하기 **가장 쉬운 재료**다(target_pass/target_total
+    보다도 직접적이다) - stratum 이 여럿이면 그 차는 이제 score(MH 가중)와 다르다.
+    """
+    t, c = ["T1", "T2"], ["C1", "C2"]
+    ys = [_y(w, "A45Z5") for w in t + c]
+    hs = [_h(w, "Etch", "ETCH9", "3") for w in t]
+    hs += [_h(w, "Etch", "ETCH8", "1") for w in c]
+    _make_db(tmp_path, monkeypatch, ys, hs)
+
+    res = cm.find_commonality(t, c)
+    assert "coverage_target" in res["note"] and "coverage_control" in res["note"]
+    assert "다시 계산해 score 대신 쓰지 마라" in res["note"]
+
+
+def test_note_also_warns_against_averaging_strata_detail(tmp_path, monkeypatch):
+    """rm9(2026-09-20 재리뷰) — `strata_detail` 의 stratum 별 `d` 는
+    coverage_target/control 보다도 score 계산 재료에 더 가깝다(이미 stratum
+    별로 나뉜 위험차다). 재계산 금지 문장이 coverage_*·target_pass/total 만
+    막으면 이 필드로 새는 재계산(단순 평균)은 안 걸린다 - stratum 마다
+    가중치가 달라 단순 평균은 MH 가중평균과 다르다.
+    """
+    t, c = ["T1", "T2"], ["C1", "C2"]
+    ys = [_y(w, "A45Z5") for w in t + c]
+    hs = [_h(w, "Etch", "ETCH9", "3") for w in t]
+    hs += [_h(w, "Etch", "ETCH8", "1") for w in c]
+    _make_db(tmp_path, monkeypatch, ys, hs)
+
+    res = cm.find_commonality(t, c)
+    assert "strata_detail" in res["note"]
+    assert "단순 평균" in res["note"]
 
 
 def test_permutation_can_be_turned_off(tmp_path, monkeypatch):
@@ -1109,11 +1673,30 @@ def test_size_map_counts_every_computable_key_not_just_the_scoring_ones():
     절단에 걸린 회차는 '진짜로 못 넘은' 회차라 분모에 남아야 한다. 그것까지 빼면
     과보정이다(실측: p<=0.05 가 명목 5.0% 대신 0.6% 로 주저앉는다).
     """
-    agg = {
+    def _mh(a, b, c, d):
+        """`_aggregate` 가 쌓는 mh_num/mh_den 을 손으로 재현한다(단일 stratum 취급).
+
+        `_score_map` 이 이제 mh_num/mh_den 으로 나누므로, 손으로 만든 agg 도 그
+        모양을 갖춰야 한다. nt=0 이면 mh_den 도 0 이 되어 '계산 불가' 가 그대로
+        걸러진다 — 별도 분기를 안 둬도 된다.
+
+        **정수 정확 산술로 재현한다**(rm10, 2026-09-20 재리뷰) - float `w*(a/nt
+        - c/nc)` 로 손수 만들면 실제 `_aggregate` 가 쌓는 정수쌍(R-B1) 모양을 안
+        타므로, `_score_map` 을 `float(mh_num)/float(mh_den)` 로 바꾸는 훼손(M11)
+        이 이 테스트를 그냥 통과해 버린다. `(a*nc-c*nt)/(nt*nc)` 정수쌍(단일
+        stratum 이므로 `mh_scale=1`)이 실제 코드가 쌓는 것과 같은 모양이다.
+        """
+        nt, nc = a + b, c + d
+        if nt == 0 or nc == 0:
+            return 0, 0
+        return a * nc - c * nt, nt * nc
+
+    raw = {
         ("a",): {"a": 2, "b": 1, "c": 3, "d": 1},    # score = 2/3 - 3/4 < 0 -> 절단
         ("b",): {"a": 3, "b": 0, "c": 0, "d": 4},    # score = 1.0 -> 살아남는다
         ("c",): {"a": 0, "b": 0, "c": 2, "d": 2},    # 타깃이 없다 -> 계산 불가
     }
+    agg = {k: {**v, "mh_num": _mh(**v)[0], "mh_den": _mh(**v)[1]} for k, v in raw.items()}
     assert set(cm._score_map(agg)) == {("b",)}
     assert cm._size_map(agg) == {("a",): 3, ("b",): 3}
 

@@ -44,10 +44,15 @@ def test_irregular_step_is_caught_only_by_the_passage_axis():
 def test_normal_steps_do_not_become_candidates_on_the_passage_axis():
     """전원이 거치는 정상 스텝은 후보 자체가 되지 않는다.
 
-    이 축이 쓸 만한 이유의 절반이다 — 타깃·대조군 커버리지가 같으면 분리 점수가 0 이라
-    commonality 가 걸러낸다. 안 걸러지면 wafer 당 스텝 수(실데이터는 ~1000)만큼 후보가
-    쏟아져 top-k 가 무의미해지고, 게이트의 순위 판정(지금은 축을 가로지른 1등 묶음
-    멤버십)도 흔들린다.
+    이 축이 쓸 만한 이유의 절반이다 — 이 더미는 root_lot 이 하나뿐이라(단일
+    stratum) 타깃·대조군 커버리지가 같으면 분리 점수가 **정확히** 0 이라
+    commonality 가 걸러낸다. ⚠️ 이것은 root_lot(stratum)별로 커버리지가 같을
+    때만 참이다 - stratum 이 여럿이고 **합산만 우연히 같은** 경우는 심슨의
+    역설로 분리 점수가 0이 아닐 수 있다(`domain/hypotheses.yaml` 의
+    step_passage_commonality 설명, `docs/2026-09-16-pooling-전제-측정.md`).
+    안 걸러지면 wafer 당 스텝 수(실데이터는 ~1000)만큼 후보가 쏟아져 top-k 가
+    무의미해지고, 게이트의 순위 판정(지금은 축을 가로지른 1등 묶음 멤버십)도
+    흔들린다.
     """
     res = _run("step_passage_commonality")
     steps = {c["step_seq"] for c in res["candidates"]}
