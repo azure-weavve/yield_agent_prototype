@@ -42,7 +42,7 @@ legend 수준 비교(x=시간, y=계측값, legend=ppid)는 이 설계의 범위
 
 | 항목 | 결정 |
 |---|---|
-| 점수식 | **현행 유지** (`coverage_target - coverage_control`). 불순도(Gini) 계열 탈락 |
+| 점수식 | **현행 유지** (`coverage_target - coverage_control`). 불순도(Gini) 계열 탈락. ⚠️ 이 "현행" 은 이 문서 작성 시점(2026-08-08) 기준이다 - `commonality.py::_score_map` 은 2026-09-17 에 stratum(root_lot)별 Mantel-Haenszel 가중평균으로 바뀌었다(pooling-mh-score). metro 는 그 변경 범위 밖(사용자 결정)이라 여기 적힌 crude pooling 식이 지금도 metro 자신(`_aggregate_metro`)의 실제 식이다(tm5, 2026-09-21 3차 리뷰) |
 | 연속값 처리 | **분할점 탐색**. 칼 한 번, 어느 쪽 조각이든(양방향) |
 | 작은 조각 | **탐색 범위에서 제외** (타깃이 `MIN_TARGET` 미만인 조각) |
 | 불확실성 | **순열검정**. root_lot **안에서만** 섞는다 |

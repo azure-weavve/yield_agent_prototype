@@ -40,9 +40,15 @@ wafer 는 '미통과' 가 아니라 분모 밖이다. metro 는 몇몇 스텝에
 **알려진 제약** (여기서 고치지 않는다)
 
 - stratum 별 a·b·c·d 를 합산한 뒤 한 번에 나누는 crude pooling 이라 심슨 역설에
-  노출된다. `commonality._score_map` 과 **같은 식을 일부러 쓴다** — metro 만 다른
-  척도를 쓰면 순위표에 나란히 못 놓는다. 별건으로 열려 있다
-  (`docs/2026-08-07-commonality-설계검토.md` 결함 3).
+  노출된다. **2026-09-17 이전에는 `commonality._score_map` 과 같은 식을 일부러
+  썼는데, 그 날 `_score_map` 이 stratum(root_lot)별 Mantel-Haenszel 가중평균으로
+  바뀌면서 더 이상 "같은 식" 이 아니게 됐다** — metro 는 여기서 여전히 crude
+  pooling 을 쓴다(사용자 결정으로 이번 변경 범위 밖). `_aggregate_metro` 가
+  `t_valid |= t_i` 로 stratum 을 그냥 합치고 **분할점 선택 자체도 pooled 카운트
+  위에서** 하므로(아래 `_aggregate_metro` 참고), commonality 처럼 누적자만 MH 로
+  바꿔서는 안 끝난다 — 분할점이 stratum 마다 달라질 수 있어 설계를 다시 봐야
+  한다. 별건으로 열려 있다(`docs/2026-08-07-commonality-설계검토.md` 결함 3,
+  `docs/2026-09-16-pooling-전제-측정.md`).
 - 계측값을 lot 대표값으로 퍼뜨리는 경로는 만들지 않는다. 값이 lot 단위 상수가 되면
   `root_lot` 층화 순열에서 라벨을 섞어도 coverage 가 안 변해 p 가 항상 1.0 이 된다.
 
@@ -344,9 +350,12 @@ def _aggregate_metro(strata_masks, combos, answer, seen,
 
     strata_masks = [(root_lot_id, t_mask, c_mask), ...]
 
-    stratum 을 가로질러 a·nt·c·nc 를 합산한 뒤 한 번에 나눈다 — `commonality._aggregate`
-    + `_score_map` 과 **같은 crude pooling** 이다. 분할점은 조합 전체에 하나여야
-    하므로(stratum 마다 다른 칼을 고르면 그건 다른 후보다) 정렬도 전역으로 훑는다.
+    stratum 을 가로질러 a·nt·c·nc 를 합산한 뒤 한 번에 나눈다 — crude pooling 이다.
+    **2026-09-17 이전에는 `commonality._aggregate` + `_score_map` 과 같은 식이었지만,
+    그쪽이 Mantel-Haenszel 가중평균으로 바뀌면서 지금은 metro 만 pooling 을 쓴다**
+    (모듈 docstring "알려진 제약" 참고 — 별건으로 열려 있다). 분할점은 조합 전체에
+    하나여야 하므로(stratum 마다 다른 칼을 고르면 그건 다른 후보다) 정렬도 전역으로
+    훑는다.
     """
     agg: dict[tuple, dict] = {}
     strata_report = []

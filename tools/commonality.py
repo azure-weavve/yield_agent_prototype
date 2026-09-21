@@ -3,14 +3,22 @@
 목적: 수만~수십만 개 센서를 보기 전에, **어느 스텝의 어느 설비/챔버가 의심스러운지**를
 설비 이력(step_history)만으로 좁힌다. 특징 차원이 스텝 수(~1000) 수준이라 싸다.
  
-핵심 계산 — 후보 (스텝, 설비/챔버) 마다 2x2:
- 
+핵심 계산 — 후보 (스텝, 설비/챔버) 마다 root_lot(stratum)별 2x2:
+
                 통과    미통과
-    target       a       b        coverage_target  = a / (a+b)
-    control      c       d        coverage_control = c / (c+d)
-                                  score = coverage_target - coverage_control
- 
-score = 1.0 이면 타깃 전원이 거쳤고 대조군은 아무도 안 거친 완전 분리 신호.
+    target       a       b        coverage_target  = a / (a+b)   (stratum 합산 — 표시용)
+    control      c       d        coverage_control = c / (c+d)   (stratum 합산 — 표시용)
+
+    score = Mantel-Haenszel 위험차 가중평균 (**후보가 나타난 stratum 에 한한 합** —
+            아래 "RR-M5" 참고)
+          = Σ w_i·(a_i/nt_i - c_i/nc_i) / Σ w_i,  w_i = nt_i·nc_i / (nt_i+nc_i)
+
+score = 1.0 이면 타깃 전원이 거쳤고 대조군은 아무도 안 거친 완전 분리 신호(단일 stratum).
+**stratum 이 여럿이면 score 는 위 coverage_target/coverage_control(stratum 을 합산한
+표시용 수치)의 차와 다를 수 있다** — 층별 비율이 다르면 심슨의 역설에 노출되기 때문에
+2026-09-17 에 pooled(합산) 대신 MH 가중으로 바꿨다(`_score_map`,
+`docs/2026-09-16-pooling-전제-측정.md` 의 재현 사례). stratum 이 하나뿐이거나 모든
+stratum 의 (타깃 수, 대조군 수) 가 같으면 두 값은 대수적으로 같다.
  
 설계 원칙:
 - **p 를 낸다 — 단, 공식이 아니라 직접 세기로.** 예전에는 "후보가 수천 개라 다중비교로
@@ -23,7 +31,10 @@ score = 1.0 이면 타깃 전원이 거쳤고 대조군은 아무도 안 거친 
 - **섞기는 root_lot 안에서만.** 집계가 층화돼 있으므로 귀무도 같은 축으로 섞어야
   lot 효과가 신호로 둔갑하지 않는다.
 - **root_lot 별 층화.** 대조군은 항상 타깃과 같은 root_lot 에서 나온다(route/시간 교락 차단).
-  타깃이 여러 root_lot 에 걸치면(EDS 확장 케이스) stratum 별로 세고 카운트를 합산한다.
+  타깃이 여러 root_lot 에 걸치면(EDS 확장 케이스) stratum 별로 센다 — **원시 카운트
+  (a/b/c/d, `coverage_target`/`coverage_control`)는 stratum 을 합산한 표시용 값이지만,
+  `score` 자체는 합산이 아니라 Mantel-Haenszel 가중평균이다**(위 "핵심 계산" 참고). 이
+  구분이 없으면 다층 상황에서 점수도 합계로 읽혀 심슨의 역설을 놓친다(m3, 2026-09-17 리뷰).
 - **분모는 그 질문에 답할 수 있는 wafer 만.** 후보 (레벨, 스텝) 마다 "그 스텝에 이력이
   있고 그 레벨 컬럼이 결측이 아닌 wafer" 를 분모로 쓴다. 스텝을 안 지난 wafer 를
   '미통과' 로 세면 score 가 챔버 분리도가 아니라 스텝 통과 여부를 반영한다.
@@ -239,12 +250,97 @@ def _aggregate(strata_masks, passed, answer, seen, universal,
     **실제 데이터와 순열 귀무가 이 함수 하나를 같이 탄다.** 귀무를 다른 코드로 세면
     분모 규칙·절단·stratum 스킵이 갈려, 실제와 다른 것을 재게 된다(설계 §1-4).
 
-    `collect_bits` 는 **출력만 늘린다.** 켜면 후보가 가리키는 wafer 마스크를 카운트와
-    같은 누적에서 함께 모은다. 귀무는 점수만 읽고 목록은 버리므로 기본은 꺼 두는데,
+    `collect_bits` 는 **출력만 늘린다.** 켜면 후보가 가리키는 wafer 마스크와 층별
+    상세(`strata_detail` — root_lot_id·타깃/대조군 pass·total·d)를 카운트와 같은
+    누적에서 함께 모은다. 귀무는 점수만 읽고 목록은 버리므로 기본은 꺼 두는데,
     켠 채로 순열을 돌리면 실측 +22% 였다(2026-08-23, 타깃 5/대조군 92).
-    ⚠️ 이 플래그가 a/b/c/d 나 stratum 스킵에 영향을 주게 만들면 안 된다 — 그 순간
-    위 문단이 거짓이 되고 귀무가 실제와 다른 것을 재기 시작한다.
-    tests/test_commonality.py 가 두 값이 플래그와 무관함을 단언으로 지킨다.
+    ⚠️ 이 플래그가 a/b/c/d·mh_num/mh_den/mh_scale(Mantel-Haenszel 누적자, 아래
+    참고)이나 stratum 스킵에 영향을 주게 만들면 안 된다 — 그 순간 위 문단이
+    거짓이 되고 귀무가 실제와 다른 것을 재기 시작한다. strata_detail 도 마찬가지로
+    출력 전용이다 — 담느냐 마느냐가 점수·카운트를 바꾸면 안 된다.
+    tests/test_commonality.py 가 이 값들이 플래그와 무관함을 단언으로 지킨다.
+
+    누적자는 표시용 pooled 카운트 a/b/c/d, stratum 수 strata, 그리고 **Mantel-
+    Haenszel 위험차 가중의 분자·분모를 정수쌍으로 정확히 누적하는 세 필드**
+    mh_num/mh_den/mh_scale — **float 로 누적하지 않는다** (2026-09-17 리뷰
+    R-B1, blocking). float `w*d` 누적은 두 가지를 깼다:
+    ①stratum 모양이 회차마다 다르면 수학적으로 같은 값이 다른 double 이 되어
+    `_null_distribution` 의 `>= obs` 동점 판정이 비보수적으로 어긋난다(순열 p 가
+    실제보다 작게 나온다), ②층 간 상쇄로 참값이 정확히 0 인 후보가 부동소수점
+    잔여 오차(예: `+1.1e-16`)로 `s > MIN_SCORE(0.0)` 를 통과해 없어야 할 후보가
+    생긴다. 정수 분자/분모로 누적하면 두 문제 다 근본에서 사라진다 — 같은
+    유리수는 항상 같은 분자/분모를 거쳐 같은(정확히 반올림된) double 이 되고,
+    참값 0 은 분자가 정확히 0 인 정수로 남는다.
+
+    **대수적 트릭**: stratum `i` 의 두 기여분 `w_i·d_i`·`w_i` 는 공통 분모
+    `m_i = nt_i+nc_i` 를 갖는다 — `w_i·d_i = (a_i·nc_i - c_i·nt_i)/m_i`,
+    `w_i = (nt_i·nc_i)/m_i`. 그래서 두 분자(mh_num/mh_den)가 **분모 하나**
+    (mh_scale, stratum 을 지날 때마다 누적한 `m_i` 들의 곱)를 공유한다. 분자를
+    갱신할 때만 정수 곱셈·덧셈을 쓰고(나눗셈 없음), 최종 score(`_score_map`)에서
+    `mh_num/mh_den` 을 한 번 나누면 공유 분모(mh_scale)가 대수적으로 약분돼
+    사라진다 — 그래서 mh_scale 자체는 `_score_map` 밖으로 안 나간다. stratum 이
+    하나뿐이면 `mh_num/mh_den = (a·nc-c·nt)/(nt·nc)` 로 단순화된다.
+
+    **⚠️ 성능: 나눗셈을 없애도 비용이 안 사라진다 — 실측했다(2026-09-17 리뷰
+    R-M-b).** "누적자가 늘어나도 리스트가 아니니 순열 루프에 비용이 안 붙는다"
+    는 예전 주장은 **거짓으로 실측됐다.** 곱셈·덧셈이 나눗셈보다 하나하나는
+    싸지만, 이 방식은 stratum 마다 정수 곱셈을 **여덟 번**(옛 float 방식은
+    나눗셈 둘 포함 다섯 번) 쓰므로 연산 개수 자체가 늘고, CPython 의 임의정밀도
+    정수는 float 보다 객체당 오버헤드가 더 크다. 같은 방법(4 root_lot × 30
+    wafer × 150 step, `n_permutations=300`, `main` 커밋 `d1a07dc` 대비)으로
+    재측정: `_aggregate` 마이크로벤치 **+39.7%**, 전 경로 `find_commonality`
+    **+34.1%** — 이 수정 이전(float `w*d` 누적, 순열 p 동점 손실 버그가 있던
+    상태)의 실측 +33%/+23.1% 보다 오히려 근소하게 **크다**. 즉 이 구현에서는
+    "나눗셈을 줄이면 초과분이 완화된다" 는 가설이 **성립하지 않았다** — 정확성
+    (R-B1)과 이 정도의 성능 비용은 함께 온다.
+
+    **RR-M4(2026-09-20 재리뷰) — 단일 stratum 고속 경로는 시도했다가 되돌렸다
+    (사용자 결정 2026-09-20).** 옛 float 식(`a/nt - c_/nc`)으로 빠지는 분기를
+    넣었더니 전 경로가 10~13% 빨라졌으나 **R-B1 이 막은 동점 손실이 그대로
+    재발했다.** 당시 안전 근거는 *"stratum 이 하나면 한 실행의 모든 회차가 같은
+    모양이라 같은 유리수가 다른 double 이 될 일이 없다"* 였는데 **거짓이다** —
+    모양(`nt`,`nc`)이 같아도 `a`·`c_` 는 회차마다 변하고, `fl(a/nt) - fl(c_/nc)`
+    는 그 차의 실수값만으로 정해지지 않는다. `nt<=40`·`nc<=80` 전수에서 **참값이
+    같은데 double 이 다른 (a,c) 쌍이 335,717건**이다(예: `nt=2, nc=6` 에서 참값
+    `-1/6` 이 `-0.16666666666666666` 과 `-0.16666666666666663` 으로 갈린다).
+
+    ⚠️ **정정(2026-09-21 3차 리뷰 TR-M2)** — 이 335,717쌍이 **후보별 순열 p**
+    (`_null_distribution` 의 `>= obs`)에서 실제로 서로 비교된다는 이전 기록은
+    거짓이었다. legend 축은 stratum 안에서만 섞으므로 ①`nt_i+nc_i` 가 라벨
+    불변이고(`_null_distribution` 독스트링이 이미 적어 둔 사실), ②`a_i+c_i`도
+    라벨 불변이다 — S=1 이면
+    `_size_map` 이 `nt` 를 고정해 **`nc`·`a+c_` 도 함께 고정**되고, 그러면
+    `a/nt - (a+c_-a)/nc` 는 `a` 의 순증가 단사 함수라 같은 참값이 두 `a` 에서
+    나올 수 없다(전수 확인: `a+c_` 고정 제약을 넣으면 동점 충돌 0건).
+    동점이 실제로 새는 자리는 둘이고 **메커니즘이 서로 다르다**(FR-9, 5차 리뷰가
+    재정정 2026-09-21).
+    - **FDR 임계 카운트**(`_null_distribution` 의 `null_counts[t] += sum(1 for v
+      in vals if v >= t)`)는 후보끼리가 아니라 **상수 임계**(`FDR_THRESHOLDS`)와
+      비교한다. 그래서 stratum 모양과 **무관하게** 샌다 - 모양이 하나로 고정된
+      S=1 에서도, 참값이 정확히 임계인 점수가 float 로는 임계 아래 double 이 되어
+      카운트에서 빠질 수 있다(예: `nt=3, nc=15, a=2, c_=4` 의 참값 0.4 가
+      `0.39999999999999997`. `nt,nc<=30` 전수에서 149건, 5차 리뷰 실측).
+    - **family-wise `null_max`**(`_family_wise_p` 의 `v >= best`)는 회차 **안 전체
+      후보의 최댓값**을 관측 1등과 비교하므로 **후보를 가로지른다** - 모양이 다른
+      후보가 같은 참값을 다른 double 로 내면 동점이 "못 넘음" 으로 떨어져 p 가
+      실제보다 작아진다(비보수적).
+    후보별 `>= obs` 는 위에서 본 대로 새지 않으므로, 이 둘은 2026-08-28 의 참조집합
+    조건화(`_size_map`)와는 **무관한 자리**다.
+
+    **그리고 그 분기로 얻을 몫도 거의 없었다.** S=1 이면 위 점화식이 이미
+    `mh_num = a·nc - c_·nt`, `mh_den = nt·nc` 로 환원되어 `_score_map` 이 **정확한
+    유리수를 한 번만** 나눈다(`nt,nc<=29` 전수에서 `Fraction` 과 일치 확인). 분기로
+    아낄 수 있는 것은 `mh_scale` 부기(정수 곱셈 여덟 번 -> 세 번)뿐이고, 측정된
+    10~13% 는 그 부기가 아니라 **정수를 float 로 바꾼** 몫이었다. 즉 속도가 나오는
+    형태는 안전하지 않고 안전한 형태는 속도가 거의 안 난다. 성능 초과분
+    (+39.7%/+34.1%)의 수용 여부는 **사내 실데이터를 본 뒤에** 다시 판단한다.
+
+    **rm8(기록만) — `mh_num`/`mh_den`/`mh_scale`(다층 경로)은 stratum 수 S 에
+    대해 자릿수가 O(S) 로 자란다** - 공통 분모(mh_scale)를 약분하지 않고 그대로
+    곱해 나가기 때문이다. S=200 까지 실측한 **자릿수(정수 비트 길이) 배율**은
+    2.4배 수준이라(시간이 아니라 자릿수 배율이다 - tm6, 2026-09-21 3차 리뷰)
+    병리적이지 않고, 최종 score 는 항상 [-1, 1] 구간이라 오버플로우 걱정도
+    없다 - 별도 조치 없이 기록만 남긴다.
     """
     agg: dict[tuple, dict] = {}
     strata_report = []
@@ -261,7 +357,20 @@ def _aggregate(strata_masks, passed, answer, seen, universal,
             a = (p_bits & t_mask).bit_count()
             c_ = (p_bits & c_mask).bit_count()
             if a == 0 and c_ == 0:
-                continue                  # 이 stratum 에 이 키가 없다
+                # 이 stratum 에 이 키가 없다. ⚠️ **RR-M5(2026-09-20 재리뷰)** —
+                # 이 스킵은 D1/예외 표가 다룬 `nt_i==0 or nc_i==0` 스킵과 별개다.
+                # pooled 시절에는 "분자·분모 양쪽에서 대칭으로 뺀다" 로 옳았지만,
+                # MH 가중평균에서는 `d_i=0` 이고 `w_i>0` 인 **정보 있는** stratum
+                # 을 평균에서 빼는 것이라 점수가 부풀 수 있다(리뷰어 예시: 포함
+                # 시 0.188 인데 지금은 1.000). **사용자 결정: 기존 동작이라
+                # 회귀가 아니므로 지금은 그대로 둔다** - 추정량 정의를 고치면
+                # 점수가 전반적으로 낮아져 전체 재검증이 필요하고, 그 판단은
+                # 실데이터를 본 뒤가 맞다(운영 빈도는 `docs/next_step_claude.md`
+                # P1-4 의 열린 질문). 그래서 위 "핵심 계산" 의 Σ 는 **이 스킵을
+                # 통과한(=후보가 나타난) stratum 에 한한 합**이다 - 조건 없이
+                # "stratum 별 위험차의 MH 가중평균" 이라고만 적으면 이 스킵이
+                # 없는 것처럼 읽힌다.
+                continue
             level, step, _keystr = key
             if level in universal:
                 nt, nc = t_seen.bit_count(), c_seen.bit_count()
@@ -273,24 +382,69 @@ def _aggregate(strata_masks, passed, answer, seen, universal,
             # (예: 대조군이 그 스텝에 아예 안 갔다 -> step_passage 축이 잡을 일이다)
             if nt == 0 or nc == 0:
                 continue
-            e = agg.setdefault(key, {"a": 0, "b": 0, "c": 0, "d": 0, "strata": 0})
+            e = agg.setdefault(key, {"a": 0, "b": 0, "c": 0, "d": 0, "strata": 0,
+                                     "mh_num": 0, "mh_den": 0, "mh_scale": 1})
             e["a"] += a
             e["b"] += nt - a
             e["c"] += c_
             e["d"] += nc - c_
             e["strata"] += 1
-            # 출력만 늘린다 — 위 다섯 줄에 영향이 없다. 키를 기본 dict 에 넣지 않고
-            # 여기서만 만드는 이유는 귀무 경로의 dict 크기를 원래대로 두기 위해서다
-            # (넣었더니 순열 비용이 붙었다). 마스크도 여기서 다시 잡는다 — 관측은
-            # 한 번뿐이라 재계산이 싸고, 귀무 경로에는 분기 하나만 남는다.
+            # Mantel-Haenszel 위험차 가중 — **정수 정확 산술**(R-B1). m 은 이
+            # stratum 기여분의 공통 분모, term_n/term_d 는 각각 분자(가중차)·
+            # 분모(가중치)의 이 stratum 몫이다. 나눗셈은 전혀 없다 — 곱셈·덧셈뿐.
+            # ⚠️ **stratum 이 하나뿐이어도 이 경로를 탄다.** 옛 float 식으로
+            # 빠지는 분기를 2026-09-20 에 넣었다가 되돌렸다 — 동점을 잃는다
+            # (위 독스트링의 "RR-M4" 절).
+            m = nt + nc
+            term_n = a * nc - c_ * nt          # w_i·d_i 의 분자 (분모는 m)
+            term_d = nt * nc                   # w_i 의 분자 (분모는 m)
+            scale = e["mh_scale"]
+            e["mh_num"] = e["mh_num"] * m + term_n * scale
+            e["mh_den"] = e["mh_den"] * m + term_d * scale
+            e["mh_scale"] = scale * m
+            # 출력만 늘린다 — 위 여덟 줄(카운트 다섯 + mh_num/mh_den/mh_scale)에
+            # 영향이 없다. 키를 기본 dict 에 넣지 않고 여기서만 만드는 이유는
+            # 귀무 경로의 dict 크기를 원래대로 두기 위해서다(넣었더니 순열
+            # 비용이 붙었다). 마스크도 여기서 다시 잡는다 — 관측은 한 번뿐이라
+            # 재계산이 싸고, 귀무 경로에는 분기 하나만 남는다.
             if collect_bits:
                 e["a_bits"] = e.get("a_bits", 0) | (p_bits & t_mask)
                 e["c_bits"] = e.get("c_bits", 0) | (p_bits & c_mask)
+                # 표시용 — 관측 경로에서만 만들어지므로 permutation 간 일관성이
+                # 필요 없다(스코어 계산과 무관한 별도 float 나눗셈). 소수점 3자리로
+                # 반올림해 "이 stratum 만 보면" 을 사람이 읽게 한다.
+                e.setdefault("strata_detail", []).append({
+                    "root_lot_id": rl,
+                    "target_pass": a, "target_total": nt,
+                    "control_pass": c_, "control_total": nc,
+                    "d": round(a / nt - c_ / nc, 3),
+                })
     return agg, strata_report
 
 
 def _score_map(agg) -> dict[tuple, float]:
     """후보키 -> score. MIN_SCORE 이하는 뺀다. 반올림하지 않는다.
+
+    **score 는 후보가 나타난 stratum(root_lot)별 위험차의 Mantel-Haenszel
+    가중평균이다**(RR-M5, 2026-09-20 재리뷰 - `_aggregate` 의 `a == 0 and
+    c_ == 0` 스킵으로 나타나지 않은 stratum 은 평균에서 빠진다. 사용자 결정으로
+    지금은 그대로 둔다) — stratum 을 먼저 합산한 뒤 한 번에 나누지 않는다.
+    합산부터 하면(옛 방식)
+    stratum 별 타깃/대조군 비율이 다를 때 심슨의 역설에 노출된다(`_aggregate` 의
+    mh_num/mh_den 이 그 가중을 **정수로 정확히** 계산해 뒀다 — 여기서 나누는 것이
+    이 계산 경로에서 일어나는 **유일한 나눗셈**이다). stratum 이 하나뿐이거나
+    모든 stratum 의 `(nt_i, nc_i)` **쌍**이 같으면(표본 크기만 같아서는 부족하다 —
+    타깃·대조군 각각의 크기가 stratum 마다 같아야 한다) 옛 pooled 값과 대수적으로
+    같다(`docs/2026-09-16-pooling-전제-측정.md`).
+
+    mh_num/mh_den 이 정수라서 이 나눗셈은 **정확한 유리수를 한 번만 반올림**한다
+    (2026-09-17 리뷰 R-B1) — 그래서 수학적으로 같은 값은 항상 같은 double 이 된다.
+    float 로 미리 나눠 누적했다면(`w_i·d_i` 를 float 로 더한 뒤 여기서 다시 나누는
+    옛 방식) stratum 모양이 다른 회차끼리 같은 유리수가 다른 double 이 될 수
+    있었고, 그러면 `_null_distribution` 의 동점 판정(`>= obs`)이 비보수적으로
+    어긋나거나(순열 p 가 실제보다 작아짐), 층 간 상쇄로 참값이 정확히 0 인
+    후보가 부동소수점 잔여 오차로 `s > MIN_SCORE` 를 통과했다(참값 0 은 이제
+    분자가 정확히 정수 0 이라 그런 일이 없다).
 
     귀무에도 **같은 절단**을 건다. 게이트를 못 지날 후보를 귀무에 세면 기준선만
     올라가 실제가 손해를 본다(설계 §1-4). 반올림을 안 하는 이유는 귀무와 관측을
@@ -298,10 +452,10 @@ def _score_map(agg) -> dict[tuple, float]:
     """
     out: dict[tuple, float] = {}
     for key, e in agg.items():
-        nt, nc = e["a"] + e["b"], e["c"] + e["d"]
-        if nt == 0 or nc == 0:
-            continue
-        s = e["a"] / nt - e["c"] / nc
+        den = e["mh_den"]
+        if den == 0:
+            continue          # 대비할 수 있는 stratum 이 없다 — 0으로 나누지 않는다
+        s = e["mh_num"] / den          # 정수 나눗셈 한 번 — 정확한 유리수를 반올림
         if s > MIN_SCORE:
             out[key] = s
     return out
@@ -315,6 +469,15 @@ def _size_map(agg) -> dict[tuple, int]:
     분모에서도 빠져 과보정이 된다(무신호 데이터에서 p<=0.05 가 명목 5.0% 대신 0.6%
     로 주저앉는다 - 2026-08-28 실측). 여기서 거르는 것은 **계산 자체가 성립하지 않는
     회차**(타깃이나 대조군이 통째로 빈 회차)뿐이다.
+
+    **이 조건화는 pooled `nt` 다**(D5, 2026-09-17 리뷰) — `e["a"] + e["b"]` 는
+    stratum 을 합산한 타깃 표본 수이지, MH 가중이 걸리는 `mh_num`/`mh_den` 과
+    같은 축이 아니다. `_score_map` 의 추정량은 stratum 별로 가중되지만 순열
+    참조집합을 좁히는 이 조건화는 여전히 pooled 값 하나로만 회차를 맞춘다 -
+    의도적으로 안 바꾼 것이다(2026-08-28 실측이 이 기준 위에 서 있고, `nc`·
+    stratum 까지 넓히면 검정력만 깎인다는 실측이 `_null_distribution` 독스트링에
+    있다). 다음 사람이 "추정량만 층화하고 조건화는 왜 pooled 인가" 로 돌아오는
+    자리라 여기 적어 둔다.
     """
     out: dict[tuple, int] = {}
     for key, e in agg.items():
@@ -726,7 +889,15 @@ def find_commonality(target_wafers: list[str], control_wafers: list[str],
             "coverage_target": round(cov_t, 3),
             "coverage_control": round(cov_c, 3),
             "score": round(score, 3),
+            # **설명용이지 판정용이 아니다** (D4). stratum 을 그냥 합산했으면 나왔을
+            # 값 — score(MH 가중)와 갈리면 심슨의 역설이 있다는 뜻이라 근거 줄이
+            # 이 값을 함께 보여 준다. 어떤 판정 코드도 이 키를 읽으면 안 된다
+            # (tests/test_engine.py::test_gate_verdict_never_reads_score_pooled).
+            "score_pooled": round(cov_t - cov_c, 3),
             "n_strata": e["strata"],
+            # 층별 원시 내역 — 항상 싣는다(D4). collect_bits 는 관측 경로에서만
+            # 켜므로(귀무는 절대 안 켠다) 이 키도 관측 후보에만 실린다.
+            "strata_detail": e.get("strata_detail", []),
             # **이 후보가 가리키는 실제 wafer.** 카운트만 있으면 두 후보가 같은
             # 3장을 말하는지 다른 3장을 말하는지 코드가 구분할 수 없다 - 축이
             # 여럿일 때 한 사실의 두 이름(교락)과 독립 근거 둘이 같아 보인다.
@@ -778,7 +949,28 @@ def find_commonality(target_wafers: list[str], control_wafers: list[str],
     note = ("후보는 결론이 아니다. 표본이 작아 우연한 분리가 흔하므로 "
             "원시 카운트(target_pass/target_total)를 반드시 함께 판단하고, "
             "지목된 스텝의 센서 비교로 검증해야 한다. target_total 은 그 질문에 "
-            "답할 수 있는 wafer 수이지 타깃 그룹 크기(n_target)가 아니다.")
+            "답할 수 있는 wafer 수이지 타깃 그룹 크기(n_target)가 아니다. "
+            # m5(2026-09-17 리뷰) — coverage_target/coverage_control 은 score 바로
+            # 옆에 실리는 숫자 두 개라 "그 차를 내면 score" 라고 재계산하기 쉽다
+            # (target_pass/target_total 로 다시 계산하지 말라는 지시보다도 더
+            # 직접적인 재료다). stratum 이 여럿이면 그 차는 score 와 다를 수 있다.
+            "coverage_target·coverage_control 은 stratum(root_lot)을 합산한 "
+            "표시용 값이다 - score 는 그 차가 아니라 stratum 별 위험차의 "
+            "Mantel-Haenszel 가중평균이다(n_strata 가 2 이상이면 값이 갈릴 수 "
+            "있다). coverage_target - coverage_control 을 다시 계산해 score 대신 "
+            "쓰지 마라. "
+            # rm9(2026-09-20 재리뷰) — strata_detail 의 stratum 별 d 는
+            # coverage_target/control 보다도 score 계산 재료에 더 가까워 보인다
+            # (이미 stratum 별로 나뉜 위험차라서). 그런데 stratum 마다 가중치
+            # w_i=nt_i·nc_i/(nt_i+nc_i) 가 달라 단순 평균은 MH 가중평균과 다르다.
+            # FR-9(2026-09-21 4차 리뷰) — 조건 없이 적으면 거짓이 되는 두 경우가
+            # 있다: stratum 이 1개면 평균할 것이 하나뿐이라 그대로 score 이고,
+            # stratum 마다 (nt_i, nc_i) 가 같으면 가중치가 전부 같아져 단순평균과
+            # MH 가중평균이 대수적으로 같다(D1, `_score_map` 독스트링과 같은 조건).
+            "stratum 이 2개 이상이고 그 모양(타깃·대조군 표본 수)이 서로 다를 "
+            "때는 strata_detail 의 stratum 별 d 를 단순 평균해도 score 가 나오지 "
+            "않는다 - stratum 마다 가중치가 달라 가중치 없는 평균은 score 와 "
+            "다르다.")
     if perm:
         note += (" p_permutation 은 라벨을 root_lot 안에서 섞었을 때 이만한 분리가 "
                  "나오는 비율이다. p_min_possible 이 크면(예: 0.1 이상) 참조 회차가 "

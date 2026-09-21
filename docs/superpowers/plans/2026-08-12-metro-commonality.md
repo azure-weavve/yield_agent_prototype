@@ -28,7 +28,7 @@
 
 ## 알려진 제약 (이번에 고치지 않는다)
 
-1. **crude pooling / 심슨 역설.** `_score_map` 은 stratum 별 a·b·c·d 를 합산한 뒤 한 번에 나눈다. metro 도 같은 식을 쓰므로 같은 제약을 물려받는다. `docs/2026-08-07-commonality-설계검토.md` 결함 3 으로 **여전히 열려 있는 별건**이다. 여기서 다르게 하면 metro 만 다른 척도가 되어 더 나쁘다.
+1. **crude pooling / 심슨 역설.** metro 자신의 `_aggregate_metro`(→ `tools/metro_commonality.py`)는 stratum 별 a·b·c·d 를 합산한 뒤 한 번에 나눈다. ⚠️ **2026-09-17 이전에는 이 문장이 `commonality.py::_score_map` 에도 똑같이 적용됐지만, 그 날 `_score_map` 이 stratum(root_lot)별 Mantel-Haenszel 가중평균으로 바뀌면서 더 이상 "같은 식" 이 아니게 됐다**(pooling-mh-score, tm5 2026-09-21 3차 리뷰) — metro 는 범위 밖(사용자 결정)이라 crude pooling 그대로 남았다. `docs/2026-08-07-commonality-설계검토.md` 결함 3 으로 **여전히 열려 있는 별건**이다. 여기서 다르게 하면 metro 만 다른 척도가 되어 더 나쁘다.
 2. **lot 대표값 경로 (B) 는 만들지 않는다.** metro 값이 lot 단위 상수가 되면 `root_lot` 층화 순열에서 라벨을 섞어도 coverage 가 변하지 않아 `p` 가 항상 1.0 이 된다(파워 0). 층화 축은 1단계가 교락 차단으로 세운 벽이라 여기서 건드릴 문제가 아니다.
 3. **재작업 회차 처리 없음.** metro 에는 재작업이 없다(2026-08-12 확인). `(wafer_id, step_seq, item, subitem_id)` 유일성을 **적재 검증으로 못 박는** 것으로 갈음한다.
 

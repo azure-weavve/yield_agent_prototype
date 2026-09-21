@@ -341,7 +341,250 @@ def test_statistical_evidence_line_is_unchanged():
                      "타깃 3/3 통과 · 대조군 0/6 통과")
 
 
+# --------------------------------------------------------- pooling-mh-score (T7)
+
+def test_evidence_line_is_unchanged_when_n_strata_is_one():
+    """T7(1/3) — 층 1개면 근거 줄이 옛 문자열과 완전히 같다(회귀 단언).
+
+    CAND_PASS 는 n_strata 도 score_pooled 도 없는 옛 모양 그대로다 - `_strata_suffix`
+    가 이 둘 중 하나라도 없으면 빈 문자열을 내야 한다(계획서 인터페이스 표: 후보
+    신규 키는 추가 전용이라 옛 상태 dict 는 `.get()` 기본값으로 옛 동작을 낸다).
+    """
+    single = {**CAND_PASS, "n_strata": 1, "score_pooled": 1.0}
+    b = evidence.build_bundle([_finding("hyp_eqp_ch_commonality", "eqp_ch_commonality",
+                                        "ok", [single])])
+    line = evidence.format_evidence_line(asdict(b.claims[CAND_PASS["claim_id"]]))
+    assert line == ("eqp_ch_commonality:chamber:CC002000:ETCH9_B · 분리 점수 1.0 · "
+                     "타깃 3/3 통과 · 대조군 0/6 통과")
+
+
+def test_evidence_line_marks_multi_stratum_scores_as_weighted():
+    """T7(2/3) — 층이 2개 이상이면 점수 뒤에 `(층 N개 가중)` 이 붙는다."""
+    multi = {**CAND_PASS, "n_strata": 2, "score_pooled": -0.357}
+    b = evidence.build_bundle([_finding("hyp_eqp_ch_commonality", "eqp_ch_commonality",
+                                        "ok", [multi])])
+    line = evidence.format_evidence_line(asdict(b.claims[CAND_PASS["claim_id"]]))
+    assert "분리 점수 1.0 (층 2개 가중) ·" in line
+
+
+def test_evidence_line_does_not_weight_label_metro_candidates():
+    """metro 는 이번 변경 범위 밖이다(사용자 결정) - `n_strata` 만 보고 표기를 걸면
+    metro 도 걸리는데, metro 는 여전히 crude pooling 이라 "가중" 은 거짓말이 된다.
+    `score_pooled` **값**으로 가르는 것이 옳다는 것을 여기서 잠근다.
+
+    `score_pooled` 는 값을 **None 으로 명시**한다 - 키 자체가 없는 모양은 운영
+    경로가 아니다(rm5, 2026-09-20 재리뷰). `domain/engine.py::evaluate` 는
+    metro 후보에도 이 키를 무조건 붙이므로(`.get()` 이 기본값을 못 찾아 그대로
+    실린다) 실제 metro claim 은 **키는 있고 값이 None** 이다. 키가 아예 없는
+    옛 모양으로 두면 `_strata_suffix` 를 `"score_pooled" not in extra` 로 바꾸는
+    훼손이 이 테스트를 그냥 통과해 버린다 - 두 조건이 "키 없음" 픽스처에서는
+    똑같이 참이기 때문이다.
+    """
+    metro_cand = _cand("m:1", "THK >= 129.0", 0.9, 0.02, ["W1", "W2"], level="metro")
+    metro_cand["n_strata"] = 3          # metro 도 n_strata 는 싣는다 — crude pooling 그대로
+    metro_cand["score_pooled"] = None   # engine 이 만든 모양 그대로 — 키는 있고 값이 None
+    b = evidence.build_bundle([_finding("hyp_metro", "metro_commonality", "ok",
+                                        [metro_cand])])
+    line = evidence.format_evidence_line(asdict(b.claims["m:1"]))
+    assert "가중" not in line
+
+
+def test_group_line_adds_stratum_breakdown_only_when_scores_diverge():
+    """T7(3/3) — 층별 내역 줄은 score 와 score_pooled 가 **갈릴 때만** 붙는다(D4).
+
+    심슨 픽스처(pooled -0.357, MH +0.122)는 붙고, 같은 stratum 내역이라도 score 와
+    score_pooled 가 같으면(갈리지 않음) 안 붙는다 - 임의 상수가 아니라 판별선·
+    잔차 아랫선이 나누는 구간과 부호로 정의된 조건이다.
+    """
+    strata_detail = [
+        {"root_lot_id": "LOT2405", "target_pass": 2, "target_total": 2,
+         "control_pass": 18, "control_total": 18, "d": 0.0},
+        {"root_lot_id": "LOT2406", "target_pass": 1, "target_total": 4,
+         "control_pass": 0, "control_total": 3, "d": 0.25},
+    ]
+    diverging = {**CAND_PASS, "score": 0.122, "n_strata": 2,
+                 "score_pooled": -0.357, "strata_detail": strata_detail}
+    b = evidence.build_bundle([_finding("hyp_eqp_ch_commonality", "eqp_ch_commonality",
+                                        "ok", [diverging])])
+    group = evidence.group_to_dict(b.ranked_groups()[0])
+    line = evidence.format_group_line(group)
+    assert "층별로 보면" in line
+    assert "LOT2405" in line and "LOT2406" in line
+    assert "-0.357" in line and "0.122" in line
+    # FR-3/E1·E2(2026-09-21 4차 리뷰) — 부분 문자열만 보면 층별 줄 안의 카운트나
+    # 구분자가 틀려도 안 걸린다. 전체 문자열을 값으로 잠근다.
+    assert line == (
+        "eqp_ch_commonality:chamber:CC002000:ETCH9_B · 분리 점수 0.122 (층 2개 가중) · "
+        "타깃 3/3 통과 · 대조군 0/6 통과\n"
+        "        층별로 보면 LOT2405 타깃 2/2 · 대조군 18/18 · d=0.0; "
+        "LOT2406 타깃 1/4 · 대조군 0/3 · d=0.25 - 합산(pooled) 점수는 -0.357 인데 "
+        "가중(MH) 점수는 0.122 로 갈린다(심슨의 역설 가능성이 있다) - "
+        "층 내역을 먼저 확인하라")
+
+    agreeing = {**CAND_PASS, "score": 1.0, "n_strata": 2,
+                "score_pooled": 1.0, "strata_detail": strata_detail}
+    b2 = evidence.build_bundle([_finding("hyp_eqp_ch_commonality", "eqp_ch_commonality",
+                                         "ok", [agreeing])])
+    group2 = evidence.group_to_dict(b2.ranked_groups()[0])
+    line2 = evidence.format_group_line(group2)
+    assert "층별로 보면" not in line2
+
+
+def test_group_line_catches_a_rounded_to_zero_sign_flip():
+    """m2(2026-09-17 리뷰) — 반올림된 score 가 정확히 0.0 이면 참값의 부호가
+    가려진다(`0 < |참값| < 0.0005` 가 `round(.,3)` 으로 0.0 이 된다). pooled 가
+    뚜렷이 음수인데 score 가 0.0 으로 뭉개진 심슨류 사례도 층별 줄이 붙어야
+    한다 - 안 붙으면 반올림이 "갈리지 않는다" 는 잘못된 인상을 준다.
+    """
+    strata_detail = [
+        {"root_lot_id": "LOT2405", "target_pass": 2, "target_total": 2,
+         "control_pass": 18, "control_total": 18, "d": 0.0},
+        {"root_lot_id": "LOT2406", "target_pass": 1, "target_total": 4,
+         "control_pass": 0, "control_total": 3, "d": 0.25},
+    ]
+    diverging = {**CAND_PASS, "score": 0.0, "n_strata": 2,
+                 "score_pooled": -0.357, "strata_detail": strata_detail}
+    b = evidence.build_bundle([_finding("hyp_eqp_ch_commonality", "eqp_ch_commonality",
+                                        "ok", [diverging])])
+    group = evidence.group_to_dict(b.ranked_groups()[0])
+    line = evidence.format_group_line(group)
+    assert "층별로 보면" in line
+
+
+def test_score_pooled_never_affects_any_judgment_path():
+    """R-M-d(2026-09-17 리뷰) — `find_commonality` 의 `score_pooled` 주석은
+    "어떤 판정 코드도 이 키를 읽으면 안 된다" 라고 넓게 적혀 있는데, 인용한 T6
+    (`test_gate_verdict_never_reads_score_pooled`)는 `domain/engine.py::_passes`
+    하나만 잠갔다. `graph/evidence.py::_is_thin_sample_claim` 이 `extra.score_pooled`
+    를 읽게 바꾼 훼손이 그 T6 를 안 거치고 살아남았다 - 여기서 주석의 폭만큼
+    `residuals()`/`thin_sample()` 을 함께 잠근다: score_pooled 값만 다른 두
+    후보가 **똑같이** 판정돼야 한다.
+    """
+    residual_shape = {**CAND_FAIL, "score": 0.3, "target_pass": 3}   # 잔차 자격
+    thin_shape = {**CAND_FAIL, "claim_id": "eqp_ch_commonality:chamber:CD004000:THIN",
+                  "score": 0.3, "target_pass": 1}                    # 표본 미달 자격
+
+    def _bundle_with(score_pooled):
+        cands = [{**residual_shape, "score_pooled": score_pooled},
+                 {**thin_shape, "score_pooled": score_pooled}]
+        return evidence.build_bundle([_finding("hyp_eqp_ch_commonality",
+                                                "eqp_ch_commonality", "ok", cands)])
+
+    variants = [_bundle_with(sp) for sp in (None, -999.0, 0.0, 999.0)]
+    residual_id_sets = {frozenset(c.claim_id for c in b.residuals()) for b in variants}
+    thin_id_sets = {frozenset(c.claim_id for c in b.thin_sample()) for b in variants}
+    assert len(residual_id_sets) == 1 and residual_id_sets.pop() == {residual_shape["claim_id"]}
+    assert len(thin_id_sets) == 1 and thin_id_sets.pop() == {thin_shape["claim_id"]}
+
+
 # ---------------------------------------------------------------- 접기와 순위
+
+
+def test_dominates_ignores_score_pooled_even_when_it_diverges_from_score():
+    """RR-M3(M12, 2026-09-20 재리뷰) — `tools/commonality.py` 의 "어떤 판정 코드도
+    이 키를 읽으면 안 된다" 를 순위 경로까지 잠근다.
+
+    R-M-d 는 `_is_thin_sample_claim` 만 잠갔다. `graph/evidence.py::dominates`
+    가 `extra.score_pooled` 로 우열을 가르는 훼손은 **1층 픽스처에서는
+    score_pooled == score 라 조용히 통과하고, 심슨 사례(다층)에서만 갈린다** -
+    운영에서만 틀리는 형태로 숨는다. 순위는 판정이다(대표 선정 → 게이트의 1등
+    묶음 멤버십 → 리포트 축). 여기서는 `score` 는 같은데 `score_pooled` 만
+    크게 다른 다층 후보 둘을 만들어, `score_pooled` 를 읽는 훼손이라면 반드시
+    갈릴 상황에서 실제로는 갈리지 않아야 함을 확인한다.
+    """
+    a = _cand("a:1", "HIGH_POOLED", 0.55, 0.02, ["W1", "W2"])
+    a["score_pooled"] = 999.0
+    a["n_strata"] = 2
+    b = _cand("b:1", "LOW_POOLED", 0.55, 0.02, ["W3", "W4"])
+    b["score_pooled"] = -999.0
+    b["n_strata"] = 2
+
+    groups = evidence.build_bundle([
+        _finding("hyp_eqp_ch_commonality", "eqp_ch_commonality", "ok", [a, b])
+    ]).ranked_groups()
+    ga, gb = _by_key(groups, "HIGH_POOLED"), _by_key(groups, "LOW_POOLED")
+    # score 가 같으므로(0.55 == 0.55) 어느 쪽도 이기면 안 된다. score_pooled 를
+    # 읽는 훼손이면 999.0 인 a 가 이긴다.
+    assert not evidence.dominates(ga, gb)
+    assert not evidence.dominates(gb, ga)
+
+
+def test_order_key_uses_score_not_extra_score_pooled():
+    """TR-M4(c, 2026-09-21 3차 리뷰) — `_order_key` 가 `claim.score` 대신
+    `extra.score_pooled` 를 읽는 훼손이 SURVIVED 했다. `_order_key` 는 표시
+    순서·대표 선정의 기반(`_fold_key`·`_sort_key` 둘 다 이것을 감싼다)이라
+    값으로 직접 잠근다 - 1층 픽스처에서는 score_pooled == score 라 조용히
+    통과하고 심슨 사례(다층)에서만 갈리는 숨는 형태이므로, extra.score_pooled
+    를 score 와 크게 다르게 만든다.
+    """
+    claim = evidence.Claim(
+        claim_id="c:1", tool="t", hypothesis_id="h", step_seq="s", key="k",
+        level="chamber", passes=True, reject_reason=None, score=0.6,
+        target_pass=3, target_total=3, control_pass=0, control_total=6,
+        p_permutation=0.02, extra={"score_pooled": -999.0, "n_strata": 2})
+    assert evidence._order_key(claim) == (0.02, -0.6)
+
+
+def test_fold_key_uses_order_key_score_not_extra_score_pooled():
+    """TR-M4(d, 2026-09-21 3차 리뷰) — `_fold_key` 가 `extra.score_pooled` 로
+    갈라지는 훼손이 SURVIVED 했다. `_fold_key` 는 묶음 안에서 대표를 고르는
+    자리(계획서 §pooling-mh-score D4/T6)라, 여기서도 score_pooled 가 크게
+    다른 claim 으로 값을 직접 잠근다.
+    """
+    claim = evidence.Claim(
+        claim_id="c:1", tool="t", hypothesis_id="h", step_seq="s", key="k",
+        level="chamber", passes=True, reject_reason=None, score=0.6,
+        target_pass=3, target_total=3, control_pass=0, control_total=6,
+        p_permutation=0.02, level_columns={"eqp_id": "E1"},
+        extra={"score_pooled": -999.0, "n_strata": 2})
+    assert evidence._fold_key(claim) == (0.02, -0.6, -1, "c:1")
+
+
+def test_score_diverges_from_pooled_band_boundary_is_inclusive():
+    """tm2(2026-09-21 3차 리뷰) — `_score_diverges_from_pooled` 의 `band` 가
+    쓰는 `>=` 를 `>` 로 바꿔도 SURVIVED 했다. 경계값 자체(0.5·0.25)를 score 로
+    주고 그 바로 아래 값을 score_pooled 로 줘서, `>=` 냐 `>` 냐로 band 셈이
+    갈리는 지점을 직접 겨눈다.
+    """
+    # 판별선(0.5) 경계 - score 는 정확히 0.5, score_pooled 는 그 바로 아래.
+    assert evidence._score_diverges_from_pooled(0.5, 0.499) is True
+    # 잔차 아랫선(0.25) 경계도 같은 방식으로.
+    assert evidence._score_diverges_from_pooled(0.25, 0.249) is True
+
+
+def test_score_diverges_from_pooled_treats_positive_vs_exact_zero_as_diverging():
+    """FR-7(2026-09-21 4차 리뷰) — `_score_diverges_from_pooled` 마지막 절의
+    부호 비교(`(score > 0) != (score_pooled > 0)`)는 **양수 대 정확히 0 도
+    갈린다로 본다.** 이것은 새 설계 결정이 아니라 **현재 동작을 고정**하는
+    것이다 - 바로 위 절(`score == 0.0 and score_pooled != 0.0`)이 이미
+    "0 대 비0" 을 갈린 것으로 보고 rm7 이 그 방향(내역을 더 보이는 쪽 -
+    보수적)을 승인했으므로, 대칭 반대(score 가 비0, pooled 가 정확히 0)도
+    같은 방향으로 갈린다고 보는 것이 일관된다.
+
+    band 조건에서 먼저 안 걸리도록 **같은 band(0 미만 RESIDUAL_MIN_SCORE)에
+    있는 값**을 골랐다 - score=0.1, score_pooled=0.0 은 둘 다
+    `band() == 0`(0.25 미만)이라 첫째 절이 거짓이고, `score == 0.0` 도
+    거짓이라 둘째 절도 거짓이다 - 그래서 이 값들은 **마지막 절만** 겨눈다.
+    """
+    assert evidence._score_diverges_from_pooled(0.1, 0.0) is True
+
+
+def test_group_line_needs_at_least_two_strata_to_show_the_breakdown():
+    """tm3(2026-09-21 3차 리뷰) — `format_group_line` 의 `len(strata_detail) >= 2`
+    를 `>= 1` 로 낮추는 훼손이 SURVIVED 했다(D4 "층 2개 이상"). strata_detail
+    이 1개뿐인 모양에서는 score/score_pooled 가 아무리 갈려도 층별 줄이 **안
+    붙어야** 한다.
+    """
+    strata_detail = [{"root_lot_id": "LOT1", "target_pass": 1, "target_total": 2,
+                       "control_pass": 0, "control_total": 2, "d": 0.5}]
+    diverging = {**CAND_PASS, "score": 0.6, "n_strata": 1,
+                 "score_pooled": -0.6, "strata_detail": strata_detail}
+    b = evidence.build_bundle([_finding("hyp_eqp_ch_commonality", "eqp_ch_commonality",
+                                        "ok", [diverging])])
+    group = evidence.group_to_dict(b.ranked_groups()[0])
+    line = evidence.format_group_line(group)
+    assert "층별로 보면" not in line
+
 
 def _cand(claim_id, key, score, p, wafers, level="chamber", step="CC002000",
           floor=0.001, at_floor=None):
@@ -780,6 +1023,35 @@ def test_folded_sensor_branch_omits_the_2x2_but_keeps_the_discriminator():
         assert missing not in folded
     # kind 는 남긴다 - 2x2 를 뺀 항목이 왜 비어 있는지 읽을 유일한 판별자다.
     assert folded["kind"] == "sensor"
+
+
+def test_folded_commonality_items_carry_score_pooled_and_n_strata():
+    """FR-5(2026-09-21 4차 리뷰) — `folded()` 의 두 번째(비센서) 화이트리스트에
+    `score_pooled`·`n_strata` 가 없었다. **lead(대표)** 는 `asdict(Claim)` 전체를
+    그대로 내보내 R-M-d/RR-B1 이 값 기준으로 고친 판별자가 그대로 통하지만,
+    같은 묶음 안에서 **접힌**(`confounded_with`/`rolled_up_as`) 항목은
+    `folded()` 를 거치며 이 두 키가 통째로 빠진다 - `llm/client.py` 의 재계산
+    금지("score_pooled 값이 null 이 아닌 항목만")가 이 접힌 항목에는 아예
+    걸리지 않고, **키가 없는 모양**이 "값이 null" 과 같은 것으로 읽혀
+    metro/sensor 면제 갈래에 잘못 묶일 수 있다 - lead 는 이미 고쳐졌는데
+    접힌 쪽만 남은 N-1 자리다.
+    """
+    ch = _cand("a:1", "ETCH9_B", 0.8, 0.02, ["W1", "W2"], level="chamber")
+    ch["score_pooled"] = -0.357
+    ch["n_strata"] = 2
+    ppid = _cand("b:1", "PPID_X", 0.8, 0.02, ["W1", "W2"], level="ppid")
+    ppid["score_pooled"] = 0.6
+    ppid["n_strata"] = 3
+
+    groups = evidence.build_bundle([
+        _finding("hyp_a", "eqp_ch_commonality", "ok", [ch]),
+        _finding("hyp_b", "ppid_commonality", "ok", [ppid])]).ranked_groups()
+
+    d = evidence.group_to_dict(groups[0])
+    assert [o["key"] for o in d["confounded_with"]] == ["PPID_X"]     # ppid 가 접힌 쪽
+    folded = d["confounded_with"][0]
+    assert folded["score_pooled"] == 0.6
+    assert folded["n_strata"] == 3
 
 
 def test_sensor_lead_does_not_ship_a_pass_count_to_the_report():

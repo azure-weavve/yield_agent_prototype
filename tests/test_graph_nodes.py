@@ -40,7 +40,16 @@ def _ai_finalize(confidence, hypothesis="Etch ETCH-9 원인", claim_id="eqp_ch_c
 # 이 파일의 후보 픽스처(모듈 상수 + 각 테스트 함수 안)는 실제 도구가 낼 수 있는
 # 값만 쓴다. 게이트는 `score` 와 `passes` 만 읽어서 어긋나도 안 죽지만, 픽스처를
 # 복사해 쓰는 다음 사람이 실재하지 않는 조합을 근거로 삼게 된다. 두 가지를 맞춘다:
-#   score         = target_pass/target_total - control_pass/control_total (commonality 정의)
+#   score         = stratum(root_lot) 이 하나면 target_pass/target_total -
+#                   control_pass/control_total 과 대수적으로 같다(commonality 정의,
+#                   `tools/commonality.py::_score_map`). stratum 이 여럿이면 pooled
+#                   합산이 아니라 Mantel-Haenszel 가중평균이라 이 식으로 안 나온다
+#                   (pooling-mh-score, 2026-09-17) - 모듈 상수 픽스처는 단일 stratum
+#                   이라 위 등식이 그대로 성립한다. ⚠️ **예외**: `score_pooled` 를
+#                   흔드는 FR-1 불변 테스트들(파일 끝 "게이트 불변" 절)의 픽스처는
+#                   n_strata=2 이고 카운트와 score 가 도구가 낼 수 없는 조합이다 -
+#                   `score_pooled` 를 score 와 **독립적으로** 흔들려고 일부러 합성했다.
+#                   그 픽스처를 다른 테스트의 근거로 복사하지 말 것(5차 리뷰 2026-09-21).
 #   reject_reason = domain/engine.py 의 reject_reason 조립부 형식 + ya_config 실제 임계
 #                   (COMMONALITY_PASS_MIN_SCORE=0.5, COMMONALITY_PASS_MIN_TARGET=2)
 
@@ -3403,11 +3412,14 @@ def test_loop_limit_also_drops_a_real_candidate_that_missed_the_line():
                             "step_seq": "CC002000", "key": "ETCH9_B", "level": "chamber",
                             "passes": False, "reject_reason": "분리 점수 0.1 < 0.5",
                             # 아랫선(0.25) 미만 - 잔차도 아니다. **카운트도 이 점수를
-                            # 낼 수 있는 것으로 적는다**: score 는 도구에서
-                            # coverage_target - coverage_control 이므로
-                            # 1.0 - 0.9 = 0.1 이다. 도구가 못 내는 조합을 적으면
-                            # 게이트가 score 를 직접 읽는 지금은 단언이 서지만,
-                            # 나중에 카운트를 보는 소비자가 붙는 순간 조용히 공허해진다.
+                            # 낼 수 있는 것으로 적는다**: 이 픽스처는 stratum 을
+                            # 안 실은(단일 stratum) 옛 모양이라 score 는 도구에서
+                            # coverage_target - coverage_control 과 대수적으로 같다
+                            # (stratum 이 여럿이면 MH 가중평균이라 다르다 - rm4,
+                            # 2026-09-20 재리뷰) - 여기서는 1.0 - 0.9 = 0.1 이다.
+                            # 도구가 못 내는 조합을 적으면 게이트가 score 를 직접
+                            # 읽는 지금은 단언이 서지만, 나중에 카운트를 보는
+                            # 소비자가 붙는 순간 조용히 공허해진다.
                             "score": 0.1,
                             "target_pass": 4, "target_total": 4,
                             "control_pass": 9, "control_total": 10}]},
@@ -4411,3 +4423,244 @@ def test_both_gateless_entrances_route_to_report():
     assert build._after_tools({"loop_count": ya_config.MAX_LOOPS - 1}) == "analyze"
     # 입구 2: tool call 없이 텍스트만 응답 (loop 1 에도 일어난다)
     assert build._after_analyze({"messages": [AIMessage(content="그냥 텍스트")]}) == "report"
+
+
+# ---------------------------------------------------------------------------
+# pooling-mh-score FR-1 (2026-09-21 4차 리뷰) — 게이트 불변.
+#
+# 이전 라운드들은 "score_pooled 를 읽는 자리" 를 하나씩 찾아 개별 단언으로
+# 잠갔는데(M11·M12·RR-M3·TR-M4 등) 리뷰마다 새 자리가 나왔다(N1~N3·E4·E5·C15).
+# 자리별 잠금 대신 **성질 하나**로 바꾼다 — 다층 번들에서 `extra.score_pooled`
+# 만 널리 흔들어도(부호 반전 · 판별선 0.5/잔차 아랫선 0.25 교차 · 극단값)
+# **판정문 · final_claims 의 claim_id 순서 · 등수 · tie_reason** 은 바뀌면
+# 안 된다. `extra` 전체나 지목되지 않은 claim 의 렌더된 근거 줄까지 비교하지는
+# 않는다 - `_strata_suffix`(층 표기)는 score_pooled 가 **None 인지(값)**로 갈리므로
+# (RR-B1, `graph/evidence.py::_strata_suffix`), 모든 라운드에서 score_pooled 를 **항상
+# None 이 아닌 값으로** 싣고 값만 바꾼다(None 으로 바꾸면 표기 문구가 달라져 이
+# 불변과 무관한 이유로 문자열이 갈린다). 5차 리뷰 2026-09-21 이 "키 존재" 서술을 정정.
+# ---------------------------------------------------------------------------
+
+def _mh_finding(tool, hyp, cands, loop=1):
+    return {"loop": loop, "tool": tool, "args": {}, "thought": "t",
+            "result": {"hypothesis_id": hyp, "status": "ok", "candidates": cands}}
+
+
+def _mh_pass_cand(claim_id, key, step, score, p, wafer, score_pooled):
+    """통과 후보. 다층(`n_strata=2`)이고 `score_pooled`·`strata_detail` 을 항상
+    싣는다 - 값이 없는 픽스처로는 "판정에 안 쓴다" 를 다층에서 못 잠근다.
+    """
+    return {"claim_id": claim_id, "level": "chamber", "step_seq": step, "key": key,
+            "passes": True, "reject_reason": None, "score": score,
+            "target_pass": 3, "target_total": 6, "control_pass": 0, "control_total": 6,
+            "p_permutation": p, "p_min_possible": 0.001,
+            "target_wafers": [wafer], "control_wafers": [],
+            "n_strata": 2, "score_pooled": score_pooled,
+            "strata_detail": [
+                {"root_lot_id": "LOTX", "target_pass": 2, "target_total": 3,
+                 "control_pass": 0, "control_total": 3, "d": 0.667},
+                {"root_lot_id": "LOTY", "target_pass": 1, "target_total": 3,
+                 "control_pass": 0, "control_total": 3, "d": 0.333},
+            ]}
+
+
+# 라운드마다 A1 만 고정한다(지목되는 claim 이라 판정문 머리말이 그 근거 줄을
+# 그대로 담는다 - score=0.6·양수·판별선 위와 **같은 band·부호**로 고정해야
+# "층별로 보면" 줄이 라운드마다 들쭉날쭉하지 않는다). 나머지 넷은 라운드마다
+# 부호·판별선(0.5)·잔차 아랫선(0.25) 교차·극단값을 널리 오간다.
+_MH_ROUNDS = [
+    {"A1": 0.9, "A2": 0.4, "B1": 0.35, "B2": -0.2, "C1": 0.1},          # 기준
+    {"A1": 0.9, "A2": -0.4, "B1": -0.35, "B2": 0.2, "C1": -0.1},        # 부호 반전
+    {"A1": 0.9, "A2": 0.51, "B1": 0.49, "B2": 0.26, "C1": 0.24},        # 판별선·아랫선 교차
+    {"A1": 0.9, "A2": 1e9, "B1": -1e9, "B2": 1e9, "C1": -1e9},          # 극단값
+]
+
+
+def _mh_round_findings(sp):
+    a1 = _mh_pass_cand("a:A1", "KA1", "S1", 0.6, 0.02, "WA1", sp["A1"])
+    a2 = _mh_pass_cand("a:A2", "KA2", "S1", 0.6, 0.02, "WA2", sp["A2"])
+    b1 = _mh_pass_cand("b:B1", "KB1", "S2", 0.9, 0.05, "WB1", sp["B1"])
+    b2 = _mh_pass_cand("b:B2", "KB2", "S2", 0.9, 0.05, "WB2", sp["B2"])
+    c1 = _mh_pass_cand("c:C1", "KC1", "S3", 0.55, 0.1, "WC1", sp["C1"])
+    return [_mh_finding("hyp_a", "a", [a1, a2]),
+            _mh_finding("hyp_b", "b", [b1, b2]),
+            _mh_finding("hyp_c", "c", [c1])]
+
+
+def test_confirmed_verdict_is_invariant_to_score_pooled_perturbation(monkeypatch):
+    """FR-1 — **게이트 불변, 승인(confirmed) 경로.**
+
+    A1·A2(축 a, 동점 score=0.6·p=0.02) 와 B1·B2(축 b, 동점 score=0.9·p=0.05)
+    가 각각 같은 등수에서 동점이 되어 `_tie_reason`("identical")을 겨눈다.
+    `REPORT_MAX_EVIDENCE=3` 로 낮춰 정렬 순서(A1,A2,B1,B2,C1) 중 앞 3개만
+    남게 해 `_sort_key` → `_record_evidence` 의 `passing[:limit]` 절단(E5)을
+    겨눈다. A1 을 지목해 승인 판정문의 머리말(`head`)까지 함께 겨눈다.
+
+    **공허하지 않음 확인**: `dominates`/`_order_key`/`_fold_key`/`_sort_key`
+    가 `claim.score` 대신 `extra.score_pooled` 를 읽는다고 가정하면 -
+    A1(항상 0.9)과 A2(라운드별 0.4/-0.4/0.51/1e9)의 우열이 라운드마다 뒤집혀
+    "동점" 이 깨지고 등수·tie_reason·정렬 순서가 라운드마다 달라진다. 실제
+    코드는 `score` 만 읽으므로 네 라운드 전부 등수·tie_reason·순서가 같아야
+    한다 - 이 값이 실제로 안 흔들리는 것이 이 테스트가 잠그는 것이다.
+    """
+    monkeypatch.setattr(ya_config, "REPORT_MAX_EVIDENCE", 3)
+    args = {"claim_id": "a:A1", "hypothesis": "h", "confidence": 0.9}
+
+    baseline_update = {}
+    baseline_verdict = nodes._finalize_gate(
+        args, 2, baseline_update, _mh_round_findings(_MH_ROUNDS[0]))
+    assert baseline_update["finalize_status"] == "confirmed"
+    baseline_ids = [c["claim_id"] for c in baseline_update["final_claims"]]
+    baseline_ranks = [c["rank"] for c in baseline_update["final_claims"]]
+    baseline_ties = [c.get("tie_reason") for c in baseline_update["final_claims"]]
+    # 픽스처가 실제로 동점·절단을 만드는지부터 검산한다 - 안 그러면 아래
+    # 라운드 비교가 공허해진다.
+    assert baseline_ids == ["a:A1", "a:A2", "b:B1"]           # C1 은 상한 밖
+    assert baseline_ranks == [1, 1, 2]
+    assert baseline_ties == ["identical", "identical", "identical"]
+
+    for sp in _MH_ROUNDS[1:]:
+        update = {}
+        verdict = nodes._finalize_gate(args, 2, update, _mh_round_findings(sp))
+        assert verdict == baseline_verdict, sp
+        assert update["finalize_status"] == "confirmed", sp
+        assert [c["claim_id"] for c in update["final_claims"]] == baseline_ids, sp
+        assert [c["rank"] for c in update["final_claims"]] == baseline_ranks, sp
+        assert [c.get("tie_reason") for c in update["final_claims"]] == baseline_ties, sp
+
+
+def _weak_mh_finding(tool, hyp, claim_id, loop, score, score_pooled):
+    return _mh_finding(tool, hyp, [
+        {"claim_id": claim_id, "step_seq": "CC002000", "key": "K", "level": "chamber",
+         "passes": False, "reject_reason": f"분리 점수 {score} < 0.5", "score": score,
+         "target_pass": 4, "target_total": 4, "control_pass": 3, "control_total": 5,
+         "n_strata": 2, "score_pooled": score_pooled,
+         "strata_detail": [
+             {"root_lot_id": "LOTX", "target_pass": 2, "target_total": 2,
+              "control_pass": 1, "control_total": 2, "d": 0.5},
+             {"root_lot_id": "LOTY", "target_pass": 2, "target_total": 2,
+              "control_pass": 2, "control_total": 3, "d": 0.333}]},
+    ], loop=loop)
+
+
+_NO_SEP_ROUNDS = [
+    {"a": 0.9, "b": -0.9, "c": 0.26, "d": -0.26},      # 기준
+    {"a": -0.9, "b": 0.9, "c": -0.26, "d": 0.26},      # 부호 반전
+    {"a": 999.0, "b": -999.0, "c": 0.5, "d": 0.25},    # 극단값 + 판별선·아랫선 위
+]
+
+
+def _no_sep_round_findings(sp):
+    return [
+        _weak_mh_finding("hyp_eqp_ch_commonality", "eqp_ch_commonality",
+                         "eqp_ch_commonality:chamber:CC002000:ETCH9_B", 2, 0.18, sp["a"]),
+        _weak_mh_finding("hyp_ppid_commonality", "ppid_commonality",
+                         "ppid_commonality:ppid:CC002000:P1", 3, 0.10, sp["b"]),
+        _weak_mh_finding("hyp_step_passage_commonality", "step_passage_commonality",
+                         "step_passage_commonality:step:CC002000:S1", 4, 0.10, sp["c"]),
+        _weak_mh_finding("hyp_metro_commonality", "metro_commonality",
+                         "metro_commonality:item:CC002000:M1", 5, 0.15, sp["d"]),
+    ]
+
+
+def test_no_separation_verdict_is_invariant_to_score_pooled_perturbation():
+    """FR-1 — **게이트 불변, 갈리는 항목 없음(no_separation, (2b)) 경로.**
+
+    N1(`_no_separation_state`) 과 N2(판정문의 "최고 분리 점수" 인용)를 겨눈다.
+    네 축 전부 `score < RESIDUAL_MIN_SCORE(0.25)` 라 `_no_separation_state`
+    는 `score` 만 보고 성립해야 한다 - `score_pooled` 를 대신(또는 함께) 읽는
+    훼손이면 판별선·아랫선을 넘나드는 라운드에서 이 상태 자체가 깨지거나
+    (조건이 값 있음/없음이 아니라 크기를 본다면), "최고 분리 점수" 가 0.18
+    대신 극단값(999.0 등)을 인용하게 된다 - 둘 다 라운드 사이에서 값이 크게
+    흔들리므로 공허하지 않다.
+    """
+    baseline_update = {}
+    baseline_verdict = nodes._finalize_gate(
+        {"claim_id": "", "hypothesis": "h", "confidence": 0.3},
+        2, baseline_update, _no_sep_round_findings(_NO_SEP_ROUNDS[0]))
+    assert baseline_update["finalize_status"] == "no_separation"
+    assert "최고 분리 점수 0.18" in baseline_verdict, baseline_verdict
+    baseline_ids = [c["claim_id"] for c in baseline_update["final_claims"]]
+
+    for sp in _NO_SEP_ROUNDS[1:]:
+        update = {}
+        verdict = nodes._finalize_gate(
+            {"claim_id": "", "hypothesis": "h", "confidence": 0.3},
+            2, update, _no_sep_round_findings(sp))
+        assert verdict == baseline_verdict, sp
+        assert update["finalize_status"] == "no_separation", sp
+        assert [c["claim_id"] for c in update["final_claims"]] == baseline_ids, sp
+
+
+def _thin_mh_finding(tool, hyp, claim_id, loop, score, score_pooled):
+    return _mh_finding(tool, hyp, [
+        {"claim_id": claim_id, "step_seq": "CC002000", "key": "K", "level": "chamber",
+         "passes": False, "reject_reason": "타깃 표본 1 < 2", "score": score,
+         "target_pass": 1, "target_total": 1, "control_pass": 0, "control_total": 5,
+         "p_permutation": 0.02, "p_min_possible": 0.001,
+         "n_strata": 2, "score_pooled": score_pooled,
+         "strata_detail": [
+             {"root_lot_id": "LOTX", "target_pass": 1, "target_total": 1,
+              "control_pass": 0, "control_total": 2, "d": 1.0},
+             {"root_lot_id": "LOTY", "target_pass": 0, "target_total": 0,
+              "control_pass": 0, "control_total": 3, "d": 0.0}]},
+    ], loop=loop)
+
+
+_THIN_ROUNDS = [
+    {"a": 0.9, "b": -0.9},        # 기준
+    {"a": -0.9, "b": 0.9},        # 부호 반전
+    {"a": 999.0, "b": -0.5},      # 극단값 + 판별선 밑
+    # 두 후보의 pooled 가 **같다** - score 는 1.0/0.9 로 다르므로 실제 코드의
+    # `_tie_reason` 은 "cross_axis" 인데, pooled 로 비교하는 훼손(E4)이면
+    # "identical" 로 바뀐다. 위 세 라운드는 pooled 가 늘 달라 그 훼손이
+    # SURVIVED 했다(Claude main 실측 2026-09-21).
+    {"a": 0.5, "b": 0.5},
+]
+
+
+def _thin_round_findings(sp):
+    # a(score=1.0) 와 b(score=0.9) 는 **점수가 다르다** - `top` 인용이
+    # `score_pooled` 를 대신 읽는 훼손이라면 라운드마다 다른 후보(a/b)가
+    # 뽑혀 인용값이 1.00/0.90 사이에서 흔들린다. 점수를 같게 두면(둘 다 1.0)
+    # 어느 쪽이 이기든 인용문이 "1.00" 으로 똑같이 찍혀 그 훼손을 못 잡는다
+    # (직접 검증: sabotage 스크립트로 vacuous 였던 자리를 이 값 차이로 닫았다).
+    return [
+        _thin_mh_finding("hyp_eqp_ch_commonality", "eqp_ch_commonality",
+                         "eqp_ch_commonality:chamber:CC002000:ETCH9_B", 2, 1.0, sp["a"]),
+        _thin_mh_finding("hyp_ppid_commonality", "ppid_commonality",
+                         "ppid_commonality:ppid:CC002000:P1", 3, 0.9, sp["b"]),
+    ]
+
+
+def test_thin_sample_verdict_is_invariant_to_score_pooled_perturbation(monkeypatch):
+    """FR-1 — **게이트 불변, 표본 미달((2c) thin_sample) 경로.**
+
+    N3(판정문의 "최고 분리 점수는 X" 인용, (2c) 전용 - (2b) 의 N2 와는 다른
+    문장이다)와, 서로 다른 축·다른 점수(1.0/0.9)인데 p 가 같아 동점인 두 thin
+    후보의 `_tie_reason`("cross_axis", E4)을 겨눈다. `REPORT_MAX_EVIDENCE=1`
+    로 낮춰 `_evidence_groups`→`_record_evidence` 의 잔차(`residual[:limit]`)
+    절단(E5)도 겨눈다 - 절단은 `_sort_key` 순서(p, -score, claim_id)로 정해지는데
+    두 후보의 p 는 같고 score 는 달라 `-score` 로 갈린다(a=1.0 이 남는다).
+    """
+    monkeypatch.setattr(ya_config, "REPORT_MAX_EVIDENCE", 1)
+    args = {"claim_id": "", "hypothesis": "h", "confidence": 0.3}
+
+    baseline_update = {}
+    baseline_verdict = nodes._finalize_gate(
+        args, 2, baseline_update, _thin_round_findings(_THIN_ROUNDS[0]))
+    assert baseline_update["finalize_status"] == "thin_sample"
+    assert "최고 분리 점수는 1.00" in baseline_verdict, baseline_verdict
+    baseline_ids = [c["claim_id"] for c in baseline_update["final_claims"]]
+    baseline_ties = [c.get("tie_reason") for c in baseline_update["final_claims"]]
+    # 절단이 실제로 걸렸는지부터 검산한다 - 안 걸리면 E5 를 안 겨눈다.
+    assert len(baseline_ids) == 1
+    assert baseline_ids == ["eqp_ch_commonality:chamber:CC002000:ETCH9_B"]
+    assert baseline_ties == ["cross_axis"]
+
+    for sp in _THIN_ROUNDS[1:]:
+        update = {}
+        verdict = nodes._finalize_gate(args, 2, update, _thin_round_findings(sp))
+        assert verdict == baseline_verdict, sp
+        assert update["finalize_status"] == "thin_sample", sp
+        assert [c["claim_id"] for c in update["final_claims"]] == baseline_ids, sp
+        assert [c.get("tie_reason") for c in update["final_claims"]] == baseline_ties, sp

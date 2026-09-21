@@ -558,6 +558,106 @@ def test_operational_client_passes_every_claim_to_the_prompt():
     assert "전부 서술" in prompt
 
 
+def test_operational_client_prompt_explains_the_mh_weighted_score():
+    """T9(pooling-mh-score) — score 가 stratum 별 MH 가중평균이라는 설명이 프롬프트에
+    있어야 한다. 없으면(M10) LLM 이 target_pass/target_total 로 score 를 직접
+    재계산해 **다른 숫자**를 쓸 수 있다(계획서 D6.1). 이 문장은 `score_pooled` 가
+    실린 항목(commonality/step_history)이 있을 때만 나가야 한다(R-M-c, 아래
+    `test_..._does_not_mislabel_metro_and_sensor_claims` 가 반대쪽을 잠근다) -
+    그래서 여기서는 `extra.score_pooled` 가 있는 항목을 준다.
+    """
+    client = _openai_client()
+    client.generate_report(
+        target_wafers=["W1"], target_source="manual", target_group=["W1"],
+        status_summary="s", findings=[], hypothesis="h", confidence=0.9,
+        finalize_status="confirmed",
+        claims=[{"claim_id": "chamber-a", "rank": 1,
+                 "extra": {"score_pooled": -0.357, "n_strata": 2}}])
+    prompt = client.llm.seen
+    assert "Mantel-Haenszel 가중" in prompt
+    assert "다시 계산하지 마라" in prompt
+
+
+def test_operational_client_prompt_locks_the_three_mh_note_sentences():
+    """FR-6(2026-09-21 4차 리뷰, L1·L2·L3) — `mh_note`(client.py:623-634)는
+    세 가지 별개 사실을 말한다. 기존 단언은 "Mantel-Haenszel 가중" ·
+    "다시 계산하지 마라" 두 부분 문자열만 봐서, 세 문장 중 하나가 통째로
+    빠져도(예: L2 삭제) 안 걸렸다. 문장마다 고유한 구절로 따로 잠근다.
+    """
+    client = _openai_client()
+    client.generate_report(
+        target_wafers=["W1"], target_source="manual", target_group=["W1"],
+        status_summary="s", findings=[], hypothesis="h", confidence=0.9,
+        finalize_status="confirmed",
+        claims=[{"claim_id": "chamber-a", "rank": 1,
+                 "extra": {"score_pooled": -0.357, "n_strata": 2}}])
+    prompt = client.llm.seen
+    # L1 — score_pooled 는 설명용이고 score 를 대신하지 않는다(재계산 금지).
+    assert "score_pooled 값이 null 이 아닌 항목만" in prompt
+    assert "score_pooled 자체는 단순 합산값이고 설명용일 뿐 score 를 대신하지 않는다" in prompt
+    # L2 — strata_detail 의 stratum 별 d 도 (2개 이상·모양이 다를 때는) 단순
+    # 평균하면 score 가 안 나온다 - 조건 없이 적으면 stratum 1개나 모양이 같은
+    # 경우에 거짓이 된다(FR-9).
+    assert ("strata_detail 의 stratum 이 2개 이상이고 그 모양(타깃·대조군 표본 "
+            "수)이 서로 다른 항목은 그 안의 stratum 별 d 도 단순 평균하면 안 된다") in prompt
+    assert "stratum 마다 가중치가 달라 가중치 없는 평균은 score 와 다르다" in prompt
+    # L3 — score_pooled 가 null 인 항목(metro·sensor)은 이 규칙과 무관하다.
+    assert "score_pooled 값이 null 인 항목" in prompt
+    assert "키는 있어도 값이 null 이면 여기 속한다" in prompt
+    assert "metro 는 여전히 stratum 합산값이고 센서는 효과크기다" in prompt
+
+
+def test_operational_client_prompt_does_not_mislabel_metro_and_sensor_claims():
+    """R-M-c — commonality 항목이 하나도 없으면(metro·sensor 뿐) MH 가중 문장이
+    아예 안 나가야 한다. metro 는 여전히 crude pooling(score = stratum 합산)이고
+    sensor 의 score 자리에는 효과크기가 온다 - 조건 없이 적으면 둘 다에 거짓말이
+    된다(2026-09-17 리뷰). metro 도 `n_strata` 는 싣지만(m7) `score_pooled` 는
+    **값이 None** 이다 - 그 값으로만 가른다(키 유무가 아니다, RR-B1 아래 참고).
+    """
+    client = _openai_client()
+    client.generate_report(
+        target_wafers=["W1"], target_source="manual", target_group=["W1"],
+        status_summary="s", findings=[], hypothesis="h", confidence=0.9,
+        finalize_status="confirmed",
+        claims=[{"claim_id": "metro-a", "rank": 1, "kind": "statistical",
+                 "extra": {"n_strata": 3, "item": "THK", "score_pooled": None}},
+                {"claim_id": "sensor-a", "rank": 1, "kind": "sensor",
+                 "extra": {"target_mean": 1.0}}])
+    prompt = client.llm.seen
+    assert "Mantel-Haenszel 가중" not in prompt
+
+
+def test_operational_client_prompt_scopes_the_mh_note_by_value_not_key_presence():
+    """RR-B1(2026-09-20 재리뷰) — `domain/engine.py::evaluate` 는 metro 후보에도
+    `score_pooled` 키를 무조건 붙인다(값은 None, `.get()` 이 기본값을 못 찾아
+    그대로 실린다). 그래서 실제 운영 payload 는 commonality 항목과 metro 항목이
+    **둘 다 `score_pooled` 키를 가진** 혼합 리스트다 - 키 유무로 가르는 문장이면
+    metro 항목도 "score_pooled 필드가 있는 항목" 에 걸려 crude pooling 인 metro
+    에 "가중" 딱지가 붙는다(이 작업이 없애려던 심슨 노출에 거짓 라벨이 붙는
+    상황). 값(`is not None`)으로 가른 문장인지를 여기서 직접 잠근다 - 위
+    `test_..._does_not_mislabel_metro_and_sensor_claims` 는 metro 항목 하나만
+    있을 때(commonality 항목이 없어 MH 문장 자체가 안 나가는 경우)를 보므로,
+    **혼합 리스트에서 MH 문장이 나가면서도 metro 를 잘못 포함하지 않는지**는
+    따로 확인해야 한다.
+    """
+    client = _openai_client()
+    client.generate_report(
+        target_wafers=["W1"], target_source="manual", target_group=["W1"],
+        status_summary="s", findings=[], hypothesis="h", confidence=0.9,
+        finalize_status="confirmed",
+        claims=[{"claim_id": "chamber-a", "rank": 1,
+                 "extra": {"score_pooled": -0.357, "n_strata": 2}},
+                # engine 이 만든 모양 그대로 — score_pooled 키는 있고 값은 None
+                {"claim_id": "metro-a", "rank": 1, "kind": "statistical",
+                 "extra": {"score_pooled": None, "n_strata": 3, "item": "THK"}}])
+    prompt = client.llm.seen
+    assert "Mantel-Haenszel 가중" in prompt          # commonality 항목이 있으니 나간다
+    # 판별자가 값 기준이라는 것을 문구로 잠근다 - "필드가 있는" 이라고만 쓰면
+    # metro-a 도 "score_pooled 필드가 있는 항목" 에 걸려 잘못 가중 딱지가 붙는다.
+    assert "필드가 있는" not in prompt
+    assert "값이 null 이 아닌" in prompt
+
+
 def test_operational_client_puts_coverage_in_the_prompt():
     """부분 커버리지 사실이 산문을 쓰는 LLM 에게 가야 한다.
 
