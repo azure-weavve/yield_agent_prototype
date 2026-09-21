@@ -12,3 +12,8 @@ data/embeddings/
 yield_agent_design_plan_v2.md
 
 .env
+
+# Codex handoff workflow runtime state, schemas, and logs
+.workflow.lock
+.workflow-active.json
+docs/tasks/*/.workflow/
