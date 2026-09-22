@@ -6,12 +6,16 @@
 계약 테스트가 막으려던 것과 똑같은 모양의 조용한 실패다. 그 구멍을 메운다.
 """
 
+import csv
 import io
 import os
 import sqlite3
 import subprocess
 import sys
 
+import pytest
+
+import ya_config
 from data import load_internal as li
 
 YIELDS = [{"root_lot_id": "A45Z5", "wafer_id": "01", "lot_id": "A45Z5.1",
@@ -201,3 +205,397 @@ def test_script_path_execution_finds_the_repo_root():
     proc = subprocess.run([sys.executable, os.path.join("data", "load_internal.py"), "--help"],
                           capture_output=True, env=env, cwd=root)
     assert proc.returncode == 0, proc.stderr.decode("utf-8", "replace")
+
+
+# --------------------------------------------------------------------------- #
+# CSV 입력 (P1-3 사례 자료) — read_csv_records() + CLI 분기
+# --------------------------------------------------------------------------- #
+def _write_csv(path, fieldnames, rows, encoding="utf-8"):
+    with open(path, "w", encoding=encoding, newline="") as f:
+        w = csv.DictWriter(f, fieldnames=fieldnames)
+        w.writeheader()
+        w.writerows(rows)
+
+
+def test_source_column_names_with_colmap_round_trip_through_load(tmp_path):
+    """T1: 원천 컬럼명 + 대응표로 된 CSV 두 개가 load() 까지 왕복해야 한다."""
+    yc = tmp_path / "yield.csv"
+    _write_csv(yc, ["ROOT", "WF", "LOT", "LTYPE", "YLD", "DT"],
+               [{"ROOT": "A1", "WF": "1", "LOT": "A1.1", "LTYPE": "PP",
+                 "YLD": "91.2", "DT": "2026-01-01"},
+                {"ROOT": "A1", "WF": "2", "LOT": "A1.1", "LTYPE": "PP",
+                 "YLD": "62.0", "DT": "2026-01-01"}])
+    sc = tmp_path / "steps.csv"
+    _write_csv(sc, ["ROOT", "WF", "STEP", "EQP"],
+               [{"ROOT": "A1", "WF": "1", "STEP": "CC002000", "EQP": "E1"},
+                {"ROOT": "A1", "WF": "2", "STEP": "CC002000", "EQP": "E1"}])
+    colmap = tmp_path / "map.yaml"
+    colmap.write_text(
+        "yield:\n"
+        "  ROOT: root_lot_id\n  WF: wafer_no\n  LOT: lot_id\n"
+        "  LTYPE: lot_type\n  YLD: yield\n  DT: date\n"
+        "steps:\n"
+        "  ROOT: root_lot_id\n  WF: wafer_no\n  STEP: step_seq\n  EQP: eqp_id\n",
+        encoding="utf-8")
+
+    yrs, srs = li.read_csv_records(yc, sc, "percent", colmap=colmap)
+    db = tmp_path / "t.db"
+    report = li.load(yrs, srs, db, verbose=False)
+
+    assert report["n_yield"] == 2 and report["n_steps"] == 2
+    conn = sqlite3.connect(db)
+    rows = conn.execute("SELECT wafer_id, yield FROM yield ORDER BY wafer_id").fetchall()
+    conn.close()
+    assert rows == [("A1_01", 91.2), ("A1_02", 62.0)]
+
+
+def test_contract_key_headers_load_without_a_colmap(tmp_path):
+    """T2: 원천 컬럼명이 이미 계약 키면 대응표 없이도 적재된다."""
+    yc = tmp_path / "yield.csv"
+    _write_csv(yc, ["root_lot_id", "wafer_no", "lot_id", "lot_type", "yield", "date"],
+               [{"root_lot_id": "B2", "wafer_no": "1", "lot_id": "B2.1", "lot_type": "PP",
+                 "yield": "80.0", "date": "d"}])
+    sc = tmp_path / "steps.csv"
+    _write_csv(sc, ["root_lot_id", "wafer_no", "step_seq", "eqp_id"],
+               [{"root_lot_id": "B2", "wafer_no": "1", "step_seq": "CC002000", "eqp_id": "E9"}])
+
+    yrs, srs = li.read_csv_records(yc, sc, "percent")
+    db = tmp_path / "t.db"
+    report = li.load(yrs, srs, db, verbose=False)
+    assert report["n_yield"] == 1 and not report["fatal"]
+
+
+def test_bom_prefixed_utf8_header_is_recognized(tmp_path):
+    """T3: 엑셀이 저장한 UTF-8 BOM 이 첫 컬럼명에 붙어도 필수 컬럼 검사가 깨지면 안 된다."""
+    yc = tmp_path / "yield.csv"
+    _write_csv(yc, ["root_lot_id", "wafer_no", "lot_id", "lot_type", "yield", "date"],
+               [{"root_lot_id": "C3", "wafer_no": "1", "lot_id": "C3.1", "lot_type": "PP",
+                 "yield": "70.0", "date": "d"}], encoding="utf-8-sig")
+    sc = tmp_path / "steps.csv"
+    _write_csv(sc, ["root_lot_id", "wafer_no", "step_seq", "eqp_id"],
+               [{"root_lot_id": "C3", "wafer_no": "1", "step_seq": "CC002000", "eqp_id": "E1"}],
+               encoding="utf-8-sig")
+
+    yrs, srs = li.read_csv_records(yc, sc, "percent")
+    db = tmp_path / "t.db"
+    report = li.load(yrs, srs, db, verbose=False)
+    assert report["n_yield"] == 1 and not report["fatal"]
+
+
+def test_ratio_yield_unit_is_converted_to_percent_before_load(tmp_path):
+    """T4a: ratio 입력이면 저장값이 x100 이어야 한다 — validate() 의 범위검사(0~100)가
+    비율(0~1)을 못 잡아 전부 저수율로 통과하는 함정(요청서 5-2)을 막는 지점이다."""
+    yc = tmp_path / "yield.csv"
+    _write_csv(yc, ["root_lot_id", "wafer_no", "lot_id", "lot_type", "yield", "date"],
+               [{"root_lot_id": "A1", "wafer_no": "1", "lot_id": "A1.1", "lot_type": "PP",
+                 "yield": "0.912", "date": "2026-01-01"}])
+    sc = tmp_path / "steps.csv"
+    _write_csv(sc, ["root_lot_id", "wafer_no", "step_seq", "eqp_id"],
+               [{"root_lot_id": "A1", "wafer_no": "1", "step_seq": "CC002000", "eqp_id": "E1"}])
+
+    yrs, srs = li.read_csv_records(yc, sc, "ratio")
+    db = tmp_path / "t.db"
+    report = li.load(yrs, srs, db, verbose=False)
+
+    conn = sqlite3.connect(db)
+    y = conn.execute("SELECT yield FROM yield").fetchone()[0]
+    conn.close()
+    assert y == pytest.approx(91.2)
+    assert not report["fatal"]
+
+
+def test_percent_yield_unit_is_stored_unchanged(tmp_path):
+    """T4b: percent 입력이면 변환 없이 그대로 저장돼야 한다."""
+    yc = tmp_path / "yield.csv"
+    _write_csv(yc, ["root_lot_id", "wafer_no", "lot_id", "lot_type", "yield", "date"],
+               [{"root_lot_id": "A1", "wafer_no": "1", "lot_id": "A1.1", "lot_type": "PP",
+                 "yield": "91.2", "date": "2026-01-01"}])
+    sc = tmp_path / "steps.csv"
+    _write_csv(sc, ["root_lot_id", "wafer_no", "step_seq", "eqp_id"],
+               [{"root_lot_id": "A1", "wafer_no": "1", "step_seq": "CC002000", "eqp_id": "E1"}])
+
+    yrs, srs = li.read_csv_records(yc, sc, "percent")
+    db = tmp_path / "t.db"
+    li.load(yrs, srs, db, verbose=False)
+
+    conn = sqlite3.connect(db)
+    y = conn.execute("SELECT yield FROM yield").fetchone()[0]
+    conn.close()
+    assert y == pytest.approx(91.2)
+
+
+def test_missing_required_column_stops_before_reading_rows(tmp_path):
+    """T5: 대응 후에도 필수 키가 없으면 행을 읽기 전에 멈추고, 메시지에 빠진 키를 담는다."""
+    yc = tmp_path / "yield.csv"
+    # lot_type 컬럼이 통째로 빠짐
+    _write_csv(yc, ["root_lot_id", "wafer_no", "lot_id", "yield", "date"],
+               [{"root_lot_id": "A1", "wafer_no": "1", "lot_id": "A1.1",
+                 "yield": "91.2", "date": "2026-01-01"}])
+    sc = tmp_path / "steps.csv"
+    _write_csv(sc, ["root_lot_id", "wafer_no", "step_seq", "eqp_id"], [])
+
+    with pytest.raises(ValueError, match="lot_type"):
+        li.read_csv_records(yc, sc, "percent")
+
+
+def test_colmap_typo_not_in_header_stops(tmp_path):
+    """T6a: 대응표의 원천 컬럼명이 CSV 헤더에 없으면(오타) 멈춘다."""
+    yc = tmp_path / "yield.csv"
+    _write_csv(yc, ["root_lot_id", "wafer_no", "lot_id", "lot_type", "yield", "date"], [])
+    sc = tmp_path / "steps.csv"
+    _write_csv(sc, ["root_lot_id", "wafer_no", "step_seq", "eqp_id"], [])
+    colmap = tmp_path / "map.yaml"
+    colmap.write_text("yield:\n  WRONG_COL: root_lot_id\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="WRONG_COL"):
+        li.read_csv_records(yc, sc, "percent", colmap=colmap)
+
+
+def test_colmap_duplicate_mapping_to_same_key_stops(tmp_path):
+    """T6b: 두 원천 컬럼이 같은 계약 키로 대응되면 조용한 덮어쓰기 대신 멈춘다."""
+    yc = tmp_path / "yield.csv"
+    _write_csv(yc, ["WF1", "WF2", "root_lot_id", "lot_id", "lot_type", "yield", "date"], [])
+    sc = tmp_path / "steps.csv"
+    _write_csv(sc, ["root_lot_id", "wafer_no", "step_seq", "eqp_id"], [])
+    colmap = tmp_path / "map.yaml"
+    colmap.write_text("yield:\n  WF1: wafer_no\n  WF2: wafer_no\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="wafer_no"):
+        li.read_csv_records(yc, sc, "percent", colmap=colmap)
+
+
+def test_optional_columns_blank_in_csv_become_null(tmp_path):
+    """T7: 선택 컬럼(ppid, ch_id, defect_type)이 빈칸이면 DB 에 NULL 로 들어가야 한다."""
+    yc = tmp_path / "yield.csv"
+    _write_csv(yc, ["root_lot_id", "wafer_no", "lot_id", "lot_type", "yield", "date",
+                    "defect_type"],
+               [{"root_lot_id": "A1", "wafer_no": "1", "lot_id": "A1.1", "lot_type": "PP",
+                 "yield": "91.2", "date": "d", "defect_type": ""}])
+    sc = tmp_path / "steps.csv"
+    _write_csv(sc, ["root_lot_id", "wafer_no", "step_seq", "eqp_id", "ch_id", "ppid"],
+               [{"root_lot_id": "A1", "wafer_no": "1", "step_seq": "CC002000",
+                 "eqp_id": "E1", "ch_id": "", "ppid": ""}])
+
+    yrs, srs = li.read_csv_records(yc, sc, "percent")
+    db = tmp_path / "t.db"
+    li.load(yrs, srs, db, verbose=False)
+
+    conn = sqlite3.connect(db)
+    defect = conn.execute("SELECT defect_type FROM yield").fetchone()[0]
+    ch_id, ppid = conn.execute("SELECT ch_id, ppid FROM step_history").fetchone()
+    conn.close()
+    assert defect is None and ch_id is None and ppid is None
+
+
+def _csv_args(yc, sc, db=None):
+    argv = ["load_internal.py", "--yield-csv", str(yc), "--steps-csv", str(sc),
+            "--yield-unit", "percent"]
+    if db is not None:
+        argv += ["--db", str(db)]
+    return argv
+
+
+def test_cli_csv_input_without_db_refuses_and_leaves_dummy_untouched(tmp_path, monkeypatch):
+    """T8a: CSV 인자 + --db 미지정 → 기본값(더미 경로)로 떨어지면 안 되고 거부돼야 한다.
+
+    행이 비어 있으면 거부와 무관하게(빈 추출은 fatal 이라) 교체가 안 되므로, 그것만으론
+    이 가드를 검증하지 못한다(가드를 지워도 통과하는 공허한 테스트가 된다). 그래서 가드가
+    없으면 실제로 적재·교체까지 성공할 유효한 행을 하나 넣는다.
+    """
+    fake_dummy = tmp_path / "dummy.db"
+    monkeypatch.setattr(ya_config, "DB_PATH", fake_dummy)
+    yc, sc = tmp_path / "yield.csv", tmp_path / "steps.csv"
+    _write_csv(yc, ["root_lot_id", "wafer_no", "lot_id", "lot_type", "yield", "date"],
+               [{"root_lot_id": "A1", "wafer_no": "1", "lot_id": "A1.1", "lot_type": "PP",
+                 "yield": "91.2", "date": "2026-01-01"}])
+    _write_csv(sc, ["root_lot_id", "wafer_no", "step_seq", "eqp_id"],
+               [{"root_lot_id": "A1", "wafer_no": "1", "step_seq": "CC002000", "eqp_id": "E1"}])
+    monkeypatch.setattr(sys, "argv", _csv_args(yc, sc))
+
+    with pytest.raises(SystemExit) as exc:
+        li.main()
+    assert exc.value.code == 2               # ap.error() 의 종료 코드
+    assert not fake_dummy.exists()
+
+
+def test_cli_csv_input_with_dummy_db_path_refuses(tmp_path, monkeypatch):
+    """T8b: --db 를 더미 경로와 같은 값으로 명시해도 거부돼야 한다(--force 로도 못 넘김)."""
+    fake_dummy = tmp_path / "dummy.db"
+    monkeypatch.setattr(ya_config, "DB_PATH", fake_dummy)
+    yc, sc = tmp_path / "yield.csv", tmp_path / "steps.csv"
+    _write_csv(yc, ["root_lot_id", "wafer_no", "lot_id", "lot_type", "yield", "date"], [])
+    _write_csv(sc, ["root_lot_id", "wafer_no", "step_seq", "eqp_id"], [])
+    argv = _csv_args(yc, sc, db=fake_dummy) + ["--force"]
+    monkeypatch.setattr(sys, "argv", argv)
+
+    with pytest.raises(SystemExit) as exc:
+        li.main()
+    assert exc.value.code != 0
+    assert not fake_dummy.exists()
+
+
+def test_cli_csv_input_creates_tmp_db_via_subprocess(tmp_path):
+    """T9: 정상 경로 — tmp CSV 두 개 → tmp DB 생성, 종료코드 0."""
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    yc = tmp_path / "yield.csv"
+    _write_csv(yc, ["root_lot_id", "wafer_no", "lot_id", "lot_type", "yield", "date"],
+               [{"root_lot_id": "A1", "wafer_no": "1", "lot_id": "A1.1", "lot_type": "PP",
+                 "yield": "91.2", "date": "2026-01-01"}])
+    sc = tmp_path / "steps.csv"
+    _write_csv(sc, ["root_lot_id", "wafer_no", "step_seq", "eqp_id"],
+               [{"root_lot_id": "A1", "wafer_no": "1", "step_seq": "CC002000", "eqp_id": "E1"}])
+    db = tmp_path / "case.db"
+
+    proc = subprocess.run([sys.executable, "-m", "data.load_internal",
+                           "--yield-csv", str(yc), "--steps-csv", str(sc),
+                           "--yield-unit", "percent", "--db", str(db)],
+                          capture_output=True, cwd=root)
+    assert proc.returncode == 0, proc.stderr.decode("utf-8", "replace")
+    assert db.exists()
+
+
+# --------------------------------------------------------------------------- #
+# Opus 리뷰 지적 반영
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("rel_db", ["data/yield.db", "./data/yield.db"])
+def test_dummy_db_guard_catches_relative_paths_too(tmp_path, monkeypatch, rel_db):
+    """더미 DB 가드는 절대경로인 ya_config.DB_PATH 와 미해석 Path 로 비교하면
+    "data/yield.db" 나 "./data/yield.db" 같은 상대경로를 못 잡는다 — repo 루트에서
+    실행하면 조용히 뚫린다. resolve() 로 비교해야 한다.
+    """
+    fake_dummy = (tmp_path / "data" / "yield.db").resolve()
+    fake_dummy.parent.mkdir()
+    monkeypatch.setattr(ya_config, "DB_PATH", fake_dummy)
+    monkeypatch.chdir(tmp_path)
+    yc, sc = tmp_path / "yield.csv", tmp_path / "steps.csv"
+    _write_csv(yc, ["root_lot_id", "wafer_no", "lot_id", "lot_type", "yield", "date"],
+               [{"root_lot_id": "A1", "wafer_no": "1", "lot_id": "A1.1", "lot_type": "PP",
+                 "yield": "91.2", "date": "2026-01-01"}])
+    _write_csv(sc, ["root_lot_id", "wafer_no", "step_seq", "eqp_id"],
+               [{"root_lot_id": "A1", "wafer_no": "1", "step_seq": "CC002000", "eqp_id": "E1"}])
+    monkeypatch.setattr(sys, "argv", _csv_args(yc, sc, db=rel_db))
+
+    with pytest.raises(SystemExit) as exc:
+        li.main()
+    assert exc.value.code == 2
+    assert not fake_dummy.exists()
+
+
+def test_colmap_target_collides_with_passthrough_column_stops(tmp_path):
+    """대응표가 만든 계약 키가 매핑 안 된 통과 컬럼과 같은 이름이면 컬럼 순서에 따라
+    조용히 덮어써진다(마지막 값이 이긴다) — 멈춰야 한다.
+    """
+    yc = tmp_path / "yield.csv"
+    _write_csv(yc, ["yield", "YLD_RATIO", "root_lot_id", "wafer_no", "lot_id",
+                    "lot_type", "date"], [])
+    sc = tmp_path / "steps.csv"
+    _write_csv(sc, ["root_lot_id", "wafer_no", "step_seq", "eqp_id"], [])
+    colmap = tmp_path / "map.yaml"
+    colmap.write_text("yield:\n  YLD_RATIO: yield\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="yield"):
+        li.read_csv_records(yc, sc, "percent", colmap=colmap)
+
+
+def test_colmap_creating_both_wafer_id_and_wafer_no_stops(tmp_path):
+    """wafer_id 와 wafer_no 가 동시에 존재하면 _wafer_no() 가 wafer_no 를 조용히
+    우선한다 — 대응표가 만들어낸 모호함이면 멈춰야 한다.
+    """
+    yc = tmp_path / "yield.csv"
+    _write_csv(yc, ["wafer_id", "WF_NO", "root_lot_id", "lot_id", "lot_type", "yield",
+                    "date"], [])
+    sc = tmp_path / "steps.csv"
+    _write_csv(sc, ["root_lot_id", "wafer_no", "step_seq", "eqp_id"], [])
+    colmap = tmp_path / "map.yaml"
+    colmap.write_text("yield:\n  WF_NO: wafer_no\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="wafer_no"):
+        li.read_csv_records(yc, sc, "percent", colmap=colmap)
+
+
+def test_colmap_top_level_section_typo_stops(tmp_path):
+    """대응표 최상위 섹션 이름 오타("step:" — 맞는 이름은 "steps:")를 조용히
+    무시하면 그 대응은 통째로 안 먹히고 원천 컬럼명이 그대로 통과해 버린다.
+    """
+    yc = tmp_path / "yield.csv"
+    _write_csv(yc, ["root_lot_id", "wafer_no", "lot_id", "lot_type", "yield", "date"], [])
+    sc = tmp_path / "steps.csv"
+    _write_csv(sc, ["root_lot_id", "wafer_no", "step_seq", "eqp_id"], [])
+    colmap = tmp_path / "map.yaml"
+    colmap.write_text("step:\n  EQP: eqp_id\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="step"):
+        li.read_csv_records(yc, sc, "percent", colmap=colmap)
+
+
+def test_colmap_list_form_yaml_stops(tmp_path):
+    """대응표가 dict 가 아니라 list 로 파싱되면(형식 오류) 멈춘다."""
+    yc = tmp_path / "yield.csv"
+    _write_csv(yc, ["root_lot_id", "wafer_no", "lot_id", "lot_type", "yield", "date"], [])
+    sc = tmp_path / "steps.csv"
+    _write_csv(sc, ["root_lot_id", "wafer_no", "step_seq", "eqp_id"], [])
+    colmap = tmp_path / "map.yaml"
+    colmap.write_text("- yield\n- steps\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="dict"):
+        li.read_csv_records(yc, sc, "percent", colmap=colmap)
+
+
+def test_colmap_mapping_target_not_a_contract_key_stops(tmp_path):
+    """대응 대상 오타("CHAMBER: chid" — 맞는 계약 키는 "ch_id")를 조용히
+    통과시키면 그 값은 아무도 안 읽는 자리에 실린다.
+    """
+    yc = tmp_path / "yield.csv"
+    _write_csv(yc, ["root_lot_id", "wafer_no", "lot_id", "lot_type", "yield", "date"], [])
+    sc = tmp_path / "steps.csv"
+    _write_csv(sc, ["root_lot_id", "wafer_no", "step_seq", "eqp_id", "CHAMBER"], [])
+    colmap = tmp_path / "map.yaml"
+    colmap.write_text("steps:\n  CHAMBER: chid\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="chid"):
+        li.read_csv_records(yc, sc, "percent", colmap=colmap)
+
+
+def test_unstarted_steps_generator_does_not_lock_the_file(tmp_path):
+    """yield 단계가 먼저 실패하면(예: lot_type 형식 위반) load() 는 step_history
+    삽입까지 못 가므로 steps 제너레이터가 한 번도 안 돈다. 헤더 검증 때 열어 둔 핸들을
+    끝까지 들고 있으면, Windows 에서 곧바로 그 파일을 지우거나 다시 쓰려 할 때
+    WinError 32(사용 중)로 터진다 — 열기 자체를 제너레이터 소비 시점으로 미뤄야 한다.
+    """
+    yc = tmp_path / "yield.csv"
+    _write_csv(yc, ["root_lot_id", "wafer_no", "lot_id", "lot_type", "yield", "date"],
+               [{"root_lot_id": "A1", "wafer_no": "1", "lot_id": "A1.1",
+                 "lot_type": "PROD",  # 두 자리가 아님 -> transform_yield 단계에서 실패
+                 "yield": "91.2", "date": "d"}])
+    sc = tmp_path / "steps.csv"
+    _write_csv(sc, ["root_lot_id", "wafer_no", "step_seq", "eqp_id"],
+               [{"root_lot_id": "A1", "wafer_no": "1", "step_seq": "CC002000", "eqp_id": "E1"}])
+
+    yrs, srs = li.read_csv_records(yc, sc, "percent")
+    with pytest.raises(ValueError):
+        li.load(yrs, srs, tmp_path / "t.db", verbose=False)
+
+    sc.unlink()   # 핸들이 남아 있으면 여기서 PermissionError(WinError 32)
+
+
+def test_cli_yield_unit_without_csv_args_refuses(tmp_path, monkeypatch):
+    """T7: --yield-unit 만 주고 --yield-csv/--steps-csv 를 안 주면 거부해야 한다
+    (조용히 무시되고 _extract() 경로로 떨어지면 사용자가 오타를 못 알아챈다)."""
+    monkeypatch.setattr(ya_config, "DB_PATH", tmp_path / "dummy.db")
+    monkeypatch.setattr(sys, "argv", ["load_internal.py", "--yield-unit", "percent"])
+
+    with pytest.raises(SystemExit) as exc:
+        li.main()
+    assert exc.value.code == 2
+
+
+def test_cli_colmap_without_csv_args_refuses(tmp_path, monkeypatch):
+    """T7: --colmap 만 주고 CSV 인자가 없으면 거부해야 한다."""
+    monkeypatch.setattr(ya_config, "DB_PATH", tmp_path / "dummy.db")
+    colmap = tmp_path / "map.yaml"
+    colmap.write_text("yield: {}\n", encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", ["load_internal.py", "--colmap", str(colmap)])
+
+    with pytest.raises(SystemExit) as exc:
+        li.main()
+    assert exc.value.code == 2

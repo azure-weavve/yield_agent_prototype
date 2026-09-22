@@ -17,3 +17,6 @@ yield_agent_design_plan_v2.md
 .workflow.lock
 .workflow-active.json
 docs/tasks/*/.workflow/
+
+# P1-3 사례 원천 자료·사례 DB (사내 실데이터 - 커밋 금지)
+data/cases/
