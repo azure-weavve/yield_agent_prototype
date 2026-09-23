@@ -1331,6 +1331,36 @@ def test_h2_rebuild_chunk_stray_blocks_the_swap(tmp_path):
     assert any("이 청크가 요청하지 않은" in f for f in report["fatal"])
 
 
+def test_h2_rebuild_cli_passes_chunk_lots_so_a_leak_blocks_the_swap(tmp_path, monkeypatch):
+    """H2 배선: `--rebuild` CLI 가 청크 lot 목록을 rebuild() 에 넘겨야 위 검사가
+    실제로 돈다. 옛 2-튜플로 되돌리면 rebuild 는 요청 lot 을 몰라 누수를 그대로
+    교체하는데, 호출 횟수만 보는 G3 테스트로는 이것이 안 잠긴다."""
+    db = tmp_path / "t.db"
+    rows = {
+        "A45Z5": ([{"root_lot_id": "A45Z5", "wafer_id": "01", "lot_id": "A45Z5.1",
+                    "lot_type": "PP", "yield": 91.2, "date": "2026-07-01"}],
+                  [{"root_lot_id": "A45Z5", "wafer_id": "01", "step_seq": "CC002000",
+                    "eqp_id": "ETCH9", "timestamp": "t"}]),
+        "B77B7": ([{"root_lot_id": "B77B7", "wafer_id": "01", "lot_id": "B77B7.1",
+                    "lot_type": "PP", "yield": 88.0, "date": "2026-08-01"}],
+                  [{"root_lot_id": "B77B7", "wafer_id": "01", "step_seq": "CC002000",
+                    "eqp_id": "ETCH9", "timestamp": "t"},
+                   # 청크 2 가 청크 1(A45Z5)의 step 행을 다시 실어 온다
+                   {"root_lot_id": "A45Z5", "wafer_id": "01", "step_seq": "CC002000",
+                    "eqp_id": "ETCH9", "timestamp": "t"}]),
+    }
+    monkeypatch.setattr(li, "_extract_lot_ids", lambda since: ["A45Z5", "B77B7"])
+    monkeypatch.setattr(li, "_extract", lambda chunk: rows[chunk[0]])
+    monkeypatch.setattr(ya_config, "LOAD_LOT_CHUNK", 1)
+    monkeypatch.setattr(sys, "argv", ["load_internal.py", "--rebuild", "--db", str(db)])
+
+    with pytest.raises(SystemExit) as exc:
+        li.main()
+
+    assert exc.value.code == 1
+    assert not db.exists()
+
+
 def test_h2_rebuild_without_lot_lists_is_unaffected(tmp_path):
     """H2 대칭: load()/CSV 경로가 쓰는 기존 2-튜플 계약은 청크 검사 없이 그대로
     동작해야 한다(요청 lot 개념이 없다)."""

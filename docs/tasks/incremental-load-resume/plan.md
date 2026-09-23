@@ -147,3 +147,12 @@ IntegrityError 트레이스백), M-3(없는 `--db` 경로에 0바이트 파일),
 ## 열린 질문 / 가정
 
 - 가정: 사내 `_extract_lot_ids`/`_extract` 는 사용자가 사내에서 직접 채운다(원 설계 그대로).
+
+## H1~H7 재확인 결과 (Opus, `c62b0bb..3549700`)
+
+- H1~H7 전부 닫힘, 회귀 없음, BLOCKING/IMPORTANT 0. 병합 판정: 병합 가능.
+- 리뷰어 권고(우선순위 높음) M4 변이 생존 = `--rebuild` CLI 가 청크 lot 목록을 넘기는 배선이 안 잠김 →
+  Claude main 이 `test_h2_rebuild_cli_passes_chunk_lots_so_a_leak_blocks_the_swap` 추가. 2-튜플로 되돌린 변이에서 단독 사망 확인. 716 passed.
+- 기록만: rebuild yield 쪽 청크 감시 미잠금(M3, 다른 청크 yield 누수는 PK 충돌로 멈춤) · rebuild 원소를 `len()` 으로
+  가르며 비튜플 원소 계약이 좁아짐(시끄럽게 실패) · rebuild stray 문구가 "요청 밖 표기 lot" 경우를 설명 안 함 ·
+  H1 축은 root_lot 단위라 lot 내 일부 wafer 재공이면 고아 경고 가능(H1 이전부터) · `docs/superpowers/` 스냅샷엔 옛 UNION.
