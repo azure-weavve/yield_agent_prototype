@@ -32,6 +32,12 @@
 | [`analysis_loop_design.md`](analysis_loop_design.md) | 원문의 "아직 미구현" 은 **사실이 아니다** — 루프는 구현돼 있다(`graph/`). 착수 전 설계 메모의 기록 |
 | [`도메인지식-주입-틀-공백분석.md`](도메인지식-주입-틀-공백분석.md) | "도메인 전문가가 지식을 넣을 자리" 관점의 진단. 1순위(레지스트리)는 반영 완료, 2순위는 `defect_type` 전 행 NULL(Stage 4)이라 단절 |
 
+## 2-1. 목표 그림 — 작업 지시 아님
+
+| 문서 | 무엇 |
+|---|---|
+| [`commonality_analysis_graph_design.md`](commonality_analysis_graph_design.md) | 사내 commonality 절차([`commonality_분석방법.md`](commonality_분석방법.md))를 그래프 구조로 옮긴 **목표 그림**. 과거 사례로 검증되지 않았다 |
+
 ## 3. 과거 기록 — 고치지 않는다
 
 그때 무엇을 왜 결정했는지의 기록. **작업 지시로 읽지 말 것.**
