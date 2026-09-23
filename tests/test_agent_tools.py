@@ -10,7 +10,7 @@ def test_tool_names():
     assert {t.name for t in at.ALL_TOOLS} == {
         "get_wafer", "search_similar", "compare_sensor_distribution",
         "hyp_eqp_ch_commonality", "hyp_ppid_commonality",
-        "hyp_step_passage_commonality",
+        "hyp_step_passage_commonality", "hyp_metro_commonality",
         "finalize",
     }
     assert "finalize" not in at.TOOLS_BY_NAME  # finalize 는 게이트가 처리
@@ -20,6 +20,18 @@ def test_tool_names():
 def test_docstrings_exist():
     # docstring 이 곧 LLM 의 tool 선택 판단 재료
     assert all(t.description for t in at.ALL_TOOLS)
+
+
+def test_the_two_sensor_facing_docstrings_agree_on_who_can_be_picked():
+    """도구 docstring 은 LLM 이 **결과를 받은 그 자리에서** 읽는 계약이다.
+
+    센서 결과에 claim_id 가 실리므로, 그것을 낸 도구와 그것을 받는 도구 양쪽이
+    같은 말을 해야 한다. 한쪽만 적으면 다른 대화 경로에서 계약이 사라진다 -
+    `finalize` 만 보고 지목하는 경로와 센서 결과만 보고 지목하는 경로가 다르다.
+    """
+    sensor = at.TOOLS_BY_NAME["compare_sensor_distribution"].description
+    assert "claim_id" in sensor and "지목 대상이 아니다" in sensor
+    assert "지목" in at.finalize.description and "센서" in at.finalize.description
 
 
 def test_every_tool_argument_declares_a_json_type():
@@ -87,3 +99,93 @@ def test_compare_sensor_distribution_tool_invokes():
     assert res["status"] == "ok"
     assert res["candidates"][0]["sensor_name"] == f"{SENSOR_REAL}_avg"
     assert "refetch_key" in res
+
+
+def test_sensor_tool_is_not_registered_when_sensors_are_off():
+    """`SENSOR_MODE=off` 면 2단 도구를 아예 안 준다.
+
+    등록해 두면 LLM 이 부르고, 실패가 "인자를 확인하고 다시 호출하라" 로 돌아와
+    같은 호출을 반복하며 루프만 태운다. FDC 배선 전 사내 투입에서 실제로 이 모양이
+    된다 - 그때 코드를 고치지 않고 .env 로 끌 수 있어야 한다.
+
+    별도 프로세스로 확인하는 이유는 test_eds_search.py 와 같다: 도구 목록은 모듈
+    import 시점에 만들어지므로 이미 import 된 이 세션에서는 반영되지 않는다.
+    """
+    import os
+    import subprocess
+    import sys
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    probe = ("from tools.agent_tools import TOOLS_BY_NAME as T; "
+             "print('compare_sensor_distribution' in T, 'search_similar' in T)")
+
+    off = subprocess.run([sys.executable, "-c", probe], capture_output=True,
+                         cwd=root, env={**os.environ, "SENSOR_MODE": "off"})
+    assert off.returncode == 0, off.stderr.decode("utf-8", "replace")
+    assert off.stdout.decode().split() == ["False", "True"]
+
+    on = subprocess.run([sys.executable, "-c", probe], capture_output=True,
+                        cwd=root, env={**os.environ, "SENSOR_MODE": "local"})
+    assert on.returncode == 0, on.stderr.decode("utf-8", "replace")
+    assert on.stdout.decode().split() == ["True", "True"]
+
+
+def test_turning_sensors_off_does_not_touch_the_hypothesis_budget():
+    """센서를 꺼도 게이트의 `no_signal` 전제는 그대로다 - 흔한 오해를 못박는다.
+
+    게이트가 "다 돌렸는가" 를 셀 때 보는 것은 `hyp_` 로 시작하는 도구뿐이다
+    (`graph/nodes.py`). 2단 도구를 빼는 것은 **LLM 이 헛호출로 바퀴를 태우는 것**을
+    막을 뿐, 루프 예산의 산수를 바꾸지 않는다. 예산을 실제로 먹는 것은 상시 빈손인
+    metro 축처럼 `hyp_` 인 축이다.
+    """
+    import os
+    import subprocess
+    import sys
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    probe = ("from tools.agent_tools import TOOLS_BY_NAME as T; "
+             "print(sum(1 for n in T if n.startswith('hyp_')))")
+
+    counts = []
+    for mode in ("off", "local"):
+        p = subprocess.run([sys.executable, "-c", probe], capture_output=True,
+                           cwd=root, env={**os.environ, "SENSOR_MODE": mode})
+        assert p.returncode == 0, p.stderr.decode("utf-8", "replace")
+        counts.append(p.stdout.decode().strip())
+
+    assert counts[0] == counts[1]
+
+
+def test_group_arguments_are_never_llm_facing():
+    """대조 분모(group_ids/control_ids)는 LLM 스키마에 나가면 안 된다.
+
+    이 둘은 고정 골격(`status_node` 의 normalize_target + select_control)이 확정한
+    값이고, 리포트 머리말·커버리지·대조군 선정 근거가 전부 그 위에 서 있다. LLM 이
+    인자로 넘길 수 있으면 파이프라인이 확정한 그룹과 **다른 분모로 축을 돌린 결과**가
+    결론이 될 수 있는데, 게이트는 claim 만 조회하므로 그 어긋남을 볼 방법이 없다.
+
+    스키마에서 빼는 것과 tools 노드가 덮어쓰는 것은 다르다 - 스키마에 남겨 두면
+    LLM 이 계속 값을 만들어 내고(토큰·오형식 인자), 감사 기록의 args 가 실제 실행과
+    다른 값을 가리킬 여지가 남는다. 축이 늘 때마다 같은 구멍이 생기므로 전수로 잠근다.
+    """
+    leaked = []
+    for tool in at.ALL_TOOLS:
+        props = convert_to_openai_tool(tool)["function"]["parameters"]["properties"]
+        leaked += [f"{tool.name}.{arg}" for arg in ("group_ids", "control_ids")
+                   if arg in props]
+    assert not leaked, (
+        f"LLM 스키마에 노출된 대조 분모: {sorted(leaked)}. "
+        f"InjectedToolArg 로 표시하고 graph/nodes.py 의 tools 노드가 주입해야 한다."
+    )
+
+
+def test_group_arguments_are_still_required_at_invoke_time():
+    """스키마에서 뺐다고 도구가 그룹 없이 도는 것은 아니다.
+
+    주입을 빠뜨리면 빈 그룹으로 조용히 도는 것이 최악이다 - LLM 인자 실수가
+    엔지니어에게 데이터 사실로 보고된다(실측: 그룹이 통째로 비면
+    `insufficient_group`, 대조군만 비면 `no_paired_stratum` 이다). 인자 자체는
+    필수로 남아 누락이 예외로 드러나야 한다.
+    """
+    with pytest.raises(Exception):
+        at.TOOLS_BY_NAME["hyp_eqp_ch_commonality"].invoke({"reason": "그룹 없이"})

@@ -43,21 +43,65 @@ LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "60"))
 LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "2"))
 
 # 분석 루프 통제 (analysis_loop_design.md 부품 4b)
-MAX_LOOPS = 6              # 가드레일: 최대 순환 횟수 (무한루프 차단)
+# 가드레일: 최대 순환 횟수 (무한루프 차단).
+# **등록 가설 수에 매여 있다.** no_signal 은 이제 부분 커버리지로도 선언할 수 있지만,
+# no_comparable_data("볼 것이 없었다")는 여전히 등록 가설을 전부 돌려야 성립한다.
+# 그래서 최소한 (가설 수 + 첫 finalize 시도 + 마지막 finalize) 만큼은 있어야 한다.
+# 모자라면 그 케이스가 루프 소진(inconclusive)으로 끝나 사유가 틀린 보고가 된다
+# (조치가 다르다: 재시도 vs 적재/추출 범위 확인). 가설 4개인 지금은 6 이 딱
+# 맞아떨어져 여유가 없어서 7 로 둔다. tests/test_state.py 가 이 관계를 단언으로
+# 지킨다 (마진 +3 - 왜 +2 로는 모자란지도 거기 적혀 있다).
+MAX_LOOPS = 7
 CONFIDENCE_THRESHOLD = 0.8 # finalize 승인 임계 확신도
 
-# commonality 후보의 '판별 통과(passes)' 기준 — 게이트 증거로 쓸 최소 신뢰선.
-# 후보≠결론 철학상 못 박지 않고 실데이터 보며 조정한다.
+# commonality 는 **두 종류의 임계**를 쓴다. 이름이 비슷해 헷갈리므로 구분해 둔다.
+#
+#  (1) 탐색 범위 (COMMONALITY_*)      — 도구가 후보를 어디까지 낼 것인가.
+#      tools/commonality.py 가 읽는다. 여기서 잘린 후보는 LLM 도 게이트도 못 본다.
+#  (2) 판별선  (COMMONALITY_PASS_*)   — 게이트가 증거로 쓸 최소 신뢰선.
+#      domain/engine.py 가 읽어 후보의 passes 를 정한다. 미통과 후보도 목록에는 남는다.
+#
+# 둘 다 후보≠결론 철학상 못 박지 않고 실데이터 보며 조정한다.
+#
+# COMMONALITY_PASS_MIN_TARGET 뒤 빈 줄과 '잔차 아랫선' 주석 3줄을 지나 나오는
+# RESIDUAL_MIN_SCORE 는 이 두 종류에 속하지 않는 **제3의 임계**다 -
+# tools/commonality.py 도 domain/engine.py 도 안 읽고 graph/evidence.py(게이트)가
+# 읽는다. 이 블록 옆에 있어 위 두 종류 중 하나로 오해하기 쉬워 적어 둔다. 자리를
+# 옮기지 않는 이유는 계획서에서 이미 두 번 확정됐기 때문이다.
+COMMONALITY_MIN_TARGET = int(os.getenv("COMMONALITY_MIN_TARGET", "2"))
+COMMONALITY_TOP_K = int(os.getenv("COMMONALITY_TOP_K", "20"))
+COMMONALITY_MIN_SCORE = float(os.getenv("COMMONALITY_MIN_SCORE", "0.0"))
 COMMONALITY_PASS_MIN_SCORE = float(os.getenv("COMMONALITY_PASS_MIN_SCORE", "0.5"))
 COMMONALITY_PASS_MIN_TARGET = int(os.getenv("COMMONALITY_PASS_MIN_TARGET", "2"))
 
-# 센서(2단): "local" = yield.db 의 sensor_log, "http" = 사내 FDC
+# 잔차 아랫선 - 판별선(COMMONALITY_PASS_MIN_SCORE)을 못 넘은 후보 중 이 값 이상만
+# '약한 신호' 로 싣는다. 0.25 는 판별선의 절반이며 실데이터를 본 값이 아니다 -
+# COMMONALITY_PASS_* · SENSOR_PASS_MIN_EFFECT 와 같은 성격의 조정 노브다.
+RESIDUAL_MIN_SCORE = float(os.getenv("RESIDUAL_MIN_SCORE", "0.25"))
+COMMONALITY_PERMUTATIONS = int(os.getenv("COMMONALITY_PERMUTATIONS", "1000"))
+
+# 리포트/LLM 프롬프트에 싣는 근거 묶음의 상한. 후보는 도구마다 COMMONALITY_TOP_K
+# 만큼 나올 수 있고 계측 축은 무신호에서도 절반 가까이가 판별선을 넘는다 - 상한이
+# 없으면 근거를 살리려던 변경이 오히려 보고서를 못 읽게 만든다. 잘린 수는 리포트에
+# 그대로 적어 숨기지 않는다.
+REPORT_MAX_EVIDENCE = int(os.getenv("REPORT_MAX_EVIDENCE", "8"))
+
+# 센서(2단): "local" = yield.db 의 sensor_log, "http" = 사내 FDC, "off" = 미연결
+# "off" 는 도구를 아예 **등록하지 않는다**(tools/agent_tools.py). FDC 배선 전에
+# 투입하면 LLM 이 2단을 부르고 매번 실패해 루프만 태우는데, 실패 메시지는
+# "근거를 더 좁혀라" 로 읽혀 같은 호출을 반복하기까지 한다.
 SENSOR_MODE = os.getenv("SENSOR_MODE", "local")
 SENSOR_HTTP_URL = os.getenv("SENSOR_HTTP_URL", "https://<사내-fdc-호스트>/sensor")
 # 2단 반환 절단 — fetch 량과 무관하게 유계로 만든다 (후보≠결론)
 SENSOR_TOP_K = int(os.getenv("SENSOR_TOP_K", "10"))
 # 한 그룹의 센서 표본이 이 미만이면 비교하지 않는다 (표본 2장짜리 효과크기는 허상)
 SENSOR_MIN_SAMPLE = int(os.getenv("SENSOR_MIN_SAMPLE", "3"))
+
+# 센서 판별선 - 이 효과크기 미만이면 근거로 싣지 않는다(후보 목록에는 남는다).
+# 도구는 d>0 이면 전부 top-K 에 싣는데, 그대로 리포트 [근거] 로 태우면 d=0.05 짜리가
+# 원인 후보로 읽힌다. 0.8 은 Cohen 의 large 관례이며 실데이터를 본 값이 아니다 -
+# COMMONALITY_PASS_* 와 같은 성격의 조정 노브다.
+SENSOR_PASS_MIN_EFFECT = float(os.getenv("SENSOR_PASS_MIN_EFFECT", "0.8"))
 
 # 형제 묶기 (status 입력 재설계): "같은 사건" 판정이라 유사 사례 검색(0.5)보다 높게.
 # 실행 중 불변이므로 결정론 원칙과 충돌 없음 (재설계 문서 6절 2번).

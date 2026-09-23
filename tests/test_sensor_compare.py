@@ -31,9 +31,25 @@ def test_return_is_bounded_and_carries_raw_counts():
     res = _run()
     assert len(res["candidates"]) <= ya_config.SENSOR_TOP_K
     c = res["candidates"][0]
-    assert set(c) == {"sensor_name", "effect_size", "target_mean", "control_mean",
+    assert set(c) == {"claim_id", "passes", "reject_reason",
+                      "sensor_name", "effect_size", "target_mean", "control_mean",
                       "target_std", "control_std", "n_target", "n_control"}
     assert c["n_target"] == len(GROUP_WAFERS)
+
+
+def test_the_printed_effect_size_is_the_one_that_was_judged(monkeypatch):
+    """판정과 인쇄를 다른 값으로 하면 경계에서 자기모순이 나간다.
+
+    원값 d 로 `passes` 를 정하고 문구는 `round(d, 3)` 으로 찍으면, d=0.7996 에서
+    "효과크기 0.8 < 0.8" 이라는 반려 사유가 나오고 근거 줄도 0.8 을 찍는다 -
+    엔지니어는 통과해야 할 것이 왜 떨어졌는지 읽을 수 없다. 숫자는 하나여야 한다.
+    """
+    monkeypatch.setattr(sc, "_effect_size",
+                        lambda t, c: ya_config.SENSOR_PASS_MIN_EFFECT - 0.0004)
+    cand = _run()["candidates"][0]
+    assert cand["effect_size"] == ya_config.SENSOR_PASS_MIN_EFFECT
+    assert cand["passes"] is True
+    assert cand["reject_reason"] is None
 
 
 def test_note_says_candidates_are_not_conclusions():
@@ -75,6 +91,7 @@ def test_insufficient_sample_is_reported_not_computed():
     res = sc.compare_sensor_distribution(SENSOR_STEP, GROUP_WAFERS[:1], CONTROL_WAFERS)
     assert res["status"] == "insufficient_sample"
     assert res["candidates"] == []
+    assert res["kind"] == "sensor"
 
 
 def test_step_without_sensors_is_no_signal():
@@ -86,3 +103,40 @@ def test_step_without_sensors_is_no_signal():
     assert res["status"] == "no_signal"
     assert res["candidates"] == []
     assert "원인 없음이 아니다" in res["note"]
+    assert res["kind"] == "sensor"
+
+
+def test_kind_is_present_when_fetch_fails(monkeypatch):
+    """판별자는 fetch_failed 경로에도 있어야 한다 - 없으면 조회 실패 결과가
+    build_bundle 에서 조용히 무시된다."""
+    monkeypatch.setattr(ya_config, "SENSOR_MODE", "bogus")   # get_store() 가 죽어 fetch_failed
+    res = _run()
+    assert res["status"] == "fetch_failed"
+    assert res["kind"] == "sensor"
+
+
+def test_candidates_carry_the_gate_contract():
+    """센서 후보도 claim_id 를 받는다 - 그래야 게이트가 조회하고 리포트가 인용한다.
+
+    claim_id 에 step_seq 를 넣는 이유: 다른 스텝의 두 번째 호출이 첫 호출의 근거를
+    덮어쓰면 안 된다. 두 스텝은 서로를 대체하는 재실행이 아니라 다른 질문이다.
+    """
+    res = _run()
+    assert res["kind"] == "sensor"
+    c = res["candidates"][0]
+    assert c["claim_id"] == f"sensor:{SENSOR_STEP}:{c['sensor_name']}"
+    assert c["passes"] is True                     # 실제 원인 센서는 효과가 크다
+    assert c["reject_reason"] is None
+
+
+def test_weak_effect_is_recorded_but_does_not_pass(monkeypatch):
+    """판별선 미달 센서는 목록에 남되 passes=False 다 (1단 미통과 후보와 같은 취급).
+
+    지우면 게이트가 reject_reason 을 돌려줄 수 없고, 그대로 통과시키면 d=0.05 짜리가
+    리포트 [근거] 에 올라간다.
+    """
+    monkeypatch.setattr(ya_config, "SENSOR_PASS_MIN_EFFECT", 99.0)
+    cands = _run()["candidates"]
+    assert cands, "후보 자체는 여전히 나와야 한다"
+    assert all(c["passes"] is False for c in cands)
+    assert all("99.0" in c["reject_reason"] for c in cands)

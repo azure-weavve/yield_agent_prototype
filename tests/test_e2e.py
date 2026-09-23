@@ -90,3 +90,96 @@ def test_no_targets_short_circuits_to_report():
     assert state["target_group"] == []
     assert state["finalize_status"] == "no_anomaly"
     assert state["findings"] == []           # 분석 루프도 그룹 묶기도 돌지 않았다
+
+
+def test_sensorless_deployment_still_reaches_confirmed():
+    """`SENSOR_MODE=off` 구성에서도 분석이 확정까지 간다.
+
+    2단이 없는 것과 2단이 근거를 못 낸 것은 다르다. 후자는 기다리면 언젠가 근거가
+    나오지만 전자는 안 나온다 - 그런데 둘을 같게 다루면 센서 미연결 구성에서는
+    **무엇도 확정되지 못하고 매번 루프 소진**으로 끝난다. FDC 배선 전 사내 투입이
+    정확히 그 상태라, 이 경로가 서면 도구를 끈 의미가 없다.
+
+    게이트의 승인 조건(claim_id 조회 + 도구 내 최고 점수 + 확신도)은 센서를 요구하지
+    않으므로 1단 근거만으로 승인이 성립한다. 여기서 지키는 것은 그 사실이다.
+
+    별도 프로세스인 이유: 도구 목록이 모듈 import 시점에 정해진다.
+    """
+    import json
+    import os
+    import subprocess
+    import sys
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    probe = (
+        "import json;"
+        "from graph.build import build_graph;"
+        "from tools.agent_tools import TOOLS_BY_NAME as T;"
+        "s = build_graph().invoke({'target_wafers': ['W2406_02'],"
+        "                          'target_source': 'manual'});"
+        "print(json.dumps({"
+        "  'sensor_tool': 'compare_sensor_distribution' in T,"
+        "  'accepted': s.get('finalize_accepted'),"
+        "  'status': s.get('finalize_status'),"
+        "  'hypothesis': s.get('final_hypothesis') or '',"
+        "  'sensor_calls': sum(1 for f in s['findings']"
+        "                      if f['tool'] == 'compare_sensor_distribution'),"
+        "  'has_report': bool(s.get('report')),"
+        "}))")
+
+    proc = subprocess.run([sys.executable, "-c", probe], capture_output=True,
+                          cwd=root, env={**os.environ, "SENSOR_MODE": "off"})
+    assert proc.returncode == 0, proc.stderr.decode("utf-8", "replace")
+    out = json.loads(proc.stdout.decode("utf-8").strip().splitlines()[-1])
+
+    assert out["sensor_tool"] is False        # 도구가 아예 등록되지 않았다
+    assert out["sensor_calls"] == 0           # 그래서 헛호출로 바퀴를 태우지 않는다
+    assert out["accepted"] is True
+    assert out["status"] == "confirmed"
+    assert out["has_report"] is True
+    assert "ETCH9_B" in out["hypothesis"]     # 1단 근거는 그대로 살아 있다
+    # 무엇이 없어서 그렇게 판단했는지가 결론 문장에 남는다 (조용한 축소가 아니다)
+    assert "센서가 연결되지 않은" in out["hypothesis"]
+
+
+def test_every_axis_runs_on_the_pipeline_groups():
+    """그래프 전체를 지나도 모든 축이 **같은 분모**로 돌아야 한다.
+
+    이게 어긋나면 리포트 머리말("분석 대상")과 결론의 근거가 다른 wafer 집합을
+    가리키는데, 게이트는 claim_id 조회만 하므로 그 어긋남을 볼 방법이 원리적으로
+    없다. 노드 단위 테스트는 주입 **메커니즘**을 잠그지만, 축이 늘거나 골격이
+    바뀌었을 때 실제로 그 분모가 끝까지 유지되는지는 여기서만 드러난다.
+    """
+    state = build_graph().invoke(
+        {"target_wafers": ["W2406_02"], "target_source": "manual"}
+    )
+    ran = [f for f in state["findings"] if "group_ids" in (f.get("args") or {})]
+    assert ran, "대조 분모를 쓰는 도구가 한 번도 안 돌았다 - 무대가 깨졌다"
+    for f in ran:
+        assert f["args"]["group_ids"] == state["target_group"], f["tool"]
+        assert f["args"]["control_ids"] == state["control_group"], f["tool"]
+
+
+def test_every_axis_crashing_ends_as_tool_failure_not_a_burned_loop_budget(monkeypatch):
+    """전 축이 터지는 실장애 시나리오가 루프 예산을 태우지 않고 사유를 남기고 끝난다.
+
+    이 경로가 열려 있지 않던 동안에는 실패 축이 `unrun` 에 영원히 남아 (a) 게이트가
+    방금 터진 도구를 다시 부르라고 이름을 대고 (b) 어떤 종료 판정도 열리지 않아
+    루프 한계까지 왕복하다 `inconclusive`("확정 근거 없음")로 나갔다 - 진짜 사유인
+    **도구 실패**가 리포트 어디에도 안 남는다. 조치가 다르다(인프라 확인).
+    """
+    from domain import engine
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("DB 연결 끊김")
+
+    monkeypatch.setattr(engine, "evaluate", _boom)
+    state = build_graph().invoke(
+        {"target_wafers": ["W2406_02"], "target_source": "manual"}
+    )
+    assert state["finalize_status"] == "tool_failure"
+    assert state["loop_count"] < ya_config.MAX_LOOPS      # 예산을 태우고 끝나지 않았다
+    assert state["coverage"]["failed"]                    # 어느 축이 터졌는지 남는다
+    assert not state["coverage"]["unrun"]                 # 실패를 '안 돌린 축' 으로 세지 않는다
+    assert "분석 미수행" in state["report"]
+    assert "도구 실패" in state["report"]                  # [커버리지] 줄이 살아 있다

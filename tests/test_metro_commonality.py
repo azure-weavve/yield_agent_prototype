@@ -1,0 +1,892 @@
+"""metro 계측 commonality — 분할점 스윕과 집계.
+
+설계 `docs/superpowers/specs/2026-08-08-metro-commonality-design.md` §1·§9.
+"""
+
+import sqlite3
+
+import ya_config
+from tools import metro_commonality as mc
+
+
+# ---------------------------------------------------------------- 스윕 (순수 함수)
+# 합성 입력으로 돌린다. 더미 DB 를 거치면 실패했을 때 스윕이 틀린 것인지 데이터가
+# 바뀐 것인지 갈리지 않는다.
+
+def _sweep_case(spec: str):
+    """'T131 c130 T129' -> _sweep(...) 결과.
+
+    T = 타깃, c = 대조군. 값 내림차순으로 적는다 (스윕이 받는 순서 그대로).
+    """
+    rows, t_valid, c_valid, nt, nc = [], 0, 0, 0, 0
+    for i, tok in enumerate(spec.split()):
+        bit = 1 << i
+        rows.append((float(tok[1:]), bit))
+        if tok[0] == "T":
+            t_valid |= bit
+            nt += 1
+        else:
+            c_valid |= bit
+            nc += 1
+    return mc._sweep(rows, t_valid, c_valid, nt, nc)
+
+
+def test_sweep_finds_the_planted_split_exactly_at_the_boundary_value():
+    """심어둔 분할점을 경계값까지 정확히 지목한다.
+
+    타깃 사이에 대조군 1장을 끼워 완전 분리를 막았다 — 완전 분리면 어느 분할점이든
+    같은 점수라 "정확히 129.0" 이라는 주장이 성립하지 않는다.
+    """
+    best = _sweep_case("T131.0 T130.6 c130.2 T129.8 T129.4 T129.0 "
+                       "c128.5 c128.2 c127.9 c127.6")
+    score, split, a, c = best["ge"]
+    assert split == 129.0                      # 심어둔 자리
+    assert (a, c) == (5, 1)                    # 타깃 5/5, 대조군 1/5
+    assert abs(score - (1.0 - 1 / 5)) < 1e-9
+
+
+def test_sweep_never_puts_a_split_inside_a_tie():
+    """동점은 가를 수 없다 — 같은 값 덩어리를 통째로 소비한 뒤에만 평가한다.
+
+    **split 값만 보면 이 명제를 못 잡는다.** split 은 언제나 데이터에 있는 값에서
+    나오므로(`v` 또는 `rows[i][0]`) "split in {45,46,47}" 같은 단언은 원리적으로
+    실패할 수 없다 — 덩어리 한가운데서 잘라 카운트가 틀려도 초록이다 (2026-08-12
+    리뷰가 버그 버전으로 실증). 그래서 **선택된 조각의 a·c 가 덩어리 경계와 맞는지**를
+    본다.
+
+      값     47 47 | 46 46 46 46 | 45 45 45 c45      nt = 5, nc = 5
+      라벨    c  c  | T  T  c  c  | T  T  T  c
+
+      경계는 두 곳뿐이다 (맨 아래 컷은 여집합이 비어 평가에서 빠진다).
+        47 뒤 -> 위 조각 (a,c) = (0,2),  아래 조각 (5,3)
+        46 뒤 -> 위 조각 (a,c) = (2,4),  아래 조각 (3,1)
+    """
+    best = _sweep_case("c47 c47 T46 T46 c46 c46 T45 T45 T45 c45")
+    # 덩어리 경계에서만 잘랐다면 (a, c) 는 이 값들 중 하나일 수밖에 없다.
+    # 덩어리 중간에서 자르면 (1,2)·(2,5) 처럼 목록에 없는 값이 나온다.
+    legal_ge = {(0, 2), (2, 4)}
+    legal_le = {(5, 3), (3, 1)}          # 여집합 = (nt-a, nc-c)
+    assert best, "후보가 하나도 안 나왔다"
+    for direction, (_s, split, a, c) in best.items():
+        assert split in {45.0, 46.0, 47.0}
+        legal = legal_ge if direction == "ge" else legal_le
+        assert (a, c) in legal, f"{direction} 조각 (a={a}, c={c}) 이 덩어리 경계가 아니다"
+
+
+def test_sweep_reports_the_thin_side_as_le_with_the_lower_pieces_top_value():
+    """얇은 쪽 신호는 `le` 방향으로 나오고, split 은 아래 조각의 최댓값이다.
+
+    "127.0 이상" 의 여집합은 "127.0 미만" 인데, 엔지니어가 읽는 형태는 "126.x 이하"
+    가 아니라 아래 조각의 최댓값이다. 방향을 안 돌리면 이 신호를 통째로 놓친다.
+    """
+    best = _sweep_case("c130 c129 c128 c127.5 T127.0 T126.5 c126.2 T126.0 T125.5 T125.0")
+    score, split, a, c = best["le"]
+    assert split == 127.0
+    assert (a, c) == (5, 1)
+    assert abs(score - (1.0 - 1 / 5)) < 1e-9
+
+
+def test_sweep_excludes_pieces_with_too_few_targets():
+    """타깃이 MIN_TARGET 미만인 조각은 **탐색 범위에서** 뺀다.
+
+    어차피 게이트를 못 지날 후보를 시도 횟수에 넣으면 귀무 기준선만 올라가 실제가
+    손해를 본다. 여기서는 맨 위 타깃 1장짜리 조각(점수 1.0 - 0 = 1.0)이 최고인데도
+    선택되면 안 된다 — 제외가 실제로 걸리는지 이 대비가 보여 준다.
+    """
+    best = _sweep_case("T99 c90 c89 T88 T87 c86")
+    score, split, a, c = best["ge"]
+    assert a >= mc.MIN_TARGET
+    assert split != 99.0
+    assert score < 1.0
+
+
+def test_sweep_picks_the_best_cut_not_just_any_cut():
+    """방향당 후보 하나이고, 그 하나는 **최댓값**이어야 한다.
+
+    "방향이 ge/le 둘뿐이고 4-튜플이다" 같은 단언은 자료구조상 보장돼 실패할 방법이
+    없다 (2026-08-12 리뷰 지적). 실제 명제는 **여러 컷 중 최고를 골랐는가** 이므로,
+    가능한 모든 컷을 손으로 세어 최댓값과 대조한다. 아무 컷이나 집는 구현(예: 첫 컷,
+    마지막 컷)은 여기서 걸린다.
+
+    **입력을 고를 때 "첫 컷 == 최댓값" 이 되면 안 된다.** 처음 쓴 입력이 그랬고,
+    "최댓값 대신 첫 컷을 집는" 변이가 통과해 버렸다. 여기서는 위쪽에 대조군을 한 장
+    끼워 첫 자격 컷(ge 0.25)과 최댓값(ge 0.75)을 갈라 놓는다. le 도 마찬가지로
+    첫 컷 -0.25 vs 최댓값 0.0 이다.
+    """
+    spec = "T99 c98 T97 T96 T95 c94 c93 c92"
+    best = _sweep_case(spec)
+
+    toks = spec.split()
+    nt = sum(1 for t in toks if t[0] == "T")
+    nc = len(toks) - nt
+    scores = []
+    a = c = 0
+    for i, tok in enumerate(toks[:-1]):        # 맨 아래 컷은 분리가 아니다
+        if tok[0] == "T":
+            a += 1
+        else:
+            c += 1
+        scores.append((a / nt - c / nc, a, c))
+
+    ge_best = max(s for s, a, _c in scores if a >= mc.MIN_TARGET)
+    le_best = max(-s for s, a, _c in scores if nt - a >= mc.MIN_TARGET)
+    assert abs(best["ge"][0] - ge_best) < 1e-9
+    assert abs(best["le"][0] - le_best) < 1e-9
+
+
+def test_sweep_never_cuts_at_the_very_bottom():
+    """전체를 포함하는 컷은 분리가 아니다 (여집합이 빈다).
+
+    막지 않으면 score 0 짜리 후보가 항상 하나씩 생겨 FDR 표의 분모를 오염시킨다.
+    """
+    best = _sweep_case("T10 T9 c8 c7")
+    for _s, split, _a, _c in best.values():
+        assert split != 7.0         # 마지막 값 = 전체 포함
+
+
+# ---------------------------------------------------------------- 색인·집계 (더미)
+
+def _prepare(targets, controls, legend=None):
+    """더미 DB 에서 색인과 stratum 마스크를 만든다 (find_metro_commonality 의 앞부분)."""
+    legend = legend or mc.METRO_LEGEND
+    conn = sqlite3.connect(ya_config.DB_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = mc._metro_rows(conn, targets + controls, legend)
+        meta = {r["wafer_id"]: r["root_lot_id"] for r in conn.execute(
+            "SELECT wafer_id, root_lot_id FROM yield WHERE wafer_id IN (%s)"
+            % ",".join("?" * len(targets + controls)), targets + controls)}
+    finally:
+        conn.close()
+
+    bits = {w: 1 << i for i, w in enumerate(targets + controls)}
+    combos, answer, seen, unknown = mc._build_metro_index(rows, bits, legend)
+
+    strata: dict[str, list[int]] = {}
+    for w in targets:
+        strata.setdefault(meta[w], [0, 0])[0] |= bits[w]
+    for w in controls:
+        if meta[w] in strata:
+            strata[meta[w]][1] |= bits[w]
+    masks = [(rl, t, c) for rl, (t, c) in sorted(strata.items()) if t and c]
+    return combos, answer, seen, unknown, masks, bits
+
+
+def _metro_groups():
+    from data.generate_dummy import METRO_CONTROLS, METRO_TARGETS
+    return list(METRO_TARGETS), list(METRO_CONTROLS)
+
+
+def test_unmeasured_wafers_drop_out_of_the_denominator():
+    """계측 안 된 wafer 는 '미통과' 가 아니라 **분모 밖**이다 (1단계 원칙).
+
+    가장 중요한 성질이다. 미계측 대조군 6장을 미통과로 세면 분모가 6 이 아니라 12 가
+    되어 점수가 0.33 -> 0.67 로 뛰고 가짜 후보가 게이트를 지난다.
+    """
+    from data.generate_dummy import METRO_PARTIAL, METRO_UNMEASURED
+
+    targets, controls = _metro_groups()
+    combos, answer, seen, _u, masks, _b = _prepare(targets, controls)
+    agg, _rep = mc._aggregate_metro(masks, combos, answer, seen)
+
+    step, item = METRO_PARTIAL
+    got = {k: v for k, v in agg.items() if k[1] == step and k[2] == item}
+    assert got, "일부만 계측된 조합이 후보를 하나도 안 냈다"
+    for v in got.values():
+        assert v["nc"] == len(controls) - len(METRO_UNMEASURED)
+        assert v["nt"] == len(targets)
+
+
+def test_planted_ge_signal_is_found_with_the_planted_split():
+    """진짜 신호 조합에서 심어둔 분할점과 점수가 그대로 나온다."""
+    from data.generate_dummy import METRO_TRUE_GE, METRO_TRUTH_GE_SPLIT
+
+    targets, controls = _metro_groups()
+    combos, answer, seen, _u, masks, _b = _prepare(targets, controls)
+    agg, _rep = mc._aggregate_metro(masks, combos, answer, seen)
+
+    key = ("metro", METRO_TRUE_GE[0], METRO_TRUE_GE[1], "ge")
+    assert key in agg
+    assert agg[key]["split"] == METRO_TRUTH_GE_SPLIT
+    assert agg[key]["a"] == len(targets)            # 타깃 전원
+    assert agg[key]["c"] == 1                       # 대조군 1장 (반례)
+
+
+def test_planted_le_signal_is_found_in_the_other_direction():
+    """얇은 쪽 신호는 `le` 로만 잡힌다 — 양방향이 실제로 일하는지 본다."""
+    from data.generate_dummy import METRO_TRUE_LE, METRO_TRUTH_LE_SPLIT
+
+    targets, controls = _metro_groups()
+    combos, answer, seen, _u, masks, _b = _prepare(targets, controls)
+    agg, _rep = mc._aggregate_metro(masks, combos, answer, seen)
+
+    step, item = METRO_TRUE_LE
+    assert ("metro", step, item, "le") in agg
+    assert agg[("metro", step, item, "le")]["split"] == METRO_TRUTH_LE_SPLIT
+    # 반대 방향은 신호가 아니다 — 나오더라도 훨씬 낮아야 한다
+    ge = agg.get(("metro", step, item, "ge"))
+    assert ge is None or ge["score"] < agg[("metro", step, item, "le")]["score"]
+
+
+def test_legend_where_clause_filters_rows_not_just_columns():
+    """`where` 가 **행을 거른다** — AVG 만 후보가 되고 개별 포인트는 안 들어온다.
+
+    기존 legend 는 columns 로 키를 만들 뿐 행을 안 걸렀다. 이것이 3단계에서 legend 에
+    새로 들어가는 유일한 기능이다.
+    """
+    from data.generate_dummy import METRO_ITEMS, METRO_STEPS
+
+    targets, controls = _metro_groups()
+    combos, _a, _s, _u, _m, _b = _prepare(targets, controls)
+
+    assert set(combos) == {("metro", st, it) for st in METRO_STEPS for it in METRO_ITEMS}
+
+
+def test_dropping_the_where_clause_fails_loudly_instead_of_miscounting():
+    """거르기가 실제로 일하는지 — 빼면 **예외로 멈춘다** (변별력).
+
+    이걸 안 보면 필터가 있으나 마나여도 위 테스트는 초록이다.
+
+    설계서는 안 거를 때의 피해를 "한 item 이 top_k 를 잠식한다" 로 적었는데, 후보
+    키를 (스텝, item) 으로 좁힌 뒤로는 피해가 그보다 나쁘다 — subitem 이 키에 없어서
+    **한 wafer 가 같은 조합에 10번 들어가고 a 가 nt 를 넘는다.** coverage 가 1.0 을
+    넘는데 예외는 안 나는, 조용히 틀린 답이다. 그래서 잠식이 아니라 정지가 맞다.
+    """
+    import pytest
+
+    targets, controls = _metro_groups()
+    no_filter = [{"level": "metro", "columns": ["step_seq", "item"]}]
+    with pytest.raises(ValueError, match="subitem_id"):
+        _prepare(targets, controls, no_filter)
+
+
+def test_unknown_subitem_tokens_are_surfaced_and_normal_ones_are_not():
+    """모르는 토큰만 드러낸다 — 정상 포인트는 목록에 안 들어간다.
+
+    "통계 토큰이 아니면 전부 미상" 으로 두면 이 목록이 **정상 포인트 전체**가 되고
+    (실데이터면 수천 개), 그 안에 새 통계 토큰이 한 줄 섞여도 아무도 못 본다.
+    목적이 정확히 무력화되므로 포인트 이름 규칙(`_POINT_ID`)으로도 함께 판정한다.
+    """
+    targets, controls = _metro_groups()
+    _c, _a, _s, unknown, _m, _b = _prepare(targets, controls)
+    assert unknown == set(), f"더미에는 미상 토큰이 없어야 하는데 {sorted(unknown)}"
+
+
+def test_a_new_statistic_token_shows_up_as_unknown():
+    """변별력 — 사내에 없던 토큰이 들어오면 실제로 드러나는가.
+
+    위 테스트만 있으면 `unknown` 을 항상 빈 집합으로 만드는 구현도 통과한다.
+    통계값인 척하는 새 토큰(AVG2)과 형식이 다른 포인트(POINT_1) 둘 다 잡혀야 한다.
+    """
+    targets, controls = _metro_groups()
+    bits = {w: 1 << i for i, w in enumerate(targets + controls)}
+    rows = [{"wafer_id": targets[0], "step_seq": "CC001500", "item": "THK",
+             "subitem_id": tok, "value": 1.0}
+            for tok in ("AVG", "P01", "AVG2", "POINT_1")]
+    _c, _a, _s, unknown = mc._build_metro_index(rows, bits, mc.METRO_LEGEND)
+    assert unknown == {"AVG2", "POINT_1"}
+
+
+def test_aggregate_depends_only_on_the_labels():
+    """같은 색인에 라벨만 바꿔 넣으면 결과가 라벨에만 의존한다.
+
+    순열검정이 이 성질 위에 서 있다 — 회차마다 색인을 다시 만들지 않고 마스크만
+    바꿔 같은 함수를 부른다. 타깃과 대조군을 통째로 맞바꾸면 방향이 뒤집혀야 한다.
+    """
+    from data.generate_dummy import METRO_TRUE_GE
+
+    targets, controls = _metro_groups()
+    combos, answer, seen, _u, masks, _b = _prepare(targets, controls)
+    swapped = [(rl, c, t) for rl, t, c in masks]
+
+    agg, _r = mc._aggregate_metro(masks, combos, answer, seen)
+    agg_sw, _r2 = mc._aggregate_metro(swapped, combos, answer, seen)
+
+    step, item = METRO_TRUE_GE
+    assert ("metro", step, item, "ge") in agg
+    assert ("metro", step, item, "le") in agg_sw     # 역할이 바뀌면 방향도 바뀐다
+    assert abs(agg[("metro", step, item, "ge")]["score"]
+               - agg_sw[("metro", step, item, "le")]["score"]) < 1e-9
+
+
+# ---------------------------------------------------------------- 순열검정 (설계 §9)
+
+def _observed(masks, combos, answer, seen):
+    """관측 점수와 **관측 표본 크기**. 순열은 표본 크기가 같은 회차만 참조집합에 넣는다."""
+    sizes: dict = {}
+    agg, _ = mc._aggregate_metro(masks, combos, answer, seen, sizes=sizes)
+    return {k: v["score"] for k, v in agg.items()}, sizes
+
+
+def test_stratified_shuffle_rejects_a_pure_lot_effect():
+    """lot 으로만 갈리는 값은 기각된다 — 가장 중요한 성질.
+
+    두 lot 의 값 범위가 안 겹치므로, root_lot 안에서 섞으면 어느 라벨을 뽑아도
+    "위쪽 lot 에 타깃이 몰린다" 가 그대로 남는다 -> 귀무가 항상 관측만큼 좋다 -> p = 1.
+    """
+    from data.generate_dummy import METRO_LOT_EFFECT
+
+    targets, controls = _metro_groups()
+    combos, answer, seen, _u, masks, _b = _prepare(targets, controls)
+    obs, sizes = _observed(masks, combos, answer, seen)
+    perm = mc._permutation_stats_metro(masks, combos, answer, seen, obs, sizes,
+                                       1000, mc.PERM_SEED)
+
+    key = ("metro", METRO_LOT_EFFECT[0], METRO_LOT_EFFECT[1], "ge")
+    assert obs[key] > 0.5                    # 점수만 보면 꽤 높은 후보다
+    assert perm["p"][key] == 1.0             # 그런데 우연으로 전부 설명된다
+
+
+def test_unstratified_shuffle_makes_that_lot_effect_look_like_a_finding():
+    """변별력 — 층화를 빼면 같은 조합의 p 가 급락한다.
+
+    이걸 안 보면 위 테스트가 "층화 덕분"인지 "그 조합이 원래 안 나오는 것"인지
+    구분되지 않는다. stratum 을 하나로 합치면 = 전체 섞기다 (설계 §2-2 의 반례).
+
+    절대값으로 "유의해진다" 까지 주장하지는 않는다 — 더미가 17장이라 전체 섞기에서도
+    0.09 언저리다. **층화 하나가 p 를 1.0 에서 그 값으로 10배 넘게 끌어내린다**는
+    대비가 이 테스트의 내용이고, 실데이터처럼 표본이 커지면 그 격차가 벌어진다.
+    """
+    from data.generate_dummy import METRO_LOT_EFFECT
+
+    targets, controls = _metro_groups()
+    combos, answer, seen, _u, masks, _b = _prepare(targets, controls)
+    obs, sizes = _observed(masks, combos, answer, seen)
+
+    merged_t = merged_c = 0
+    for _rl, t, c in masks:
+        merged_t |= t
+        merged_c |= c
+    merged = [("ALL", merged_t, merged_c)]
+    strat = mc._permutation_stats_metro(masks, combos, answer, seen, obs, sizes,
+                                        1000, mc.PERM_SEED)
+    flat = mc._permutation_stats_metro(merged, combos, answer, seen, obs, sizes,
+                                       1000, mc.PERM_SEED)
+
+    key = ("metro", METRO_LOT_EFFECT[0], METRO_LOT_EFFECT[1], "ge")
+    assert strat["p"][key] == 1.0                  # 층화: 우연으로 전부 설명된다
+    assert flat["p"][key] < strat["p"][key] / 10   # 전체 섞기: 발견처럼 보인다
+
+
+def test_planted_signals_survive_the_permutation_test():
+    """심어둔 진짜 신호 둘은 살아남는다 — 검정이 전부를 기각하지는 않는다."""
+    from data.generate_dummy import METRO_TRUE_GE, METRO_TRUE_LE
+
+    targets, controls = _metro_groups()
+    combos, answer, seen, _u, masks, _b = _prepare(targets, controls)
+    obs, sizes = _observed(masks, combos, answer, seen)
+    perm = mc._permutation_stats_metro(masks, combos, answer, seen, obs, sizes,
+                                       1000, mc.PERM_SEED)
+
+    for step_item, direction in ((METRO_TRUE_GE, "ge"), (METRO_TRUE_LE, "le")):
+        key = ("metro", step_item[0], step_item[1], direction)
+        assert perm["p"][key] < 0.05
+        assert perm["p"][key] > perm["p_min_possible"][key]   # 바닥에 닿진 않았다
+
+
+def test_permutation_reports_its_own_floor_and_space():
+    """소표본에서 p 가 어디까지 내려갈 수 있는지 함께 싣는다.
+
+    층화 경우의 수 C(7,4) x C(10,1) = 350 이라 전수 열거 경로를 탄다. 관측 라벨을
+    빼므로 349 회를 돌고 바닥은 1/350 이다. 이 수가 없으면 작은 p 가 "강한 신호"
+    인지 "이 표본의 바닥" 인지 구분되지 않는다.
+    """
+    targets, controls = _metro_groups()
+    combos, answer, seen, _u, masks, _b = _prepare(targets, controls)
+    obs, sizes = _observed(masks, combos, answer, seen)
+    perm = mc._permutation_stats_metro(masks, combos, answer, seen, obs, sizes,
+                                       1000, mc.PERM_SEED)
+
+    assert perm["n_permutations_total"] == 350        # C(7,4) x C(10,1)
+    assert perm["n_used"] == 349                      # 관측 라벨은 뺀다
+    # **바닥은 이제 후보마다 다르다.** 참조집합이 "관측과 표본 크기가 같은 회차" 로
+    # 좁혀지므로, 계측이 성겨 회차마다 nt 가 흔들리는 후보는 바닥이 더 높다.
+    # 349 회를 다 쓴 후보가 최저이고, 그 아래로는 원리적으로 못 내려간다.
+    floors = perm["p_min_possible"]
+    assert min(floors.values()) == 1 / 350
+    assert all(f >= 1 / 350 for f in floors.values())
+
+
+def test_every_round_scores_all_combinations_with_one_label_set():
+    """한 회차 = 라벨 한 번 섞기 -> **전 조합 계산**.
+
+    조합마다 따로 섞으면 조합 간 상관이 깨져, 상관 때문에 가짜가 무더기로 나오는
+    현상이 기준선에 반영되지 않는다 (설계 §2-5). 회차 수만큼만 집계가 불리는지,
+    그리고 매 호출이 조합 전체를 보는지 센다.
+    """
+    targets, controls = _metro_groups()
+    combos, answer, seen, _u, masks, _b = _prepare(targets, controls)
+    obs, sizes = _observed(masks, combos, answer, seen)
+
+    calls = []
+    real = mc._aggregate_metro
+
+    def _spy(label_masks, cb, an, sn, **kw):
+        calls.append(len(cb))
+        # **kw 를 삼키면 sizes 가 안 실려 모든 회차의 참조집합이 비고, 이 픽스처의
+        # 순열이 전부 n_reference 0 / p 1.0 로 퇴화한다. 지금 단언(호출 횟수)은
+        # 그래도 통과하므로, 여기 p 단언을 하나라도 얹는 순간 뜻 없는 통과가 된다.
+        return real(label_masks, cb, an, sn, **kw)
+
+    mc._aggregate_metro = _spy
+    try:
+        perm = mc._permutation_stats_metro(masks, combos, answer, seen, obs, sizes,
+                                           1000, mc.PERM_SEED)
+    finally:
+        mc._aggregate_metro = real
+
+    assert len(calls) == perm["n_used"]               # 회차당 정확히 한 번
+    assert set(calls) == {len(combos)}                # 매번 조합 전체를 본다
+    # 스파이가 크기를 그대로 넘겼는지 - 삼키면 참조집합이 전부 비어 위 두 단언이
+    # 통과한 채로 순열만 조용히 죽는다.
+    assert any(n > 0 for n in perm["n_reference"].values())
+
+
+def test_permutation_p_is_carried_all_the_way_into_the_public_result():
+    """2단계에서 잘려 나갔던 자리 — 계산한 통계가 결과 dict 까지 실제로 온다.
+
+    p_min_possible·fdr_table·p_family_wise 계열이 계산은 되는데 소비자에게 안
+    가던 사고가 있었다. metro 는 처음부터 그 자리를 잠근다.
+    """
+    targets, controls = _metro_groups()
+    res = mc.find_metro_commonality(targets, controls)
+
+    assert res["status"] == "ok"
+    assert res["fdr_table"] and res["p_family_wise"] is not None
+    assert res["p_family_wise_min_possible"] is not None
+    for c in res["candidates"]:
+        # n_reference 가 빠지면 바닥값이 왜 후보마다 다른지 설명할 숫자가 없어져
+        # n_permutations_total 과 p_min_possible 이 서로 안 맞아 보인다.
+        for field in ("p_permutation", "p_min_possible", "p_at_floor",
+                      "n_permutations_total", "n_reference", "split_value",
+                      "split_direction", "item"):
+            assert field in c, field
+
+
+def test_turning_permutations_off_removes_the_p_explanation_from_the_note():
+    """순열을 껐으면 p 를 설명하지 않는다 — 없는 필드를 읽으라고 하면 LLM 이 지어낸다."""
+    targets, controls = _metro_groups()
+    res = mc.find_metro_commonality(targets, controls, n_permutations=0)
+
+    assert res["candidates"]
+    assert "p_permutation" not in res["candidates"][0]
+    assert "p_min_possible" not in res["note"]
+
+
+def test_the_two_no_paired_stratum_paths_are_told_apart():
+    """metro 도 `no_paired_stratum` 조기 반환이 **둘**이고 조치가 다르다.
+
+    (1) 대조군이 타깃과 다른 root_lot 에만 있다 -> 대조군 선정을 다시 한다.
+    (2) 계측값이 있는 짝이 하나도 없다 -> 계측 결측을 뒤진다. metro 는 lot 당 몇
+        장만 재므로 **이쪽이 상시 상태**다(`graph/nodes.py` 의 커버리지 판정이
+        metro 를 축 고유 사유로 따로 다루는 이유이기도 하다).
+
+    가르는 것은 **note** 다. meta.missing_metro 는 두 경로 다 세어서 내되 분모가
+    다르다((1)은 요청 wafer 전체, (2)는 짝지어진 stratum 안) - 비어 있지 않은
+    목록으로는 경로를 못 가린다. status 가 같으므로 note 단언이 없으면 두 경로를
+    세우는 테스트가 서로를 대신한다.
+    """
+    from data.generate_dummy import (ADV_NOSIGNAL_LOT, METRO_CONTROLS,
+                                     METRO_TARGETS, adv_group)
+
+    # 타깃은 T2421, 대조군은 T2422 - 같은 root_lot 짝이 없다.
+    unpaired = mc.find_metro_commonality(
+        [w for w in METRO_TARGETS if w.startswith("T2421")],
+        [w for w in METRO_CONTROLS if w.startswith("T2422")])
+    # 계측을 아예 안 하는 코호트 - 짝은 있는데 계측값이 없다.
+    t, c = adv_group(ADV_NOSIGNAL_LOT)
+    no_metro = mc.find_metro_commonality(list(t), list(c))
+
+    assert unpaired["status"] == no_metro["status"] == "no_paired_stratum"
+    assert unpaired["note"] != no_metro["note"]
+    assert "root_lot" in unpaired["note"] and "계측" in no_metro["note"]
+    # 여기서는 실제로 세어 봐도 결측이 없다(두 코호트 모두 계측이 있다). 안 세고
+    # 상수로 내면 안 된다 - `..._counts_the_missing_metro_it_reports` 가 그 경우를 잰다.
+    assert unpaired["meta"]["missing_metro"] == []
+    assert no_metro["meta"]["missing_metro"] == sorted(set(t) | set(c))
+
+
+def test_the_candidate_copies_the_floor_fact_instead_of_recomputing_it(monkeypatch):
+    """metro 후보도 사실을 **그대로 옮긴다**. commonality 쪽과 같은 이유다 -
+    실데이터에서는 등호와 답이 같아, 조립부가 등호로 되돌아가도 안 잡힌다.
+    """
+    targets, controls = _metro_groups()
+    real = mc._permutation_stats_metro
+
+    def _inject(p_val, floor, fact):
+        def _fn(*args, **kwargs):
+            perm = real(*args, **kwargs)
+            return {**perm,
+                    "p": {k: p_val for k in perm["p"]},
+                    "p_min_possible": {k: floor for k in perm["p_min_possible"]},
+                    "p_at_floor": {k: fact for k in perm["p_at_floor"]},
+                    "n_reference": {k: 0 for k in perm["n_reference"]}}
+        return _fn
+
+    # 참조 0회: 두 숫자는 같은데 사실은 거짓이다(등호로 되돌리면 True 가 된다).
+    monkeypatch.setattr(mc, "_permutation_stats_metro", _inject(1.0, 1.0, False))
+    cands = mc.find_metro_commonality(targets, controls)["candidates"]
+    assert cands
+    assert all(c["p_permutation"] == c["p_min_possible"] == 1.0 for c in cands)
+    assert all(c["p_at_floor"] is False for c in cands)
+
+    # 반대 방향 - 두 숫자가 다른데 사실은 참이다(상수 False 로 고치면 여기서 잡힌다).
+    monkeypatch.setattr(mc, "_permutation_stats_metro", _inject(0.5, 0.001, True))
+    cands2 = mc.find_metro_commonality(targets, controls)["candidates"]
+    assert cands2
+    assert all(c["p_permutation"] != c["p_min_possible"] for c in cands2)
+    assert all(c["p_at_floor"] is True for c in cands2)
+
+
+def test_the_unpaired_path_counts_the_missing_metro_it_reports():
+    """metro 의 경로 (1) 도 결측을 **세어서** 낸다 - 상수 `[]` 는 사실이 아니다.
+
+    계측은 lot 당 몇 장뿐이라 metro 에서는 결측이 예외가 아니라 상시 상태다.
+    안 세고 0 을 내보내면 "계측은 다 있는데 짝이 없다" 로 읽힌다.
+    """
+    from data.generate_dummy import (ADV_MISSING_LOT, ADV_NOSIGNAL_LOT,
+                                     METRO_TARGETS, adv_group)
+
+    _, c = adv_group(ADV_NOSIGNAL_LOT)          # 계측 행이 하나도 없는 코호트
+    # 타깃 쪽에도 계측이 없는 wafer 를 한 장 섞는다 - 대조군만 세는 분모로 좁혀도 답이
+    # 같아지면 그 절반이 안 잠긴다. metro 는 lot 당 몇 장만 재므로 **타깃이 분모에서
+    # 빠지는 것이 상시 상태**라 특히 중요하다. (METRO_UNMEASURED 는 못 쓴다 - 그쪽은
+    # METRO_PARTIAL 조합에서만 빠질 뿐 다른 스텝에는 계측이 있다.)
+    unmeasured = adv_group(ADV_MISSING_LOT)[0][0]   # 다른 root_lot 이라 짝도 안 생긴다
+    targets = [w for w in METRO_TARGETS if w.startswith("T2421")] + [unmeasured]
+    res = mc.find_metro_commonality(targets, list(c))
+
+    assert res["status"] == "no_paired_stratum"          # root_lot 이 안 맞는다
+    assert "root_lot" in res["note"]                     # 계측 결측 경로가 아니다
+    assert res["meta"]["missing_metro"] == sorted({unmeasured, *c})
+
+
+def test_the_note_blames_the_reference_rounds_not_the_sample_for_a_big_floor():
+    """바닥값의 원인은 **참조 회차**다. metro 에서 특히 갈리는 자리다.
+
+    계측 표본이 작아서 줄 수도, 순열 회차 예산이 작아서 줄 수도 있는데 조치가
+    정반대다 - 앞은 계측을 더 걸어야 하고 뒤는 회차를 더 돌려야 한다. note 가
+    표본 탓만 하면 LLM 이 리포트에 한쪽 조치만 적는다.
+    """
+    targets, controls = _metro_groups()
+    res = mc.find_metro_commonality(targets, controls)
+
+    assert "표본이 작아 p" not in res["note"]
+    assert "참조 회차가 적어" in res["note"]
+
+
+# ---------------------------------------------------------------- 배선 (엔진·레지스트리)
+
+def _metro_spec():
+    from domain import registry
+    return next(s for s in registry.load_hypotheses() if s["id"] == "metro_commonality")
+
+
+def test_engine_routes_the_metro_hypothesis_to_the_metro_tool():
+    """가설의 `tool` 필드가 실행 함수를 고른다 — legend 컬럼이 step_history 에 없으므로
+    잘못 라우팅되면 ValueError 로 죽는다 (조용히 틀리지는 않는다)."""
+    from domain import engine
+
+    targets, controls = _metro_groups()
+    res = engine.evaluate(_metro_spec(), targets, controls)
+    assert res["status"] == "ok" and res["candidates"]
+
+
+def test_metro_only_fields_reach_the_gate_contract():
+    """split_value·split_direction·item 이 LLM 이 읽는 자리까지 온다.
+
+    없으면 LLM 이 key 문자열("THK >= 129.0")을 다시 파싱해야 하고, 그러다 방향을
+    뒤집거나 숫자를 놓친다. 2단계에서 계산만 하고 안 실어 보내 터졌던 자리와 같다.
+    """
+    from domain import engine
+
+    targets, controls = _metro_groups()
+    res = engine.evaluate(_metro_spec(), targets, controls)
+    for c in res["candidates"]:
+        assert c["item"] and c["split_direction"] in ("ge", "le")
+        assert isinstance(c["split_value"], (int, float))
+
+
+def test_gate_still_passes_a_candidate_that_permutation_fully_explains():
+    """**게이트는 p 를 판정에 쓰지 않는다** — 지금 계약을 그대로 못 박는다.
+
+    lot 효과 조합은 score 0.55 로 판별선을 넘지만 p_permutation 은 1.0 이다(층화
+    섞기가 우연으로 전부 설명한다). 그래도 passes 는 True 다 — 자동 차단은 실데이터를
+    본 뒤에 위에 얹기로 했고, 지금은 LLM 이 p 를 읽어 판단한다(hypotheses.yaml 이
+    그렇게 지시한다).
+
+    이 테스트는 "옳다" 가 아니라 "지금 이렇다" 를 적는다. 게이트에 p 를 물리는 날
+    여기가 빨간불이 되어 **의도한 변경인지** 되묻게 된다.
+
+    ⚠️ metro 에서는 이 계약의 위험이 다른 축보다 크다. 신호가 전혀 없는 데이터에
+    판별선(score 0.5)을 걸어 본 실측에서 **계측 표본이 작으면 후보의 48.7%가 그 선을
+    넘었다**(전수 계측이면 0%). 분할점을 최대화해서 고르는 데다 커버리지가 거칠게
+    양자화되기 때문이다. metro 는 별도 도구라 게이트가 metro 안에서만 최고 점수를
+    비교하므로, **순수 잡음이 1등이 되어 승인될 수 있다.** 지금 이것을 막는 것은
+    `hypotheses.yaml` 이 LLM 에게 fdr_table 을 함께 읽으라고 지시하는 것뿐이다.
+    """
+    from data.generate_dummy import METRO_LOT_EFFECT
+    from domain import engine
+
+    targets, controls = _metro_groups()
+    res = engine.evaluate(_metro_spec(), targets, controls)
+    lot_effect = [c for c in res["candidates"]
+                  if c["step_seq"] == METRO_LOT_EFFECT[0]
+                  and c["item"] == METRO_LOT_EFFECT[1]
+                  and c["split_direction"] == "ge"]
+    assert len(lot_effect) == 1
+    assert lot_effect[0]["p_permutation"] == 1.0     # 우연으로 전부 설명된다
+    assert lot_effect[0]["passes"] is True           # 그래도 판별선은 넘는다
+    assert lot_effect[0]["score"] > 0.5
+
+
+def test_registry_rejects_an_unknown_tool_at_load_time():
+    """모르는 `tool` 은 로드에서 잡는다 — 안 잡으면 실행 시점 KeyError 로 터진다."""
+    import pytest
+    import yaml
+    from domain import registry
+
+    spec = dict(_metro_spec(), tool="metrology")     # 오타
+    path = ya_config.DB_PATH.parent / "_bad_hyp.yaml"
+    path.write_text(yaml.safe_dump([spec], allow_unicode=True), encoding="utf-8")
+    try:
+        with pytest.raises(ValueError, match="모르는 tool"):
+            registry.load_hypotheses(path)
+    finally:
+        path.unlink()
+
+
+def test_registry_rejects_a_malformed_where_clause():
+    """`where` 형태가 틀리면 로드에서 막는다.
+
+    조용히 안 걸러지면 한 wafer 가 조합에 여러 값을 주는 상태가 되고, 그건 색인이
+    ValueError 로 잡지만 **legend 를 고친 사람이 아니라 실행자가** 만난다.
+    """
+    import pytest
+    import yaml
+    from domain import registry
+
+    spec = _metro_spec()
+    broken = dict(spec, legend=[dict(spec["legend"][0], where=[])])
+    path = ya_config.DB_PATH.parent / "_bad_where.yaml"
+    path.write_text(yaml.safe_dump([broken], allow_unicode=True), encoding="utf-8")
+    try:
+        with pytest.raises(ValueError, match="where"):
+            registry.load_hypotheses(path)
+    finally:
+        path.unlink()
+
+
+# ------------------------------------------------- 보정 (설계 §9 "가장 중요" 항목)
+
+def _synthetic(n_lots, per_lot, targets_per_lot, n_combos, measured_per_lot, seed):
+    """신호가 **하나도 없는** 합성 색인. 값이 라벨과 완전히 무관하다.
+
+    더미 DB 를 안 쓰는 이유: 계측 샘플링(lot 당 몇 장)을 wafer 수를 키워 가며 걸어야
+    하는데, 17장짜리 더미로는 그 조건을 만들 수 없다.
+    """
+    import random
+
+    rng = random.Random(seed)
+    bits, strata, i = {}, [], 0
+    for lot in range(n_lots):
+        t = c = 0
+        ws = []
+        for k in range(per_lot):
+            w = f"L{lot}_{k}"
+            bits[w] = 1 << i
+            i += 1
+            ws.append(w)
+            if k < targets_per_lot:
+                t |= bits[w]
+            else:
+                c |= bits[w]
+        strata.append((f"L{lot}", t, c, ws))
+
+    combos, answer, seen = {}, {}, 0
+    for ci in range(n_combos):
+        key = ("metro", f"S{ci:04d}", "THK")
+        rows, mask = [], 0
+        for _rl, _t, _c, ws in strata:
+            # **스텝마다 다른 wafer 를 잰다** (사내 확인 2026-08-12: 계측 슬롯이
+            # 스텝마다 같을 수도 다를 수도 있고, 다른 쪽이 이 도구에 유리하다)
+            for w in rng.sample(ws, measured_per_lot):
+                rows.append((rng.random(), bits[w]))   # 라벨과 무관한 값
+                mask |= bits[w]
+        rows.sort(key=lambda vb: -vb[0])
+        combos[key], answer[key] = rows, mask
+        seen |= mask
+    return combos, answer, seen, [(rl, t, c) for rl, t, c, _ws in strata]
+
+
+def test_no_signal_data_does_not_produce_a_flood_of_small_p():
+    """신호가 없으면 p 가 작게 나오면 안 된다 — 설계 §9 가 "가장 중요" 로 꼽은 항목.
+
+    분할점 탐색은 조합마다 여러 자리를 시도해 최고를 고른다. 그 이득이 귀무에
+    반영되지 않으면 무신호 데이터에서 작은 p 가 쏟아진다. 귀무도 같은 탐색을 거치는
+    구조(`_permutation_stats_metro`)가 실제로 그걸 막는지 여기서 잰다.
+
+    **계측 샘플링이 걸린 조건에서 재는 것이 요점이다.** 스텝마다 계측 wafer 가
+    달라지면 조합마다 분모 집합이 달라지는데, 그 상태에서도 보정이 유지되는지는
+    심어둔 신호를 잡는 것과 별개 문제다.
+
+    **전수 계측과 나란히 잰다.** 샘플링 조건 하나만 보면 상한을 아무리 잡아도
+    "지금 값이 옳은지" 를 못 말한다. 전수 계측은 명목대로 나오는 것이 확인돼 있으므로
+    (모듈 docstring 참조) 두 조건의 **차이**가 곧 편향의 크기다.
+
+    **2026-08-28: 그 결함은 고쳤다.** 귀무 참조집합을 "관측과 표본 크기가 같은 회차"
+    로 좁히자 대비가 1.5+ 에서 0.88 로 내려왔다 — 이 테스트의 옛 단언(`> 1.5`)이
+    예고한 대로 빨간불이 되어 개선을 알렸다. 지금 이 단언들은 **교정된 상태를**
+    고정한다: 두 조건 모두 명목(10%) 근처여야 하고 서로 크게 벌어지면 안 된다.
+    """
+    def _small_p_rate(measured_per_lot):
+        combos, answer, seen, masks = _synthetic(
+            n_lots=4, per_lot=25, targets_per_lot=5, n_combos=60,
+            measured_per_lot=measured_per_lot, seed=11)
+        obs, sizes = _observed(masks, combos, answer, seen)
+        perm = mc._permutation_stats_metro(masks, combos, answer, seen, obs, sizes,
+                                           1000, mc.PERM_SEED)
+        ps = list(perm["p"].values())
+        assert len(ps) > 20, "후보가 너무 적어 분포를 못 본다"
+        return sum(1 for p in ps if p <= 0.10) / len(ps)
+
+    full = _small_p_rate(25)              # 전수 계측
+    sampled = _small_p_rate(3)            # lot 당 3장
+
+    # 두 조건 모두 명목(10%) 근처다. 무너지면 스윕·순열 자체가 틀린 것이다
+    assert sampled < 0.15, f"샘플링 조건인데 p<=0.10 이 {sampled:.1%}"
+    assert full < 0.15, f"전수 계측인데 p<=0.10 이 {full:.1%}"
+    # **핵심 단언.** 계측 샘플링이 걸렸다는 이유만으로 p 분포가 달라지면 안 된다 -
+    # 순열 p 는 축을 가로지르는 유일한 자라(`graph/evidence.py` 의 `dominates`),
+    # metro 만 압축되면 계측 축이 구조적으로 다른 축을 이긴다. 단 p 는 **자기 바닥과
+    # 함께** 읽어야 하고, 비교는 두 후보의 공통 해상도에서 이뤄진다.
+    assert 0.7 < sampled / full < 1.3, (
+        f"샘플링/전수 비 {sampled / full:.2f} — 계측 샘플링이 p 분포를 흔들고 있다")
+
+
+def test_sampling_raises_the_p_floor_even_when_the_split_is_perfect():
+    """계측이 적으면 완전 분리여도 p 가 어느 아래로는 안 내려간다.
+
+    파워를 정하는 것은 계측된 타깃 **장수**가 아니라 **타깃이 계측된 stratum 수 k** 다
+    — 층화 순열의 경우의 수가 stratum 별 조합 수의 **곱**이라 lot 당 3장이면 대략
+    `3^k` 이고 바닥이 `1/3^k` 다. 이 성질을 모르면 "score 1.0 인데 왜 p 가 0.1 이냐" 를
+    데이터 문제로 오해한다.
+
+    여기서는 **고정 슬롯**(스텝마다 같은 wafer)을 강제해 k 를 작게 만든다. 사내는
+    스텝마다 다를 수도 있어 실제로는 이보다 낫지만, 나쁜 쪽 끝을 잠가 둔다.
+    """
+    import random
+
+    rng = random.Random(7)
+    # lot 2개, 각 lot 에서 3장만 계측하고 그 3장 중 1장이 타깃 — k = 2 -> 공간 3^2 = 9
+    bits, masks, combos, answer, seen = {}, [], {}, {}, 0
+    rows = []
+    for lot in range(2):
+        t = c = 0
+        for k in range(3):
+            w = f"L{lot}_{k}"
+            bits[w] = 1 << len(bits)
+            if k == 0:
+                t |= bits[w]
+                rows.append((100.0 + rng.random(), bits[w]))   # 타깃이 확실히 높다
+            else:
+                c |= bits[w]
+                rows.append((10.0 + rng.random(), bits[w]))
+            seen |= bits[w]
+        masks.append((f"L{lot}", t, c))
+    rows.sort(key=lambda vb: -vb[0])
+    key = ("metro", "S0", "THK")
+    combos[key], answer[key] = rows, seen
+
+    agg, _rep = mc._aggregate_metro(masks, combos, answer, seen)
+    obs, sizes = _observed(masks, combos, answer, seen)
+    perm = mc._permutation_stats_metro(masks, combos, answer, seen, obs, sizes,
+                                       1000, mc.PERM_SEED)
+
+    assert agg[(*key, "ge")]["score"] == 1.0          # 완전 분리다
+    assert perm["n_permutations_total"] == 9          # 3 x 3
+    assert perm["p_min_possible"][(*key, "ge")] == 1 / 9   # 그래도 바닥이 0.111
+    assert perm["p"][(*key, "ge")] == 1 / 9           # 완전 분리가 바닥에 닿을 뿐이다
+
+
+def test_a_where_clause_that_filters_everything_raises_instead_of_reporting_no_signal():
+    """`where` 값 오타는 **설정 오류로 멈춘다** — 도메인 결론으로 둔갑하면 안 된다.
+
+    `{'subitem_id': 'AVERAGE'}` 처럼 값이 틀리면 아무 행도 안 걸러지는 게 아니라
+    **모든 행이 걸러진다.** 막지 않으면 결과가 status='no_signal' 로 나가고 note 는
+    "lot 내부 대조로는 보이지 않는다" 는 도메인 판단을 말한다 — 오타 하나가 분석
+    결론으로 LLM 에게 전달된다. 중복 행 방어의 반대쪽 극단이다.
+    """
+    import pytest
+
+    targets, controls = _metro_groups()
+    typo = [{"level": "metro", "columns": ["step_seq", "item"],
+             "where": {"subitem_id": "AVERAGE"}}]        # AVG 오타
+    with pytest.raises(ValueError, match="전부"):
+        _prepare(targets, controls, typo)
+
+
+def test_candidates_carry_the_wafer_sets_they_point_at():
+    """계측 후보도 자기가 가리키는 wafer 를 싣고 온다.
+
+    다른 축은 집계 중에 마스크가 공짜로 나오지만 여기는 분할점 탐색이 순열 경로라
+    그 안에서 모을 수 없다. 그래서 top_k 로 자른 뒤 행을 한 번 더 훑는데, 그때
+    `_sweep` 과 **같은 부등호**를 써야 카운트와 목록이 어긋나지 않는다 - 이 테스트가
+    그 일치를 잠근다. ge 는 "split 이상", le 는 "split 이하" 다.
+    """
+    targets, controls = _metro_groups()
+    res = mc.find_metro_commonality(targets, controls, legend=mc.METRO_LEGEND)
+
+    assert res["candidates"], "이 fixture 는 후보를 내야 한다"
+    for c in res["candidates"]:
+        assert len(c["target_wafers"]) == c["target_pass"], c["key"]
+        assert len(c["control_wafers"]) == c["control_pass"], c["key"]
+        # 목록은 실제로 그 그룹 소속이어야 한다 (분모 밖 wafer 가 새면 안 된다)
+        assert set(c["target_wafers"]) <= set(targets), c["key"]
+        assert set(c["control_wafers"]) <= set(controls), c["key"]
+
+
+def test_split_masks_follows_the_same_inequality_as_the_sweep():
+    """되짚기가 `_sweep` 과 같은 경계를 쓴다 — 경계값 wafer 가 한쪽으로만 간다.
+
+    ge 의 split 은 그 값을 **포함**하고, le 의 split 도 그 값을 **포함**한다.
+    한쪽이라도 부등호가 엇갈리면 경계에 정확히 놓인 wafer 가 목록에서 빠지거나
+    두 번 세어져, target_pass 와 길이가 어긋난다.
+    """
+    rows = [(10.0, 0b0001), (9.0, 0b0010), (8.0, 0b0100), (7.0, 0b1000)]
+    t_valid = c_valid = 0b1111
+
+    t_ge, _ = mc._split_masks(rows, 9.0, "ge", t_valid, c_valid)
+    assert t_ge == 0b0011                      # 10.0 과 9.0 (9.0 포함)
+
+    t_le, _ = mc._split_masks(rows, 9.0, "le", t_valid, c_valid)
+    assert t_le == 0b1110                      # 9.0, 8.0, 7.0 (9.0 포함)
+
+    # 두 방향의 합집합이 전체보다 크다 = 경계값이 양쪽에 다 든다. 이는 정상이다 -
+    # ge 후보와 le 후보는 서로 여집합이 아니라 각자 최적 분할점을 따로 고른다.
+    assert t_ge | t_le == 0b1111
+
+
+def test_size_map_covers_both_directions_even_when_the_sweep_produced_one():
+    """표본 크기는 **계산이 성립한 조합 전부**에 대해, 양쪽 방향 다 적어야 한다.
+
+    한쪽 방향을 안 적으면 그 후보는 귀무 회차에서도 관측에서도 크기가 `None` 이 되어
+    `None != None` 이 거짓이 되고, **조건화가 조용히 꺼져 옛(편향된) 계산으로
+    되돌아간다.** 아무 것도 안 터지므로 다른 테스트로는 안 잡힌다.
+
+    스윕이 한 방향만 후보로 내는 조합이 실제로 있다 - 그런 조합에서도 반대 방향의
+    크기가 있어야 "못 넘었다" 와 "계산 불가" 가 갈린다.
+    """
+    targets, controls = _metro_groups()
+    combos, answer, seen, _u, masks, _b = _prepare(targets, controls)
+    sizes: dict = {}
+    agg, _rep = mc._aggregate_metro(masks, combos, answer, seen, sizes=sizes)
+
+    one_way = {k[:3] for k in agg} - {k[:3] for k in agg if k[3] == "le"} \
+        | {k[:3] for k in agg} - {k[:3] for k in agg if k[3] == "ge"}
+    assert one_way, "한 방향만 후보를 낸 조합이 없어 이 성질을 못 잰다"
+
+    combos_in_sizes = {k[:3] for k in sizes}
+    for combo in combos_in_sizes:
+        assert (*combo, "ge") in sizes and (*combo, "le") in sizes
+    assert {k[:3] for k in agg} <= combos_in_sizes      # 후보를 낸 조합은 전부 포함

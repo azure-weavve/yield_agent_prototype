@@ -18,7 +18,6 @@ HUMAN = HumanMessage(
     '"control": ["W2406_01", "W2406_03", "W2406_05"]}'
 )
 TARGET = ["W2406_02", "W2406_04", "W2406_06"]
-CONTROL = ["W2406_01", "W2406_03", "W2406_05"]
 
 
 def _tm(name, payload):
@@ -41,8 +40,9 @@ def test_scripted_sequence():
     # 2) 1단 — 챔버 편중 가설
     ai = llm.analyze_step(msgs)
     assert ai.tool_calls[0]["name"] == "hyp_eqp_ch_commonality"
-    assert ai.tool_calls[0]["args"]["group_ids"] == TARGET
-    assert ai.tool_calls[0]["args"]["control_ids"] == CONTROL
+    # 대조 분모는 인자가 아니다 - LLM 스키마에 없고 tools 노드가 state 에서 주입한다.
+    # 각본이 이것을 넘기면 운영에서는 못 일어나는 모양을 e2e 가 시험하게 된다.
+    assert not {"group_ids", "control_ids"} & set(ai.tool_calls[0]["args"])
     msgs += [ai, _tm("hyp_eqp_ch_commonality", {"hypothesis_id": "eqp_ch_commonality",
                                                 "status": "ok", "candidates": [
         {"level": "chamber", "key": "ETCH9_B", "value": ["Etch", "ETCH9_B"],
@@ -50,7 +50,16 @@ def test_scripted_sequence():
          "step_seq": "Etch", "score": 1.0, "target_pass": 3, "passes": True},
     ]})]
 
-    # 3) 2단 — 지목된 스텝의 센서 분포
+    # 3) 챔버가 갈렸어도 레시피 축을 **함께** 돌린다 - 교락 확인용.
+    #    여기서 멈추면 같은 wafer 를 두 이름으로 부르는 상황이 관측되지 않아,
+    #    게이트가 접을 것도 없고 리포트가 근거 하나만 든 채 확신에 찬 문장을 쓴다.
+    ai = llm.analyze_step(msgs)
+    assert ai.tool_calls[0]["name"] == "hyp_ppid_commonality"
+    assert not {"group_ids", "control_ids"} & set(ai.tool_calls[0]["args"])
+    msgs += [ai, _tm("hyp_ppid_commonality", {"hypothesis_id": "ppid_commonality",
+                                              "status": "no_signal", "candidates": []})]
+
+    # 4) 2단 — 지목된 스텝의 센서 분포
     ai = llm.analyze_step(msgs)
     assert ai.tool_calls[0]["name"] == "compare_sensor_distribution"
     assert ai.tool_calls[0]["args"]["step_seq"] == "Etch"
@@ -119,12 +128,15 @@ def test_generate_report_distinguishes_early_exits():
 def test_groups_parsed_from_machine_line_not_prose():
     # 사람용 문구를 바꿔도 GROUPS_JSON 라인만 있으면 mock 이 안 깨진다 (문제 7)
     llm = ScriptedMockLLMClient()
-    msgs = [HumanMessage('아무 문구나 자유롭게.\nGROUPS_JSON={"target": ["A"], "control": ["B"]}')]
+    msgs = [HumanMessage('아무 문구나 자유롭게.\n'
+                         'GROUPS_JSON={"target": ["A", "B"], "control": ["C"]}')]
+    # GROUPS_JSON 은 이제 도구 인자가 아니라 **가설 서술**의 재료다 (분모는 주입된다).
+    # 파싱이 깨지면 여기서 장수가 틀리고, 그 문장이 감사 기록·리포트로 나간다.
     ai = llm.analyze_step(msgs)  # 1) 조기 finalize
+    assert "불량 그룹 2장" in ai.tool_calls[0]["args"]["hypothesis"]
     msgs += [ai, _tm("finalize", "반려")]
-    ai = llm.analyze_step(msgs)  # 2) 1단 — GROUPS_JSON 에서 이어받은 그룹으로 대조
-    assert ai.tool_calls[0]["args"]["group_ids"] == ["A"]
-    assert ai.tool_calls[0]["args"]["control_ids"] == ["B"]
+    ai = llm.analyze_step(msgs)  # 2) 1단 대조
+    assert ai.tool_calls[0]["name"] == "hyp_eqp_ch_commonality"
 
 
 def test_scripted_survives_tool_error_string():
@@ -159,7 +171,14 @@ def test_scripted_survives_tool_error_string():
                                 "(KeyError: 'legend'). 인자를 확인하고 다시 호출하라.",
                                 ensure_ascii=False))]
 
-    ai = llm.analyze_step(msgs)                      # 5) 그래도 죽지 않고 물러선다
+    ai = llm.analyze_step(msgs)                      # 5) 계측 축도 마찬가지
+    assert ai.tool_calls[0]["name"] == "hyp_metro_commonality"
+    msgs += [ai, _tm("hyp_metro_commonality",
+                     json.dumps("오류: hyp_metro_commonality 실행 실패 "
+                                "(KeyError: 'legend'). 인자를 확인하고 다시 호출하라.",
+                                ensure_ascii=False))]
+
+    ai = llm.analyze_step(msgs)                      # 6) 그래도 죽지 않고 물러선다
     assert ai.tool_calls[0]["name"] == "finalize"
     assert ai.tool_calls[0]["args"]["confidence"] == 0.2   # '후보 없음' 후퇴 분기
     assert ai.content
@@ -182,8 +201,7 @@ def test_scripted_walks_every_registered_hypothesis_before_backing_off():
 
     ai = llm.analyze_step(msgs)                                        # 3) 폴백 PPID
     assert ai.tool_calls[0]["name"] == "hyp_ppid_commonality"
-    assert ai.tool_calls[0]["args"]["group_ids"] == TARGET
-    assert ai.tool_calls[0]["args"]["control_ids"] == CONTROL
+    assert not {"group_ids", "control_ids"} & set(ai.tool_calls[0]["args"])
     msgs += [ai, _tm("hyp_ppid_commonality", {"hypothesis_id": "ppid_commonality",
                                               "status": "no_signal", "candidates": []})]
 
@@ -193,7 +211,13 @@ def test_scripted_walks_every_registered_hypothesis_before_backing_off():
                      {"hypothesis_id": "step_passage_commonality",
                       "status": "no_signal", "candidates": []})]
 
-    ai = llm.analyze_step(msgs)                                        # 5) 물러선다
+    ai = llm.analyze_step(msgs)                                        # 5) 폴백 계측
+    assert ai.tool_calls[0]["name"] == "hyp_metro_commonality"
+    msgs += [ai, _tm("hyp_metro_commonality",
+                     {"hypothesis_id": "metro_commonality",
+                      "status": "no_signal", "candidates": []})]
+
+    ai = llm.analyze_step(msgs)                                        # 6) 물러선다
     assert ai.tool_calls[0]["name"] == "finalize"
     assert ai.tool_calls[0]["args"]["confidence"] == 0.2
     assert ai.tool_calls[0]["args"]["claim_id"] == ""    # 지목할 근거가 없다
@@ -236,6 +260,9 @@ def test_scripted_keeps_claim_id_when_stage2_fails():
             {"level": "chamber", "key": "ETCH9_B", "value": ["Etch", "ETCH9_B"],
              "claim_id": "eqp_ch_commonality:chamber:Etch:ETCH9_B",
              "step_seq": "Etch", "score": 1.0, "target_pass": 3, "passes": True}]})]
+    # 챔버가 갈렸어도 레시피 축을 함께 돌린다 (교락 확인) - 그다음이 2단이다
+    msgs += [llm.analyze_step(msgs), _tm("hyp_ppid_commonality", {
+        "hypothesis_id": "ppid_commonality", "status": "no_signal", "candidates": []})]
     ai = llm.analyze_step(msgs)
     assert ai.tool_calls[0]["name"] == "compare_sensor_distribution"
     msgs += [ai, _tm("compare_sensor_distribution",
@@ -247,24 +274,211 @@ def test_scripted_keeps_claim_id_when_stage2_fails():
     assert ai.tool_calls[0]["args"]["claim_id"] == "eqp_ch_commonality:chamber:Etch:ETCH9_B"
 
 
-def test_generate_report_renders_inconclusive_status():
-    # 한계 도달(inconclusive) 종료: 결론을 "미확정 + 유력 가설(후보)" 톤으로 표기
+def test_scripted_never_picks_a_sensor_even_when_it_outranks_the_first_stage():
+    """센서가 순위 1등이어도 각본은 **지목 가능한 것**을 낸다.
+
+    1단이 비통계 등급(참조 회차 0 - `p_min_possible` 이 없다)이면 `dominates` 가
+    어느 쪽도 못 이겨 센서와 같은 층에 서고, 표시 순서는 점수순이라 효과크기가 큰
+    센서가 앞에 선다. `_top_ranked` 는 `ranked_groups()`(근거로 실을 것 전부)를
+    그대로 받으므로 그 센서를 돌려주는데, 각본은 그 값을 finalize 의 claim_id 로
+    쓴다 - 게이트가 반려하고 각본에는 그 반려에 반응할 분기가 없어 같은 호출을
+    루프 한계까지 되풀이한다(확정될 분석이 inconclusive 로 끝난다).
+
+    문장도 거짓이 된다: 효과크기가 "분리 점수" 로, 투영이 채운 통과 카운트 0 이
+    "불량군 0장 전용" 으로 인쇄된다 - 이 브랜치가 근거 줄에서 없앤 가짜 2x2 가
+    `final_hypothesis` 산문으로 새는 것이라 렌더러 수정으로는 안 막힌다.
+    """
     llm = ScriptedMockLLMClient()
+    msgs = [HUMAN]
+    msgs += [llm.analyze_step(msgs), _tm("finalize", "반려")]
+    msgs += [llm.analyze_step(msgs), _tm("hyp_eqp_ch_commonality", {
+        "hypothesis_id": "eqp_ch_commonality", "status": "ok", "candidates": [
+            # 순열을 못 돌린 후보다 (p_permutation 없음) - 소표본에서 흔하다
+            {"level": "chamber", "key": "ETCH9_B", "value": ["Etch", "ETCH9_B"],
+             "claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH9_B",
+             "step_seq": "CC002000", "score": 1.0, "target_pass": 3,
+             "target_total": 3, "control_pass": 0, "control_total": 3,
+             "passes": True}]})]
+    msgs += [llm.analyze_step(msgs), _tm("hyp_ppid_commonality", {
+        "hypothesis_id": "ppid_commonality", "status": "no_signal", "candidates": []})]
+    ai = llm.analyze_step(msgs)
+    assert ai.tool_calls[0]["name"] == "compare_sensor_distribution"
+    msgs += [ai, _tm("compare_sensor_distribution", {
+        "kind": "sensor", "status": "ok", "candidates": [
+            # 효과크기가 1단 분리 점수(1.0)보다 크다 - 표시 순서에서 앞에 선다
+            {"claim_id": "sensor:CC002000:RF_1", "sensor_name": "RF_1",
+             "effect_size": 14.99, "passes": True, "reject_reason": None,
+             "target_mean": 812.4, "control_mean": 799.1,
+             "target_std": 3.0, "control_std": 2.8,
+             "n_target": 12, "n_control": 40}]})]
+
+    args = llm.analyze_step(msgs).tool_calls[0]["args"]
+    assert args["claim_id"] == "eqp_ch_commonality:chamber:CC002000:ETCH9_B"
+    assert "불량군 0장 전용" not in args["hypothesis"]   # 센서에는 2x2 가 없다
+
+
+def test_generate_report_renders_inconclusive_status():
+    """한계 도달(inconclusive) 종료: 결론을 "미확정 + 유력 가설(후보)" 톤으로 표기.
+
+    **사유는 판정문에서 가져온다** (재리뷰 Important 2) - findings 의 finalize
+    판정문이 실제로 "루프 한계 도달" 이라고 말할 때만 그 문구가 결론에 실린다.
+    findings 없이 이름만으로 "한계 도달" 을 지어내면, 실제로는 텍스트 응답
+    이탈이었던 게이트리스 종료에서도 없는 트리거를 찍는다.
+    """
+    llm = ScriptedMockLLMClient()
+    verdict = "미확정 (루프 한계 도달): 확정 근거 없이 리포팅으로 진행한다."
     report = llm.generate_report(
         target_wafers=["W2406_02"], target_source="manual",
         target_group=TARGET, status_summary="s",
-        findings=[], hypothesis="ETCH-9 rf_power 이상 추정", confidence=0.5,
+        findings=[{"loop": 7, "tool": "finalize", "args": {}, "result": verdict,
+                   "thought": ""}],
+        hypothesis="ETCH-9 rf_power 이상 추정", confidence=0.5,
         finalize_status="inconclusive",
     )
     assert "미확정" in report
-    assert "한계" in report          # 왜 미확정인지 (루프 한계 도달)
-    assert "ETCH-9" in report        # 유력 가설은 후보로 남긴다
+    conclusion = [l for l in report.splitlines() if l.startswith("[결론]")][0]
+    # [분석 과정] 의 `- 게이트:` 줄에도 판정문이 그대로 실리므로 report 전체를 보면
+    # 이 assert 는 그 줄만으로도 통과한다 - 좁혀서 **결론 문장**이 사유를 옮겼는지를
+    # 잠근다.
+    assert "한계" in conclusion      # 왜 미확정인지 (루프 한계 도달) - 판정문에서 왔다
+    assert "ETCH-9" in conclusion    # 유력 가설은 후보로 남긴다
+
+
+def test_generate_report_does_not_invent_a_loop_limit_the_verdict_does_not_claim():
+    """**이름이 아니라 판정문이 사유의 전제다** (재리뷰 Important 2).
+
+    게이트리스 종료가 진짜 한계가 아니면 판정문 머리말이 실제 트리거를 그대로
+    말한다(`graph.nodes._gateless_finalize`). `finalize_status == "inconclusive"`
+    라는 이름만 보고 "루프 한계 도달"을 고정 출력하면, 게이트 줄([분석 과정])과
+    결론이 서로를 부정하는 리포트가 나간다 - 재리뷰가 `report_node` 로 직접
+    재현한 바로 그 결함이다.
+    """
+    llm = ScriptedMockLLMClient()
+    verdict = ("미확정 (도구 호출 없는 응답으로 종료 - loop 1): 확정 근거 없이 "
+               "리포팅으로 진행한다.")
+    report = llm.generate_report(
+        target_wafers=["W2406_02"], target_source="manual",
+        target_group=TARGET, status_summary="s",
+        findings=[{"loop": 1, "tool": "finalize", "args": {}, "result": verdict,
+                   "thought": ""}],
+        hypothesis="ETCH-9 rf_power 이상 추정", confidence=0.5,
+        finalize_status="inconclusive",
+    )
+    conclusion = [l for l in report.splitlines() if l.startswith("[결론]")][0]
+    assert "루프 한계 도달" not in conclusion, conclusion
+    assert "도구 호출 없는 응답으로 종료 - loop 1" in conclusion, conclusion
+    assert "ETCH-9" in conclusion
+
+
+def test_generate_report_reads_the_last_finalize_record_not_the_first():
+    """findings 에 finalize 기록이 여럿이면 **마지막** 것을 판정문으로 본다
+    (`llm/client.py` 클래스 독스트링·sys 프롬프트가 선언한 M-4 계약, 최종 리뷰 I-2).
+
+    실측 재현 구도: loop 1 에서 LLM 이 `finalize` 를 불러 `(5) 반려` 를 받고(claim_id
+    미제출), loop 2 에서 도구 호출 없는 텍스트 응답으로 게이트리스 종료에 온다 -
+    findings 에는 반려 기록과 게이트리스 합성 판정문이 **함께** 남는 정상 조합이다
+    (`graph.nodes._gateless_finalize`, `tests/test_graph_nodes.py::
+    test_gateless_verdict_is_true_even_after_an_earlier_finalize_was_rejected`).
+    첫 기록에서 사유를 읽으면(`gate_lines[0]`) 괄호가 없어 사유가 통째로 사라지고,
+    뒤엣것을 읽어야(`gate_lines[-1]`) loop 2 의 실제 트리거가 결론에 실린다.
+    """
+    llm = ScriptedMockLLMClient()
+    rejected = ("반려: claim_id 미제출 - 이번 회차는 결론을 못 낸다.")
+    gateless = ("미확정 (도구 호출 없는 응답으로 종료 - loop 2): 확정 근거 없이 "
+                "리포팅으로 진행한다.")
+    report = llm.generate_report(
+        target_wafers=["W2406_02"], target_source="manual",
+        target_group=TARGET, status_summary="s",
+        findings=[
+            {"loop": 1, "tool": "finalize", "args": {}, "result": rejected,
+             "thought": ""},
+            {"loop": 2, "tool": "finalize", "args": {}, "result": gateless,
+             "thought": ""},
+        ],
+        hypothesis="ETCH-9 rf_power 이상 추정", confidence=0.5,
+        finalize_status="inconclusive",
+    )
+    conclusion = [l for l in report.splitlines() if l.startswith("[결론]")][0]
+    # 뒤엣것(loop 2)의 괄호 문구를 옮긴다.
+    assert "도구 호출 없는 응답으로 종료 - loop 2" in conclusion, conclusion
+    # 앞엣것(loop 1)의 문구는 안 나온다 - 꼬리만 잠그지 않는다.
+    assert "claim_id 미제출" not in conclusion, conclusion
+    assert "반려" not in conclusion, conclusion
+
+
+def test_generate_report_does_not_call_a_dropped_pick_a_likely_hypothesis():
+    """**게이트가 버린 지목은 목에서도 유력 가설이 아니다.**
+
+    `inconclusive` 는 "유력 후보로 서술하라" 는 반대 방향 지시가 걸린 유일한 판정이라,
+    루프 한계에서 지목이 버려지면 **판정문은 "무시했다" 인데 결론은 "유력 가설: 그것"**
+    인 리포트가 나왔다(재리뷰 I-A 가 실제 출력으로 재현). 목은 프롬프트를 따르는 LLM 의
+    대역이므로 같은 규칙을 타야 한다 - 안 그러면 운영에서 잡아야 할 모순을 목이 정상으로
+    보여 준다.
+
+    LLM 이 보는 신호는 **판정문**이다(state 는 LLM 에게 안 간다). 그래서 findings 의
+    finalize 결과 문자열로 판정한다.
+    """
+    llm = ScriptedMockLLMClient()
+    verdict = ("미확정 (루프 한계 도달): 확정 근거 없이 리포팅으로 진행한다. "
+               "(마지막 제출 claim_id 'eqp_ch_commonality:chamber:CC002000:ETCH9_B' 는 "
+               "판별선을 넘지 못해 승인 대상이 아니어서 무시하고 증거 상태로 판정했다.)")
+    report = llm.generate_report(
+        target_wafers=["W2406_02"], target_source="manual",
+        target_group=TARGET, status_summary="s",
+        findings=[{"loop": 7, "tool": "finalize", "args": {}, "result": verdict,
+                   "thought": ""}],
+        hypothesis="ETCH-9 rf_power 이상 추정", confidence=0.9,
+        finalize_status="inconclusive",
+    )
+    assert "미확정" in report
+    assert "버려" in report                    # 무슨 일이 있었는지는 말한다
+    # 버린 후보를 결론의 주어로 올리지 않는다. [분석 과정] 의 게이트 줄에는 판정문이
+    # 그대로 실리므로 claim_id 자체는 리포트에 남는다 - 여기서 잠그는 것은 **결론 문장**이다.
+    conclusion = [l for l in report.splitlines() if l.startswith("[결론]")]
+    assert conclusion, report
+    assert "유력 가설: ETCH-9" not in conclusion[0], conclusion[0]
+    # **없는 줄을 가리키지 않는다.** `[판정]` 은 리포트 생성 실패 폴백에만 있고, 목이
+    # 살아서 만든 리포트에서 판정문은 [분석 과정] 의 게이트 줄에 실린다(3차 리뷰 I-1b).
+    assert "[판정]" not in report, report
+    assert "[분석 과정]" in report
+    # **버린 지목에 딸린 자기 신고 확신도는 안 찍는다** - 근거가 아니고, 코드가 결론을
+    # 적는 자리(`report_node` 폴백)도 같은 이유로 뺐다. 두 자리가 어긋나면 안 된다.
+    assert "확신도" not in conclusion[0], conclusion[0]
+
+
+def test_a_dropped_pick_does_not_deny_evidence_that_did_get_carried():
+    """**"버린 지목은 유력 가설이 아니다" 를 "쓸 수 있는 후보가 없다" 로 넓히면 거짓이다.**
+
+    지목만 2단 센서였고 통과 근거는 실린 채 `(4)` 로 오는 상태가 있다 - 이 저장소의
+    게이트 테스트가 그 조합을 그대로 쓴다(`(4) 통과 근거는 실린다`). 그때 [근거] 줄에는
+    완전 분리 후보가 찍히는데 결론이 "쓸 수 있는 후보가 없다" 라고 하면, 한 리포트 안에서
+    판정문("근거 2건을 싣되")·결론·근거 줄이 서로를 부정한다 - 이 규칙이 없애려던 바로
+    그 모양이 부호만 뒤집힌 채 재생산된다(3차 리뷰 I-1).
+    """
+    llm = ScriptedMockLLMClient()
+    verdict = ("미확정 (루프 한계 도달): 판별선을 넘은 근거 2건을 싣되 무엇이 원인인지는 "
+               "확정하지 못했다. 리포팅으로 진행한다. (마지막 제출 claim_id "
+               "'sensor:CC002000:TEMP_1' 는 2단 센서 근거라 지목 대상이 아니어서 "
+               "무시하고 증거 상태로 판정했다.)")
+    report = llm.generate_report(
+        target_wafers=["W2406_02"], target_source="manual",
+        target_group=TARGET, status_summary="s",
+        findings=[{"loop": 7, "tool": "finalize", "args": {}, "result": verdict,
+                   "thought": ""}],
+        hypothesis="ETCH-9 rf_power 이상 추정", confidence=0.9,
+        finalize_status="inconclusive",
+        claims=[{"claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH9_B",
+                 "passes": True, "score": 1.0}],
+    )
+    conclusion = [l for l in report.splitlines() if l.startswith("[결론]")][0]
+    assert "후보가 없다" not in conclusion, conclusion
+    assert "버려" in conclusion, conclusion
 
 
 def test_generate_report_no_longer_renders_evidence_line_itself():
     """[근거] 줄은 이제 mock 이 아니라 report_node 가 코드로 붙인다 (Task 8 최종 검토).
 
-    claim 을 넘겨도 mock 의 generate_report 자체는 [근거] 를 내지 않아야 한다 —
+    claims 를 넘겨도 mock 의 generate_report 자체는 [근거] 를 내지 않아야 한다 —
     안 그러면 report_node 가 붙이는 줄과 겹쳐 두 번 나온다.
     같은 계약(claim_id·분리 점수·3/3·0/6 단언)은 `tests/test_graph_nodes.py` 의
     `test_report_node_appends_evidence_line_for_approved_claim` 로 옮겼다.
@@ -274,8 +488,877 @@ def test_generate_report_no_longer_renders_evidence_line_itself():
         target_wafers=["W2406_02"], target_source="manual", target_group=TARGET,
         status_summary="s", findings=[], hypothesis="원인은 그 챔버다", confidence=0.9,
         finalize_status="confirmed",
-        claim={"claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH9_B", "score": 1.0,
-               "target_pass": 3, "target_total": 3,
-               "control_pass": 0, "control_total": 6},
+        claims=[{"claim_id": "eqp_ch_commonality:chamber:CC002000:ETCH9_B", "score": 1.0,
+                 "target_pass": 3, "target_total": 3,
+                 "control_pass": 0, "control_total": 6}],
     )
     assert "[근거]" not in report
+
+
+# ---------------------------------------------------------------- 운영 클라이언트 계약
+# mock 만 테스트하면 사내 경로(LLM_MODE=openai)는 **한 줄도 실행되지 않는다.**
+# 실제로 generate_report 의 인자 이름만 바꾸고 본문을 안 고쳐 NameError 가 났는데,
+# 297개 테스트가 전부 통과했다. 리포트는 report_node 가 예외를 삼켜 stub 으로
+# 대체하므로 사내에서는 **조용히 산문 리포트가 사라질** 뿐이었다.
+
+class _CapturingLLM:
+    """사내 서빙 대역. 프롬프트만 받아 둔다."""
+
+    def __init__(self):
+        self.seen = None
+        self.seen_sys = None
+
+    def invoke(self, messages):
+        self.seen = messages[-1].content
+        # 시스템 메시지도 잡는다. 산문 톤을 실제로 바꾸는 지시는 여기 있는데
+        # user 쪽만 보던 탓에 sys 프롬프트가 통째로 커버리지 0 이었다.
+        self.seen_sys = messages[0].content
+
+        class _Resp:
+            content = "산문 리포트"
+        return _Resp()
+
+
+def _openai_client():
+    from llm.client import OpenAILLMClient
+
+    client = OpenAILLMClient.__new__(OpenAILLMClient)   # 연결 없이 메서드만 시험
+    client.llm = _CapturingLLM()
+    return client
+
+
+def test_operational_client_renders_a_report_without_raising():
+    """운영 클라이언트의 generate_report 가 실제로 돌아야 한다.
+
+    report_node 가 예외를 삼키므로 여기서 안 잡으면 사내에서만 조용히 깨진다.
+    """
+    client = _openai_client()
+    report = client.generate_report(
+        target_wafers=["W2406_02"], target_source="manual", target_group=["W2406_02"],
+        status_summary="요약", findings=[], hypothesis="h", confidence=0.9,
+        finalize_status="confirmed",
+        claims=[{"claim_id": "a", "rank": 1}, {"claim_id": "b", "rank": 1}])
+    assert report == "산문 리포트"
+
+
+def test_operational_client_passes_every_claim_to_the_prompt():
+    """근거를 **전부** 프롬프트에 넣어야 한다 - 하나만 넣으면 다축이 무의미해진다."""
+    client = _openai_client()
+    client.generate_report(
+        target_wafers=["W1"], target_source="manual", target_group=["W1"],
+        status_summary="s", findings=[], hypothesis="h", confidence=0.9,
+        finalize_status="confirmed",
+        claims=[{"claim_id": "chamber-a", "rank": 1}, {"claim_id": "ppid-b", "rank": 1}])
+    prompt = client.llm.seen
+    assert "chamber-a" in prompt and "ppid-b" in prompt
+    # weak_signal 에서는 이 목록의 전부가 잔차일 수 있어 "근거" 로 고정해 부르면
+    # 안 된다(리뷰 지적) - 그래서 "항목" 으로 부른다.
+    assert "항목 2건" in prompt
+    # 하나만 고르지 말라는 지시가 함께 가야 한다
+    assert "전부 서술" in prompt
+
+
+def test_operational_client_prompt_explains_the_mh_weighted_score():
+    """T9(pooling-mh-score) — score 가 stratum 별 MH 가중평균이라는 설명이 프롬프트에
+    있어야 한다. 없으면(M10) LLM 이 target_pass/target_total 로 score 를 직접
+    재계산해 **다른 숫자**를 쓸 수 있다(계획서 D6.1). 이 문장은 `score_pooled` 가
+    실린 항목(commonality/step_history)이 있을 때만 나가야 한다(R-M-c, 아래
+    `test_..._does_not_mislabel_metro_and_sensor_claims` 가 반대쪽을 잠근다) -
+    그래서 여기서는 `extra.score_pooled` 가 있는 항목을 준다.
+    """
+    client = _openai_client()
+    client.generate_report(
+        target_wafers=["W1"], target_source="manual", target_group=["W1"],
+        status_summary="s", findings=[], hypothesis="h", confidence=0.9,
+        finalize_status="confirmed",
+        claims=[{"claim_id": "chamber-a", "rank": 1,
+                 "extra": {"score_pooled": -0.357, "n_strata": 2}}])
+    prompt = client.llm.seen
+    assert "Mantel-Haenszel 가중" in prompt
+    assert "다시 계산하지 마라" in prompt
+
+
+def test_operational_client_prompt_locks_the_three_mh_note_sentences():
+    """FR-6(2026-09-21 4차 리뷰, L1·L2·L3) — `mh_note`(client.py:623-634)는
+    세 가지 별개 사실을 말한다. 기존 단언은 "Mantel-Haenszel 가중" ·
+    "다시 계산하지 마라" 두 부분 문자열만 봐서, 세 문장 중 하나가 통째로
+    빠져도(예: L2 삭제) 안 걸렸다. 문장마다 고유한 구절로 따로 잠근다.
+    """
+    client = _openai_client()
+    client.generate_report(
+        target_wafers=["W1"], target_source="manual", target_group=["W1"],
+        status_summary="s", findings=[], hypothesis="h", confidence=0.9,
+        finalize_status="confirmed",
+        claims=[{"claim_id": "chamber-a", "rank": 1,
+                 "extra": {"score_pooled": -0.357, "n_strata": 2}}])
+    prompt = client.llm.seen
+    # L1 — score_pooled 는 설명용이고 score 를 대신하지 않는다(재계산 금지).
+    assert "score_pooled 값이 null 이 아닌 항목만" in prompt
+    assert "score_pooled 자체는 단순 합산값이고 설명용일 뿐 score 를 대신하지 않는다" in prompt
+    # L2 — strata_detail 의 stratum 별 d 도 (2개 이상·모양이 다를 때는) 단순
+    # 평균하면 score 가 안 나온다 - 조건 없이 적으면 stratum 1개나 모양이 같은
+    # 경우에 거짓이 된다(FR-9).
+    assert ("strata_detail 의 stratum 이 2개 이상이고 그 모양(타깃·대조군 표본 "
+            "수)이 서로 다른 항목은 그 안의 stratum 별 d 도 단순 평균하면 안 된다") in prompt
+    assert "stratum 마다 가중치가 달라 가중치 없는 평균은 score 와 다르다" in prompt
+    # L3 — score_pooled 가 null 인 항목(metro·sensor)은 이 규칙과 무관하다.
+    assert "score_pooled 값이 null 인 항목" in prompt
+    assert "키는 있어도 값이 null 이면 여기 속한다" in prompt
+    assert "metro 는 여전히 stratum 합산값이고 센서는 효과크기다" in prompt
+
+
+def test_operational_client_prompt_does_not_mislabel_metro_and_sensor_claims():
+    """R-M-c — commonality 항목이 하나도 없으면(metro·sensor 뿐) MH 가중 문장이
+    아예 안 나가야 한다. metro 는 여전히 crude pooling(score = stratum 합산)이고
+    sensor 의 score 자리에는 효과크기가 온다 - 조건 없이 적으면 둘 다에 거짓말이
+    된다(2026-09-17 리뷰). metro 도 `n_strata` 는 싣지만(m7) `score_pooled` 는
+    **값이 None** 이다 - 그 값으로만 가른다(키 유무가 아니다, RR-B1 아래 참고).
+    """
+    client = _openai_client()
+    client.generate_report(
+        target_wafers=["W1"], target_source="manual", target_group=["W1"],
+        status_summary="s", findings=[], hypothesis="h", confidence=0.9,
+        finalize_status="confirmed",
+        claims=[{"claim_id": "metro-a", "rank": 1, "kind": "statistical",
+                 "extra": {"n_strata": 3, "item": "THK", "score_pooled": None}},
+                {"claim_id": "sensor-a", "rank": 1, "kind": "sensor",
+                 "extra": {"target_mean": 1.0}}])
+    prompt = client.llm.seen
+    assert "Mantel-Haenszel 가중" not in prompt
+
+
+def test_operational_client_prompt_scopes_the_mh_note_by_value_not_key_presence():
+    """RR-B1(2026-09-20 재리뷰) — `domain/engine.py::evaluate` 는 metro 후보에도
+    `score_pooled` 키를 무조건 붙인다(값은 None, `.get()` 이 기본값을 못 찾아
+    그대로 실린다). 그래서 실제 운영 payload 는 commonality 항목과 metro 항목이
+    **둘 다 `score_pooled` 키를 가진** 혼합 리스트다 - 키 유무로 가르는 문장이면
+    metro 항목도 "score_pooled 필드가 있는 항목" 에 걸려 crude pooling 인 metro
+    에 "가중" 딱지가 붙는다(이 작업이 없애려던 심슨 노출에 거짓 라벨이 붙는
+    상황). 값(`is not None`)으로 가른 문장인지를 여기서 직접 잠근다 - 위
+    `test_..._does_not_mislabel_metro_and_sensor_claims` 는 metro 항목 하나만
+    있을 때(commonality 항목이 없어 MH 문장 자체가 안 나가는 경우)를 보므로,
+    **혼합 리스트에서 MH 문장이 나가면서도 metro 를 잘못 포함하지 않는지**는
+    따로 확인해야 한다.
+    """
+    client = _openai_client()
+    client.generate_report(
+        target_wafers=["W1"], target_source="manual", target_group=["W1"],
+        status_summary="s", findings=[], hypothesis="h", confidence=0.9,
+        finalize_status="confirmed",
+        claims=[{"claim_id": "chamber-a", "rank": 1,
+                 "extra": {"score_pooled": -0.357, "n_strata": 2}},
+                # engine 이 만든 모양 그대로 — score_pooled 키는 있고 값은 None
+                {"claim_id": "metro-a", "rank": 1, "kind": "statistical",
+                 "extra": {"score_pooled": None, "n_strata": 3, "item": "THK"}}])
+    prompt = client.llm.seen
+    assert "Mantel-Haenszel 가중" in prompt          # commonality 항목이 있으니 나간다
+    # 판별자가 값 기준이라는 것을 문구로 잠근다 - "필드가 있는" 이라고만 쓰면
+    # metro-a 도 "score_pooled 필드가 있는 항목" 에 걸려 잘못 가중 딱지가 붙는다.
+    assert "필드가 있는" not in prompt
+    assert "값이 null 이 아닌" in prompt
+
+
+def test_operational_client_puts_coverage_in_the_prompt():
+    """부분 커버리지 사실이 산문을 쓰는 LLM 에게 가야 한다.
+
+    안 가면 한 축만 보고 물러선 분석을 두고 "lot 내부 대조로는 원인이 없다" 는
+    확정 톤 문장을 쓴다 - 사유가 틀린 보고다. 운영 경로에서만 깨지는 자리라
+    여기서 잡지 않으면 사내에서만 조용히 어긋난다.
+    """
+    client = _openai_client()
+    client.generate_report(
+        target_wafers=["W1"], target_source="manual", target_group=["W1"],
+        status_summary="s", findings=[], hypothesis=None, confidence=0.2,
+        finalize_status="no_signal", claims=[],
+        coverage={"ran": ["hyp_eqp_ch_commonality"],
+                  "unrun": ["hyp_metro_commonality"], "no_data": []})
+    prompt = client.llm.seen
+    assert "hyp_metro_commonality" in prompt
+    assert "커버리지" in prompt
+
+
+def test_operational_client_system_prompt_scopes_a_partial_coverage_conclusion():
+    """부분 커버리지 지시는 **시스템 프롬프트**에 있어야 산문 톤이 바뀐다.
+
+    user 쪽에 커버리지 JSON 만 넣고 sys 지시를 지워도 스위트가 통과하던 자리다 -
+    운영 클라이언트의 sys 프롬프트를 보는 테스트가 저장소에 한 건도 없었다.
+    """
+    client = _openai_client()
+    client.generate_report(
+        target_wafers=["W1"], target_source="manual", target_group=["W1"],
+        status_summary="s", findings=[], hypothesis=None, confidence=0.2,
+        finalize_status="no_signal", claims=[],
+        coverage={"ran": ["hyp_eqp_ch_commonality"],
+                  "unrun": ["hyp_metro_commonality"], "no_data": []})
+    assert "안 본 축" in client.llm.seen_sys
+
+
+def test_operational_client_scopes_a_partial_coverage_conclusion_for_weak_signal_too():
+    """weak_signal 도 커버리지 고백 지시를 받아야 한다.
+
+    (2a) 는 loop 2 에도 열리도록 설계됐다(설계 §13) - `weak_signal` 로 끝나는 분석은
+    등록 축 4개 중 3개가 안 돌린 채로 끝나는 것이 흔하다. 그런데 이 지시 문장은
+    `no_signal` 이거나 `inconclusive` 일 때만 걸려 있었다 - 가장 필요한 판정에
+    커버리지 고백을 안 시키는 구멍이었다.
+
+    'weak_signal' 이라는 문자열만 세면 공허하다 - 시스템 프롬프트에는 이미
+    "판정이 weak_signal 이면 '약한 신호'로 서술하라" 문장이 따로 있다
+    (grep 으로 이 사실을 먼저 확인했다: 커버리지 고백 문장과 이어붙인 새 문자열
+    "weak_signal 이거나 no_signal 이거나 inconclusive" 는 고치기 전에는 파일
+    어디에도 없었다). 그래서 **이어붙은 문자열**을 찾는다.
+    """
+    client = _openai_client()
+    client.generate_report(
+        target_wafers=["W1"], target_source="manual", target_group=["W1"],
+        status_summary="s", findings=[], hypothesis="h", confidence=0.3,
+        finalize_status="weak_signal", claims=[],
+        coverage={"ran": ["hyp_eqp_ch_commonality"],
+                  "unrun": ["hyp_metro_commonality"], "no_data": []})
+    assert "weak_signal 이거나 no_signal 이거나 inconclusive" in client.llm.seen_sys
+
+
+def test_operational_client_tells_the_report_what_a_sensor_claim_is():
+    """리포트 LLM 은 센서 근거를 **처음** 받는다 (이 브랜치의 투영으로 생겼다).
+
+    센서 항목에는 2x2 도 순열 p 도 없고 효과크기와 두 분포뿐인데, 프롬프트는
+    "근거가 여러 건이면 전부 서술하라" 만 말한다. 무엇인지 안 알려주면 1단 근거와
+    같은 무게로 원인을 단정하는 문장이 나간다 - 다중비교 보정을 안 한 후보를
+    확정 결론의 주어로 쓰는 것이다.
+    """
+    client = _openai_client()
+    client.generate_report(
+        target_wafers=["W1"], target_source="manual", target_group=["W1"],
+        status_summary="s", findings=[], hypothesis="h", confidence=0.9,
+        finalize_status="confirmed", coverage=None,
+        claims=[{"claim_id": "sensor:CC002000:TEMP_1", "kind": "sensor",
+                 "score": 2.31, "rank": 1}])
+    # claims JSON 에 "sensor:..." 가 이미 있으므로 문자열 'sensor' 만 세면 공허하다 -
+    # **지시 문장**을 찾는다.
+    assert "kind 가 sensor" in client.llm.seen
+    assert "확정 결론의 주어로 쓰지 마라" in client.llm.seen
+
+
+def test_operational_client_does_not_hedge_a_confirmed_conclusion():
+    """확정 결론에까지 '돌린 축에 한한다' 는 유보를 달게 하면 안 된다.
+
+    claim_id 조회·순위 1등·순열 p 를 통과한 결론에 강한 유보를 달면 엔지니어가
+    근거를 저평가한다. 사실(커버리지 줄)은 코드가 따로 싣는다 - 유보 지시는
+    물러선 판정(no_signal·inconclusive)에만 붙는다.
+    """
+    client = _openai_client()
+    client.generate_report(
+        target_wafers=["W1"], target_source="manual", target_group=["W1"],
+        status_summary="s", findings=[], hypothesis="그 챔버다", confidence=0.9,
+        finalize_status="confirmed", claims=[{"claim_id": "a", "rank": 1}],
+        coverage={"ran": ["hyp_eqp_ch_commonality"],
+                  "unrun": ["hyp_metro_commonality"], "no_data": []})
+    assert "돌린 축에 한한" not in client.llm.seen
+    assert "돌린 축에 한한" not in client.llm.seen_sys
+
+
+def test_mock_no_signal_conclusion_does_not_claim_full_coverage():
+    """mock 의 '신호 없음' 결론이 안 본 축까지 없다고 단정하면 안 된다.
+
+    옛 문구("lot 내부 대조로는 타깃만 거친 설비/챔버/PPID 가 없다")는 전축을 돌린
+    전제에서만 참이다. 전축 실행이 전제 조건에서 빠졌으므로 부분 커버리지로 끝나는
+    분석이 정상이 됐고, 그 문구는 거짓 단정이 된다.
+    """
+    from llm.client import ScriptedMockLLMClient
+
+    report = ScriptedMockLLMClient().generate_report(
+        target_wafers=["W1"], target_source="manual", target_group=["W1"],
+        status_summary="s", findings=[], hypothesis=None, confidence=0.2,
+        finalize_status="no_signal", claims=[])
+    assert "설비/챔버/PPID 가 없다" not in report
+    assert "대조한 축에서는" in report
+
+
+def test_operational_client_works_without_claims():
+    """근거가 없는 판정(no_signal 등)에서도 돌아야 한다."""
+    client = _openai_client()
+    assert client.generate_report(
+        target_wafers=["W1"], target_source="manual", target_group=["W1"],
+        status_summary="s", findings=[], hypothesis=None, confidence=0.2,
+        finalize_status="no_signal", claims=[]) == "산문 리포트"
+
+
+def test_sensor_no_signal_is_not_treated_like_a_missing_sensor():
+    """"봤는데 안 갈렸다" 와 "못 봤다" 를 구분한다 - 안 하면 라이브락이다.
+
+    둘 다 0.5 로 물러서면 게이트가 반드시 반려하는데(< CONFIDENCE_THRESHOLD) 이
+    스크립트에는 더 시도할 것이 없어 **같은 finalize 를 루프 한계까지 되풀이한다.**
+    확정될 분석이 inconclusive 로 끝나고 바퀴 두세 개가 버려진다.
+
+    센서가 안 갈렸다는 것은 관측된 사실이지 근거의 부재가 아니다. 1단 근거로
+    판단하되 2단이 무엇을 말했는지를 결론에 남긴다. `fetch_failed`(못 봤다)는
+    기존 계약대로 확정하지 않는다 - tests/test_e2e.py 가 그쪽을 지킨다.
+    """
+    llm = ScriptedMockLLMClient()
+    msgs = [HUMAN]
+    msgs += [llm.analyze_step(msgs), _tm("finalize", "반려")]
+    msgs += [llm.analyze_step(msgs), _tm("hyp_eqp_ch_commonality", {
+        "hypothesis_id": "eqp_ch_commonality", "status": "ok", "candidates": [
+            {"level": "chamber", "key": "ETCH9_B", "value": ["Etch", "ETCH9_B"],
+             "claim_id": "eqp_ch_commonality:chamber:Etch:ETCH9_B",
+             "step_seq": "Etch", "score": 1.0, "target_pass": 3, "passes": True}]})]
+    msgs += [llm.analyze_step(msgs), _tm("hyp_ppid_commonality", {
+        "hypothesis_id": "ppid_commonality", "status": "no_signal", "candidates": []})]
+    msgs += [llm.analyze_step(msgs), _tm("compare_sensor_distribution",
+                                         {"status": "no_signal", "candidates": []})]
+
+    ai = llm.analyze_step(msgs)
+    args = ai.tool_calls[0]["args"]
+    assert ai.tool_calls[0]["name"] == "finalize"
+    assert args["confidence"] >= 0.8          # 게이트가 받을 수 있어야 반복이 멈춘다
+    assert args["claim_id"] == "eqp_ch_commonality:chamber:Etch:ETCH9_B"
+    # 2단이 무엇을 말했는지가 결론에 남는다 (조용히 생략하지 않는다)
+    assert "가르지 못했다" in args["hypothesis"]
+
+    # 같은 상태를 다시 물어도 같은 답이다 - 반복이 아니라 종료다
+    assert llm.analyze_step(msgs).tool_calls[0]["args"] == args
+
+
+def test_operational_client_system_prompt_disowns_superseded_runs():
+    """대체된 실행을 근거로 인용하지 말라는 지시는 **시스템 프롬프트**에 있어야 한다.
+
+    report_node 가 findings 에 표시를 붙여도 지시가 없으면 LLM 은 그 키를 모른다.
+    같은 프롬프트가 findings 의 수치를 "그대로 인용하라" 고 지시하고 있으므로,
+    표시는 무시되고 게이트가 버린 통과 후보(passes True)가 그대로 근거로 나간다 -
+    운영 경로에서만 깨지는 자리라 여기서 잡지 않으면 사내에서만 조용히 어긋난다.
+    """
+    client = _openai_client()
+    client.generate_report(
+        target_wafers=["W1"], target_source="manual", target_group=["W1"],
+        status_summary="s", hypothesis=None, confidence=0.2,
+        finalize_status="no_signal", claims=[],
+        findings=[{"loop": 2, "tool": "hyp_eqp_ch_commonality", "superseded": True,
+                   "result": {"hypothesis_id": "eqp_ch_commonality", "status": "ok",
+                              "candidates": [{"claim_id": "c", "passes": True}]}}])
+    assert "superseded" in client.llm.seen_sys
+
+
+def test_operational_client_puts_the_superseded_flag_in_the_user_prompt():
+    """sys 가 읽으라고 지시하는 키가 user 쪽에 실제로 실려야 한다.
+
+    sys 프롬프트만 보는 테스트로는 "지시는 있는데 그 키가 안 간다" 는 엇갈림이
+    안 잡힌다 - 이 저장소에서 두 렌더링이 엇갈리는 결함이 반복해서 나왔다.
+    """
+    client = _openai_client()
+    client.generate_report(
+        target_wafers=["W1"], target_source="manual", target_group=["W1"],
+        status_summary="s", hypothesis=None, confidence=0.2,
+        finalize_status="no_signal", claims=[],
+        findings=[{"loop": 2, "tool": "hyp_eqp_ch_commonality", "superseded": True,
+                   "result": {"hypothesis_id": "eqp_ch_commonality", "status": "ok",
+                              "candidates": [{"claim_id": "c", "passes": True}]}}])
+    assert "superseded" in client.llm.seen
+
+
+def test_operational_client_hedges_a_conclusion_whose_axes_crashed():
+    """유보 지시가 `unrun` 하나에만 매달려 있으면 실패 축에서 조용히 꺼진다.
+
+    축이 `unrun` -> `failed` 로 옮겨진 것뿐인데 "결론은 돌린 축에 한한다" 가 사라져,
+    4축 중 3축이 DB 장애로 못 돈 분석에서 전축 결론이 유보 없이 나간다. 실패 축을
+    '실패한 축' 이라고 부르라는 표기 지시는 결론 범위를 제한하지 않는다.
+    """
+    coverage = {"ran": ["hyp_metro_commonality"],
+                "failed": ["hyp_eqp_ch_commonality", "hyp_ppid_commonality",
+                           "hyp_step_passage_commonality"],
+                "unrun": [], "no_data": []}
+    client = _openai_client()
+    client.generate_report(
+        target_wafers=["W1"], target_source="manual", target_group=["W1"],
+        status_summary="s", findings=[], hypothesis=None, confidence=0.2,
+        finalize_status="no_signal", claims=[], coverage=coverage)
+    # **문장이 붙었는지가 아니라 무엇을 조건으로 다는지를 본다.** 유보 문장은 판정이
+    # confirmed 가 아니면 언제나 붙고 조건은 그 안에 글로 적혀 있다 - "돌린 축에 한한"
+    # 이 있는지만 보면 unrun 전용으로 되돌려도 초록이다.
+    assert "unrun 이나 failed 가 비어 있지 않으면" in client.llm.seen
+    # sys 지시도 같이 열려야 산문 톤이 바뀐다 - user 쪽 JSON 만으로는 안 바뀐다.
+    assert "도구 실패로 못 돈 축(failed)이 있으면" in client.llm.seen_sys
+
+
+def _rolled_up_claims():
+    return [{"claim_id": "eqp_ch_commonality:chamber:CC001000:PHOT7_B",
+             "level": "chamber", "key": "PHOT7_B", "step_seq": "CC001000",
+             "score": 0.667, "p_permutation": 0.03, "rank": 1, "tied": False,
+             "target_pass": 4, "target_total": 6, "control_pass": 0, "control_total": 6,
+             "confounded_with": [],
+             "rolled_up_as": [{"claim_id": "eqp_ch_commonality:equipment:CC001000:PHOT7",
+                               "level": "equipment", "key": "PHOT7",
+                               "resolution": "coarser", "of": "PHOT7_B",
+                               "target_pass": 4, "target_total": 6,
+                               "control_pass": 0, "control_total": 6}]}]
+
+
+def test_operational_client_tells_the_report_that_a_roll_up_is_not_a_rival():
+    """굵은 해상도(설비)와 세밀한 이름(챔버)은 경합하는 두 근거가 아니다.
+
+    지시가 없으면 LLM 은 confounded_with 지시를 유추 적용해 "설비 PHOT7 인지 챔버
+    PHOT7_B 인지 현재 증거로는 구분되지 않는다" 로 쓴다 - 엔지니어가 읽으면 당연한
+    소리이고, 진짜 미해결(챔버냐 레시피냐)과 같은 문장이라 조사할 거리가 흐려진다.
+    """
+    client = _openai_client()
+    client.generate_report(
+        target_wafers=["W1"], target_source="manual", target_group=["W1"],
+        status_summary="s", hypothesis="h", confidence=0.9,
+        finalize_status="confirmed", claims=_rolled_up_claims(), findings=[])
+    assert "rolled_up_as" in client.llm.seen_sys
+    # 목록에는 **양방향**이 담긴다 - 대표가 굵은 이름일 수도 있다(챔버 분모가 작아
+    # 설비 점수가 더 큰 경우). 방향은 항목의 resolution 이 말하고, 그 필드를 읽으라는
+    # 지시가 없으면 LLM 은 목록 전체를 "대표보다 굵은 이름" 으로 읽어 되돌린다.
+    # 필드 이름만 대는 지시는 값의 뜻을 안 알려 준다 - LLM 은 coarser/finer 를
+    # 어느 쪽이 굵은지로 되짚을 길이 없어 방향을 뒤집어 쓴다.
+    assert "coarser" in client.llm.seen_sys and "finer" in client.llm.seen_sys
+
+
+def test_operational_client_repeats_the_roll_up_instruction_beside_the_claims():
+    """지시가 sys 에만 있으면 claims JSON 바로 옆의 지시와 어긋난다.
+
+    `rolled_up_as` 라는 키 이름은 claims 를 통째로 실으면 저절로 user 에 들어가므로
+    그것만 확인하면 아무것도 못 잡는다. 여기서 잠그는 것은 **지시 문구**다 - 이
+    저장소에서 sys 와 user 두 렌더링이 엇갈리는 결함이 반복해서 나왔다.
+    """
+    client = _openai_client()
+    client.generate_report(
+        target_wafers=["W1"], target_source="manual", target_group=["W1"],
+        status_summary="s", hypothesis="h", confidence=0.9,
+        finalize_status="confirmed", claims=_rolled_up_claims(), findings=[])
+    assert "대조군 범위의 한계로 적어라" in client.llm.seen
+
+
+def test_mock_report_has_a_sentence_for_weak_signal():
+    """판정 어휘를 늘리면 mock 결론문도 같이 늘려야 한다 - 안 그러면 새 판정이
+    `else` 로 떨어져 LLM 이 쓴 가설이 확정처럼 찍힌다.
+
+    `claims` 에 실제로 passes=False 항목을 실어 보낸다 - report_node 가 넘기는
+    실제 호출과 같은 모양이다(잔차가 없으면 이 문장이 안 붙도록 조건이 걸려
+    있다, Task 6 fix 1 Part B).
+    """
+    from llm.client import ScriptedMockLLMClient
+    report = ScriptedMockLLMClient().generate_report(
+        target_wafers=["W1"], target_source="manual", target_group=["W1"],
+        status_summary="s", findings=[], hypothesis="ETCH9_B 편중", confidence=0.3,
+        finalize_status="weak_signal",
+        claims=[{"claim_id": "a", "passes": False, "rank": 1,
+                 "reject_reason": "score below threshold"}])
+    assert "약한 신호" in report
+    assert "[잔차] 줄" in report
+
+
+def test_mock_report_has_no_residual_sentence_for_weak_signal_without_residuals():
+    """잔차가 실제로 안 실리면 "[잔차] 줄이 그 후보들이다" 를 말하면 안 된다.
+
+    **`claims` 가 전부 `passes: true` 가 되는 길은 상한 절단 하나뿐이다.** (2a)의
+    하한이 `not statistical_passing() and residuals` 이므로, (2a) 에 도달했고
+    잔차가 있다면 `_evidence_groups` 는 반드시 잔차를 더한다(잔차가 비면 (2a)
+    자체가 안 열린다) - "통계 통과 후보가 없어도 열린다" 는 이 전부 true
+    상태의 원인이 아니다. 진짜 원인은 `_record_evidence` 의 상한(`REPORT_MAX_EVIDENCE`)
+    이 통과 근거(여기서는 통과한 2단 센서)를 먼저 예약해, 남는 자리가 없으면
+    잔차가 한 건도 안 실릴 수 있다는 것이다 - 그 상태에서도 무조건 잔차 문장을
+    붙이면 존재하지 않는 [잔차] 줄을 가리키는 거짓 문장이 나간다.
+    """
+    from llm.client import ScriptedMockLLMClient
+    report = ScriptedMockLLMClient().generate_report(
+        target_wafers=["W1"], target_source="manual", target_group=["W1"],
+        status_summary="s", findings=[], hypothesis="h", confidence=0.3,
+        finalize_status="weak_signal",
+        claims=[{"claim_id": "sensor:CC002000:TEMP_1", "passes": True, "rank": 1}])
+    assert "약한 신호" in report
+    assert "[잔차] 줄" not in report
+
+
+def test_mock_report_has_a_residual_sentence_for_inconclusive():
+    """inconclusive 갈래의 잔차 안내 문장(`ScriptedMockLLMClient.generate_report`)을
+    목을 직접 불러 잠근다.
+
+    이 문장은 게이트를 안 타는 종료 쪽에서는 이제 못 닿는다 - 잔차가 있으면 그
+    경로는 반드시 weak_signal 로 나가고(2026-09-12 게이트리스 종료 판정), 게이트
+    `(4)` 의 잔차 갈래는 현재 도달 불가로 표시돼 있다. 그래도 `finalize_status` 와
+    `claims` 는 외부에서 넘기는 인자라 목을 직접 부르면 그대로 만들 수 있다 - 산
+    경로가 없어졌다고 문장을 지우면, 도달 불가인 경로가 다시 열릴 때(리뷰가 이미
+    예고한 사건이다) 조용히 사라진 채로 남는다.
+    """
+    from llm.client import ScriptedMockLLMClient
+    report = ScriptedMockLLMClient().generate_report(
+        target_wafers=["W1"], target_source="manual", target_group=["W1"],
+        status_summary="s", findings=[], hypothesis="h", confidence=0.3,
+        finalize_status="inconclusive",
+        claims=[{"claim_id": "a", "passes": False, "rank": 1,
+                 "reject_reason": "score below threshold"}])
+    assert "미확정" in report
+    assert "아래 [잔차] 줄은 판별선을 넘지 못한 후보다" in report
+
+
+def test_operational_prompt_tells_the_report_what_weak_signal_means():
+    """운영 리포트 LLM 은 판정 이름만 받는다 - 무엇인지 안 알려주면 잔차를 원인으로
+    단정하거나, 반대로 신호 없음으로 뭉갠다. 다음 행동(표본·대조군)까지 적게 한다."""
+    client = _openai_client()
+    client.generate_report(
+        target_wafers=["W1"], target_source="manual", target_group=["W1"],
+        status_summary="s", findings=[], hypothesis="h", confidence=0.3,
+        finalize_status="weak_signal", coverage=None, claims=[])
+    assert "weak_signal" in client.llm.seen_sys
+    assert "'약한 신호'로 서술하라" in client.llm.seen_sys
+    assert "타깃/대조군 표본을 넓히기" in client.llm.seen_sys
+    # (2a) 는 **통과한 2단 센서가 있는 상태에서도** 열린다(하한은 statistical_passing()
+    # = 비센서 통과 claim 뿐이다). 그래서 이 절이 "후보는 나왔으나 판별선을 넘지
+    # 못한 것" 이라고 한 갈래만 말하면 그 상태에서 거짓이 되고, 리포트가 [근거] 로
+    # 실려 나간 통과 센서를 "아무것도 안 나왔다" 로 뭉갠다.
+    assert "2단 센서 근거는 통과했을 수 있으니" in client.llm.seen_sys
+
+
+def test_operational_prompt_says_a_submitted_hypothesis_may_name_a_weak_candidate():
+    """하한이 넓어져 '지목한 제출'도 weak_signal 로 온다.
+
+    그 제출의 hypothesis 는 후보 하나를 원인으로 지목하는 문장이다. 리포트
+    작성자가 그것을 그대로 옮기면 판정("확정이 아니다")과 서술("X가 원인")이
+    한 리포트 안에서 어긋난다. 기존 절은 **claims 목록**을 단정하지 말라고만
+    했지 **제출된 가설 문장**을 어떻게 다루라고는 말하지 않는다.
+    """
+    client = _openai_client()
+    client.generate_report(
+        target_wafers=["W1"], target_source="manual", target_group=["W1"],
+        status_summary="s", findings=[], hypothesis="ETCH9_B 편중이 원인",
+        confidence=0.9, finalize_status="weak_signal", coverage=None, claims=[])
+    assert ("제출된 가설이 특정 후보를 원인으로 지목하고 있어도"
+            in client.llm.seen_sys), client.llm.seen_sys
+    assert ("게이트는 그 후보를 원인으로 확정하지 않았다"
+            in client.llm.seen_sys), client.llm.seen_sys
+    # **판정 가드까지 잠근다.** 이 sys 리터럴은 조건 없는 단일 문자열이라, 가드를
+    # 빼도 문장은 그대로 남아 위 두 단언이 초록이다 - 실제로 그렇게 나가 있었고
+    # confirmed 판정에서 거짓이었다(9줄 뒤 "확정된 근거를 유보 톤으로 낮추지 마라"
+    # 와 충돌). 주변의 조건부 지시는 예외 없이 "판정이 X 면" 접두를 달고 있다.
+    assert ("판정이 weak_signal 인데 제출된 가설이"
+            in client.llm.seen_sys), client.llm.seen_sys
+
+
+def test_operational_client_tells_the_report_what_a_residual_claim_is():
+    """(2a) 는 잔차를 `passes: false` 로 claims 목록에 실어 보낸다.
+
+    claims 블록은 `confounded_with`·`rolled_up_as`·`kind == sensor` 는 설명하면서
+    잔차만 빠지면, weak_signal 리포트에서 코드는 `[잔차 1]` 로 찍는데 그 위 산문은
+    같은 항목을 "게이트가 확인한 근거" 로 부를 수 있다 - 판별선을 못 넘은 후보가
+    근거로 단정되는 것이다.
+    """
+    client = _openai_client()
+    client.generate_report(
+        target_wafers=["W1"], target_source="manual", target_group=["W1"],
+        status_summary="s", findings=[], hypothesis="h", confidence=0.3,
+        finalize_status="weak_signal", coverage=None,
+        claims=[{"claim_id": "a", "passes": False, "rank": 1,
+                 "reject_reason": "score below threshold"}])
+    # claims JSON 에 "passes": false 가 이미 있으므로 문자열 'passes' 만 세면 공허하다 -
+    # **지시 문장**을 찾는다.
+    assert "판별선을 넘지 못한 잔차다" in client.llm.seen
+    assert "thin_sample 이 true 면 표본 수가 부족한 후보" in client.llm.seen
+    # **어느 항목인가를 정하는 머리 절부터 가운데 지시 동사를 지나 꼬리까지
+    # 문장 전체를 잠근다.** 머리 절과 꼬리 조각만 단언하면 가운데 지시 동사
+    # ("근거로 세지 말고" -> "근거로 세고")를 뒤집는 훼손이 통과한다 - sys
+    # 프롬프트 쪽 동형 문구는 이미 잠겨 있었는데(Task 6 리뷰 I-B) user 프롬프트
+    # 쪽은 안 잠겨 있었다(최종 리뷰 Minor 13 정정 - Task 7 훼손 실험 표의 #1 은
+    # `_evidence_groups` 훼손이다. 가운데 동사 미잠금을 실측한 것은 Task 7 리뷰).
+    assert ("passes 가 false 인 항목은 근거가 아니다. thin_sample 이 true 면 "
+            "표본 수가 부족한 후보이고, 그 밖에는 판별선을 넘지 못한 잔차다"
+            "(reject_reason 이 미통과 이유를 말한다) - 둘을 구분해 서술하고 "
+            "근거로 세지 마라)") in client.llm.seen
+
+
+def test_analyze_prompt_tells_the_llm_to_step_back_on_weak_candidates():
+    """게이트가 받아 주지 않는 것을 계속 지목하게 두면 왕복만 남는다.
+
+    반려 문구(`_gate_rejection`)에도 안내가 있지만, 이 저장소는 규칙을 판정과 프롬프트
+    양쪽에 적는다 - 한쪽만 있으면 LLM 은 체크리스트를 소화하러 간다.
+    """
+    from graph import nodes
+    assert "판별선을 넘지 못한 후보만" in nodes.ANALYZE_SYSTEM_PROMPT
+    assert "잔차" in nodes.ANALYZE_SYSTEM_PROMPT
+
+
+def test_analyze_prompt_stays_true_when_the_evidence_cap_truncates():
+    """최종 리뷰 Minor 12 로 고친 두 문장을 잠근다 - **고쳤는데 안 잠그면 안 고친**
+    **것이다**(이 브랜치의 확정 교훈: 프롬프트를 고치면 단언도 같이 넣는다).
+
+    둘 다 `REPORT_MAX_EVIDENCE` 절단에서 거짓이 되던 LLM 대면 문장이다. `:46` 은
+    "전부 접어서 싣는다" 고 약속했고 `:48` 은 잔차를 "근거로 실은 채 끝난다" 고
+    약속했는데, 상한이 차면 둘 다 안 실린다. 원래 의도("지목을 미루지 마라")는
+    살린 채 한정어만 붙인 형태다. 단언은 **어느 항목에 대한 약속인가**를 정하는
+    머리 절부터 문장 전체를 본다 - 이 저장소는 꼬리만 잠근 단언이 가운데·머리를
+    뒤집는 훼손을 놓치는 것을 두 번 실측했다.
+    """
+    from graph import nodes
+    # **머리 절("어느 항목인가")부터 잠근다.** 한정어와 지시 동사만 보면 주어를
+    # `판별선을 넘지 못한 후보는` 으로 뒤집는 훼손이 초록으로 통과한다 - 그러면
+    # 프롬프트가 거짓이 되고 바로 아래 불릿과도 모순된다(재리뷰 지적, 실측).
+    assert ("판별선을 넘은 후보는 게이트가 상한 안에서는 전부 접어서 줄 세워 "
+            "리포트에 싣고, 상한을 넘는 것은 건수만 알린다 - 다른 축의 근거를 "
+            "버릴까 걱정해 지목을 미루지 마라") in nodes.ANALYZE_SYSTEM_PROMPT
+    assert ("아랫선을 넘은 잔차가 있으면 네가 도구 결과에서 실제로 받은 이름을 "
+            "지목한 한 상한이 남는 한 그것을 근거로 싣지만") in nodes.ANALYZE_SYSTEM_PROMPT
+
+
+def test_mock_report_has_a_sentence_for_no_separation():
+    """판정 어휘를 늘리면 mock 결론문도 같이 늘려야 한다 - 안 그러면 새 판정이
+    else 로 떨어져 LLM 이 쓴 가설이 확정처럼 찍힌다.
+
+    claims 도 coverage 도 안 준 상태(센서 없음·no_data 없음)라 원래 대조 문장
+    그대로다 - 최종 리뷰 I-1·I-3 의 조건부 문구가 안 섞여 들어가는지도 함께 잠근다.
+    """
+    from llm.client import ScriptedMockLLMClient
+    report = ScriptedMockLLMClient().generate_report(
+        target_wafers=["W1"], target_source="manual", target_group=["W1"],
+        status_summary="s", findings=[], hypothesis="h", confidence=0.3,
+        finalize_status="no_separation")
+    assert "갈리는 항목 없음" in report
+    assert "lot 밖 대조군" in report
+    assert ("계산된 가설 도구(hyp_*) 축에서는 타깃과 대조군을 가르는 항목이 없다. "
+            "분석이 안 돌은 것도 근거가 약한 것도 아니라 lot 내부 대조로는 "
+            "갈리지 않는다는 뜻이며,") in report
+    assert "2단 센서" not in report
+    assert "계산 불가 축" not in report
+
+
+def test_mock_report_no_separation_names_the_passing_sensor():
+    """최종 리뷰 I-1(mock): 통과한 2단 센서가 claims 에 실려 있으면 그 사실을
+    적어야 한다 - 안 적으면 "가르는 항목이 없다" 가 실제로 갈린 센서를 덮는다.
+    """
+    from llm.client import ScriptedMockLLMClient
+    report = ScriptedMockLLMClient().generate_report(
+        target_wafers=["W1"], target_source="manual", target_group=["W1"],
+        status_summary="s", findings=[], hypothesis="h", confidence=0.3,
+        finalize_status="no_separation",
+        claims=[{"claim_id": "sensor:CC002000:TEMP_1", "kind": "sensor",
+                 "passes": True, "rank": 1}])
+    assert ("가르는 항목이 없다. 2단 센서는 판별선을 넘은 근거가 함께 실렸다 - "
+            "원인 확정 근거는 아니다.") in report
+
+
+def test_mock_report_no_separation_scopes_to_computed_axes_when_no_data_present():
+    """최종 리뷰 I-3(a)(mock): coverage 에 no_data 축이 있으면 "다 대조했다" 를
+    빼고 그 축에 적재 범위 확인 조치를 붙인다.
+    """
+    from llm.client import ScriptedMockLLMClient
+    report = ScriptedMockLLMClient().generate_report(
+        target_wafers=["W1"], target_source="manual", target_group=["W1"],
+        status_summary="s", findings=[], hypothesis="h", confidence=0.3,
+        finalize_status="no_separation",
+        coverage={"no_data": ["hyp_metro_commonality"]})
+    assert "분석이 안 돌은 것도" not in report
+    assert ("근거가 약한 것도 아니라 lot 내부 대조로는 갈리지 않는다는 뜻이며, "
+            "계산 불가 축(hyp_metro_commonality)은 적재 범위와 추출 조건을 "
+            "확인해야 한다.") in report
+
+
+def test_operational_prompt_tells_the_report_what_no_separation_means():
+    """운영 리포트 LLM 은 판정 이름만 받는다 - 무엇인지 안 알려주면 '분석 미수행'
+    으로 뭉개거나 반대로 '원인 없음' 으로 단정한다. 둘 다 조치가 틀려진다.
+
+    최종 리뷰 I-1·I-3(a): "가르는 항목이 없다" 를 가설 도구(hyp_*) 축에 한정하고
+    센서 단서를 붙이는 지시, coverage 의 no_data 축을 계산된 축 밖으로 빼고
+    적재 범위 확인을 후속 조치로 붙이는 지시도 함께 잠근다.
+    """
+    client = _openai_client()
+    client.generate_report(
+        target_wafers=["W1"], target_source="manual", target_group=["W1"],
+        status_summary="s", findings=[], hypothesis="h", confidence=0.3,
+        finalize_status="no_separation", claims=[])
+    assert "판정이 no_separation 이면" in client.llm.seen_sys
+    assert "분석 미수행이 아니다" in client.llm.seen_sys
+    assert "다른 관측축" in client.llm.seen_sys
+    assert ("계산된 가설 도구(hyp_*) 축에서 타깃과 대조군을 가르는 항목이 "
+            "없었다는 관측이다") in client.llm.seen_sys
+    assert ("2단 센서 근거는 통과했을 수 있으니 그것까지 '가르는 항목이 없다'로 "
+            "뭉개지 마라") in client.llm.seen_sys
+    assert ("coverage 에 no_data 축이 있으면 결론을 계산된 축에 한정하고 그 축은 "
+            "적재 범위와 추출 조건 확인을 후속 조치로 적어라") in client.llm.seen_sys
+    # **재리뷰 Important: 형제 판정의 단서를 전부 옮겼는지 세어 본다.**
+    # 물러섬·미수행 판정은 하나도 빠짐없이 "확정 결론을 쓰지 마라" 로 끝나는데
+    # (weak_signal·no_signal·no_comparable_data·tool_failure·llm_call_failed)
+    # no_separation 에만 없었다. 그리고 `(2b)` 는 **정직한 지목을 받아들여**
+    # (`nodes.py` `(2b)` 분기) 그 가설을 `final_hypothesis` 로 저장하고 report_node
+    # 가 리포트 LLM 에 그대로 넘기므로, 게이트가 원인으로 확정하지 않은 후보가
+    # 결론문의 주어로 나갈 수 있다 - weak_signal 이 같은 이유로 전용 문장을 받은
+    # 선례가 바로 옆에 있다. 문장 전체를 단언해 가운데 지시 동사를 뒤집는 훼손도
+    # 잡는다.
+    assert "다른 관측축이 필요하다고 적어라. 확정 결론을 쓰지 마라." in client.llm.seen_sys
+    assert ("판정이 no_separation 인데 제출된 가설이 특정 후보를 원인으로 지목하고 "
+            "있어도 그 문장을 그대로 옮기지 마라 - 게이트는 정직한 지목을 반려하지 "
+            "않을 뿐 그 후보를 원인으로 확정하지 않았다.") in client.llm.seen_sys
+
+
+def test_operational_prompt_blocks_carrying_a_dropped_pick_into_the_report():
+    """버린 지목이 살아남을 수 있는 **세 판정에도** 같은 한정절이 있어야 한다.
+
+    루프 한계에서 게이트가 승인이 못 받는 지목을 버리고 증거 상태로 판정하게 되면서
+    (`nodes.py` `_approvable_pick`), `no_signal`·`no_comparable_data`·`tool_failure`
+    도 **지목이 살아 있는 채로 도달 가능한** 판정이 됐다. 게이트가 claim_id 를 버려도
+    LLM 이 쓴 `hypothesis` 와 자기 신고 `confidence` 는 `final_hypothesis`·
+    `final_confidence` 로 그대로 리포트 LLM 에 넘어가므로, 한정절이 없으면 게이트가
+    **버린** 후보가 결론문의 주어로 나간다. 종전에는 이 상태가 `inconclusive` 로만
+    갔고 한정절은 `weak_signal`·`no_separation` 에만 있었다 - 규칙을 코드에서 넓히고
+    프롬프트를 안 고치면 안 잠긴다는 이 저장소의 실측 교훈이 걸린 자리다.
+
+    문장 전체를 단언해 가운데 지시 동사를 뒤집는 훼손도 잡는다.
+    """
+    client = _openai_client()
+    client.generate_report(
+        target_wafers=["W1"], target_source="manual", target_group=["W1"],
+        status_summary="s", findings=[], hypothesis="h", confidence=0.9,
+        finalize_status="no_signal", claims=[])
+    # **전제가 판정 이름이 아니라 판정문의 괄호다.** 판정 이름으로 열거하면 두 방향으로
+    # 다 틀린다: (a) `inconclusive` 는 `not claim_id` 를 요구하지 않아 **안 버려진**
+    # 지목이 살아서 서술의 축으로 남을 수 있는데 그것까지 "버려진 지목" 이라 부르게 되고
+    # (b) `no_signal`·`no_comparable_data`·`tool_failure` 는 한계 **아래**에서 빈손
+    # 제출로도 도달하는데 그때는 버린 일 자체가 없다. 괄호를 전제로 삼으면 둘 다 사라진다
+    # (3차 리뷰 I-2).
+    assert ("판정문 끝 괄호에 '무시하고 증거 상태로 판정했다' 가 있으면 거기 적힌 "
+            "claim_id 는 게이트가 **버린** 지목이다 - 제출된 가설이 그 후보를 원인으로 "
+            "지목하고 있어도 그 문장을 그대로 옮기지 말고, '유력 후보' 로도 쓰지 마라."
+            ) in client.llm.seen_sys
+    # **버린 지목만 배제한다.** 넓히면 통과 근거가 실린 채 오는 상태에서 거짓이 된다.
+    assert ("**버린 지목만** 배제하는 것이지 다른 근거까지 없다는 뜻이 아니다 - "
+            "[근거] 줄이 있으면 그것은 그대로 서술하라.") in client.llm.seen_sys
+    # `inconclusive` 절은 "유력 후보로 서술하라" 는 반대 방향 지시가 걸린 유일한 자리라
+    # 그 자리에도 단서를 남긴다(재리뷰 I-A).
+    assert ("단 판정문 끝 괄호에 버린 지목이 적혀 있으면 그 후보는 유력 후보에서 빼고, "
+            "무엇을 왜 버렸는지를 적어라.") in client.llm.seen_sys
+    # **버린 사실을 어디서 읽는지까지 말한다.** 판정문 끝 괄호(`_finalize_gate`)에
+    # claim_id 와 사유가 실려 findings 를 타고 여기까지 오는데, 그것을 안 가리키면
+    # LLM 은 "지목을 쓰지 마라" 만 받고 다음에 할 일을 못 적는다.
+    assert ("무엇을 왜 버렸는지도 그 괄호에 있으니 그것을 근거로 다음에 할 일을 "
+            "적어라.") in client.llm.seen_sys
+
+
+def test_operational_prompt_does_not_fix_the_inconclusive_reason_by_name():
+    """**이름이 아니라 판정문이 사유의 전제다** (재리뷰 Important 2).
+
+    옛 문구는 "판정이 inconclusive 면 ... '미확정(루프 한계 도달)'" 로 사유를
+    이름에 고정했다 - 게이트리스 종료(실제로는 텍스트 응답 이탈)에서도 없는
+    트리거를 엔지니어에게 넘긴다. 이제는 판정문 머리의 괄호 문구를 그대로
+    옮기라고 지시하고, 이름만 보고 지어내지 말라는 금지문까지 건다.
+    """
+    client = _openai_client()
+    client.generate_report(
+        target_wafers=["W1"], target_source="manual", target_group=["W1"],
+        status_summary="s", findings=[], hypothesis="h", confidence=0.3,
+        finalize_status="inconclusive", claims=[])
+    assert "미확정(루프 한계 도달)" not in client.llm.seen_sys
+    assert ("판정이 inconclusive 면 결론을 확정하지 말고 '미확정' 뒤에 판정문 머리의 "
+            "괄호 문구(종료 경위 - 예: 루프 한계 도달, 또는 도구 호출 없는 응답으로 "
+            "종료)를 그대로 옮겨 붙이고, 유력 후보·추가 조사 필요 항목으로 서술하라 - "
+            "판정 이름만 보고 '루프 한계 도달'을 지어내지 마라."
+            ) in client.llm.seen_sys
+
+
+def test_operational_prompt_says_inconclusive_can_carry_residuals():
+    """(4)가 잔차를 싣게 됐으므로 inconclusive 도 [잔차] 줄을 받을 수 있다.
+
+    '확정 근거가 없다' 로만 지시하면 LLM 이 실제로 실린 잔차 줄을 근거 없음과
+    모순되는 것으로 보고 지우거나, 반대로 근거로 승격시킨다.
+    """
+    client = _openai_client()
+    client.generate_report(
+        target_wafers=["W1"], target_source="manual", target_group=["W1"],
+        status_summary="s", findings=[], hypothesis="h", confidence=0.3,
+        finalize_status="inconclusive", claims=[])
+    assert "inconclusive 에도 잔차가 실릴 수 있다" in client.llm.seen_sys
+    # A-2 가 "[잔차] 항목을 지우지도 근거로 승격시키지도 마라" 를 바꾼 그 문구 -
+    # 옛 문구로 되돌리면 이 단언이 빨개져야 한다(Task 6 리뷰 I-3).
+    # **어느 항목인가를 정하는 절까지 함께 잠근다** - 꼬리("근거로 세지 말고 ...")만
+    # 단언하면 `passes 가 false` 를 `true` 로 뒤집는 훼손이 통과한다(리뷰 I-B, 실측).
+    assert ("passes 가 false 인 항목은 근거로 세지 말고 "
+            "'아직 갈리지 않은 후보' 로 적어라") in client.llm.seen_sys
+    # **"뜻이 아니니" 부정어까지 잠근다.** 이 부정어를 지우면(`뜻이니`) 문장이
+    # "inconclusive 는 근거가 한 줄도 없다는 뜻" 으로 뒤집힌다 - 뒤 절이 이미 잠겨
+    # 있어 자기모순이 되므로 위험도는 낮지만(최종 리뷰 Minor 13 정정 - Task 7
+    # 훼손 실험 표에는 이 자리("#B")가 없다. 중간 동사 미잠금을 실측한 것은
+    # Task 7 리뷰다), 부정어 하나로 지시가 반대로 바뀌는 자리라 문장 전체를 단언한다.
+    assert ("확정 근거가 아니라는 "
+            "뜻이지 근거가 한 줄도 없다는 뜻이 아니니, passes 가 false 인 항목은 "
+            "근거로 세지 말고 '아직 갈리지 않은 후보' 로 적어라") in client.llm.seen_sys
+
+
+def test_analyze_prompt_knows_the_full_axis_case_is_received_not_rejected():
+    """분석 프롬프트가 '잔차마저 없으면 반려된다' 로만 말하면 이제 반만 참이다.
+
+    최종 리뷰 I-2: 예전 문구는 "등록 축을 다 돌린 뒤라면" 으로 뭉뚱그려
+    `_no_separation_state` 가 실제로 요구하는 두 조건 - **도구 실패 없이** 다
+    돌렸을 것(①)과 가설 도구 **후보가 나서** 그 **분리 점수가 전부 아랫선에도
+    못 미칠 것**(③④) - 을 빠뜨렸다(재현: `ALL_THIN` 에 빈손 제출 -> 게이트는
+    안 받고 반려·inconclusive 로 끝났는데 프롬프트는 "받는다" 고 말했다). 그
+    조건을 갖춰야 게이트가 실제로 '갈리는 항목 없음' 으로 받는다. 반쪽짜리
+    문장을 남겨 두면 LLM 이 물러설 수 있는 자리에서 축을 더 부르며 예산을 태운다.
+    """
+    from graph import nodes
+    assert ("등록 축을 도구 실패 없이 다 돌렸고 가설 도구 후보가 났는데 그 "
+            "분리 점수가 전부 아랫선에도 못 미치면 게이트가 '갈리는 항목 없음' "
+            "으로 받으니 그때는 빈손으로 물러서라") in nodes.ANALYZE_SYSTEM_PROMPT
+
+
+def test_analyze_prompt_knows_a_thin_sample_pick_is_received_not_rejected():
+    """R5: `(2c)` 가 생긴 뒤로 "잔차마저 없으면 반려" 는 **게이트와 반대 계약**이다.
+
+    잔차가 없어도 표본 미달 후보가 있고 그 이름을 정직하게 지목하면 `(2c)` 가
+    **루프 한계 전에** 받는다(`tests/test_graph_nodes.py` 의 T2). 프롬프트가 그것을
+    반려라고 가르치면 LLM 은 물러설 수 있는 자리에서 축을 더 부르며 예산을 태운다.
+
+    단언이 **옛 절의 부재까지** 보는 이유: 새 문장을 덧붙이고 옛 문장을 안 지우면
+    프롬프트가 자기모순인 채로 초록이 된다. 그리고 반려 조건은 **연언으로** 잠근다 -
+    한쪽(잔차)만 적으면 이 저장소가 세 라운드 연속 겪은 "넓혀 적어 반대 방향으로
+    거짓" 이 그대로 재발한다.
+    """
+    from graph import nodes
+    assert "잔차마저 없는 상태에서 지목하면" not in nodes.ANALYZE_SYSTEM_PROMPT
+    # 머리 절(어떤 후보인가)부터 꼬리(조치)까지 한 문장으로 본다 - 꼬리만 잠그면
+    # 주어를 뒤집는 훼손이 통과한다(이 저장소가 세 번 실측한 자리다).
+    assert ("잔차가 없어도 타깃 표본이 판정 하한에 못 미쳐 미통과된 후보가 있으면 "
+            "역시 실제로 받은 이름을 지목한 한 게이트가 '표본 미달' 로 받아 상한이 "
+            "남는 한 그 후보를 근거로 싣고 타깃 표본을 채워 재확인하라고 답한다"
+            ) in nodes.ANALYZE_SYSTEM_PROMPT
+    assert ("잔차도 표본 미달 후보도 없는 상태에서 지목하면 반려되고"
+            ) in nodes.ANALYZE_SYSTEM_PROMPT
+
+
+def test_report_contract_docstring_splits_thin_sample_from_residual():
+    """R5: 추상 계약(`LLMClient.generate_report`)이 `passes: false` 를 전부 잔차로
+    부르면, 그 계약을 읽고 구현하는 쪽은 표본 미달 후보를 잔차로 서술하게 된다.
+
+    운영 프롬프트(`OpenAILLMClient`)는 이미 구조 플래그로 가르는데 **계약 문서만
+    옛 분류에 남아 있으면** 둘이 어긋난다. 여기서 잠그는 것은 문장이 아니라
+    "종류를 가르는 것은 `thin_sample` 플래그다" 라는 판별 규칙이다.
+    """
+    from llm.client import LLMClient
+    # 줄바꿈 위치는 계약이 아니다 - 공백을 접어 문장으로 본다.
+    doc = " ".join((LLMClient.generate_report.__doc__ or "").split())
+    assert "weak_signal·thin_sample·inconclusive" in doc
+    assert "두 종류이고 구조 플래그 `thin_sample` 이 가른다" in doc
+    assert "`reject_reason` 문장을 파싱해 종류를 추측하지 마라" in doc
+
+
+def test_mock_report_and_operational_prompt_explain_thin_sample():
+    """T7/M15: 결론과 운영 규칙 모두 표본 미달의 의미와 조치를 고정한다."""
+    mock = ScriptedMockLLMClient()
+    report = mock.generate_report(
+        target_wafers=["W1"], target_source="manual", target_group=["W1"],
+        status_summary="s", findings=[], hypothesis="h", confidence=0.3,
+        finalize_status="thin_sample", claims=[])
+    assert "표본 미달" in report
+    assert "타깃 표본을 채워 재확인" in report
+
+    client = _openai_client()
+    client.generate_report(
+        target_wafers=["W1"], target_source="manual", target_group=["W1"],
+        status_summary="s", findings=[], hypothesis="h", confidence=0.3,
+        finalize_status="thin_sample", claims=[])
+    assert "판정이 thin_sample 이면 '표본 미달'로 서술하라" in client.llm.seen_sys
+    assert "thin_sample 이 true 인 항목" in client.llm.seen_sys
+
+
+def test_mock_does_not_call_a_thin_sample_line_a_residual():
+    """R2: 표본 미달만 실린 weak_signal 결론에 없는 [잔차] 줄을 가리키지 않는다."""
+    report = ScriptedMockLLMClient().generate_report(
+        target_wafers=["W1"], target_source="manual", target_group=["W1"],
+        status_summary="s", findings=[], hypothesis="h", confidence=0.3,
+        finalize_status="weak_signal",
+        claims=[{"claim_id": "thin", "passes": False, "thin_sample": True}])
+    assert "아래 [잔차] 줄" not in report

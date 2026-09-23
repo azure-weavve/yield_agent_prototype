@@ -7,6 +7,21 @@ commonality 는 판정하지 않는다(후보≠결론). 판별(passes)은 게�
 
 import ya_config
 from tools import commonality as cm
+from tools import metro_commonality as mcm
+
+# 가설의 `tool` 필드 -> (실행 함수, 그 도구가 읽는 테이블). 기본은 step_history 축이다.
+# metro 를 별도 도구로 둔 이유는 `tools/metro_commonality.py` 상단에 있다 — 요약하면
+# 게이트가 **예전에** "같은 도구 안 최고 점수" 하나만 승인해서 후보를 섞으면 서로를
+# 눌렀다. 지금 승인 규칙은 축을 가로지른 **1등 묶음 멤버십**이다(`graph/nodes.py`
+# 의 `_gate_verdict`) - 분리해 둔 이유는 그 도구 상단 문서를 볼 것.
+#
+# 함수를 직접 담지 않고 람다로 감싸는 이유: 여기서 바인딩하면 모듈 속성을 갈아끼우는
+# 테스트(monkeypatch)가 안 먹는다. 호출 시점에 이름을 다시 찾게 둔다.
+TOOLS = {
+    "step_history": lambda *a, **kw: cm.find_commonality(*a, **kw),
+    "metro": lambda *a, **kw: mcm.find_metro_commonality(*a, **kw),
+}
+TOOL_TABLES = {"step_history": "step_history", "metro": "metro"}
 
 
 def _passes(cand, min_score, min_target, status, ok):
@@ -24,7 +39,8 @@ def evaluate(spec: dict, group_ids: list[str], control_ids: list[str]) -> dict:
     """spec['legend'] 로 commonality 실행 후 각 후보를 게이트 계약으로 매핑."""
     min_score = spec.get("min_score", ya_config.COMMONALITY_PASS_MIN_SCORE)
     min_target = spec.get("min_target", ya_config.COMMONALITY_PASS_MIN_TARGET)
-    res = cm.find_commonality(group_ids, control_ids, legend=spec["legend"])
+    find = TOOLS[spec.get("tool", "step_history")]
+    res = find(group_ids, control_ids, legend=spec["legend"])
     status = res.get("status")
     ok = status == "ok"
 
@@ -42,6 +58,12 @@ def evaluate(spec: dict, group_ids: list[str], control_ids: list[str]) -> dict:
             "passes": passes,
             "reject_reason": reject,
             "level": cand["level"],
+            # 이 후보를 정의한 legend 컬럼값. 게이트가 접힌 두 이름이 **한 설명의 두
+            # 해상도**(설비 ⊃ 챔버)인지 **다른 두 설명**(챔버 vs 레시피)인지 가르는
+            # 재료다. metro 도구는 이 키를 만들지 않아 빈 사전이 되는데(legend 는
+            # 있다 - 레벨이 하나뿐이라 롤업이 성립하지 않는다), 빈 사전은 evidence 에서
+            # 보수적으로 '모름 = 교락' 으로 떨어진다.
+            "level_columns": cand.get("level_columns", {}),
             "key": cand["key"],
             "step_seq": cand["step_seq"],
             "score": cand["score"],
@@ -49,12 +71,48 @@ def evaluate(spec: dict, group_ids: list[str], control_ids: list[str]) -> dict:
             "control_pass": cand["control_pass"], "control_total": cand["control_total"],
             "coverage_target": cand["coverage_target"],
             "coverage_control": cand["coverage_control"],
+            # pooling-mh-score — 화이트리스트라 안 옮기면 게이트·리포트가 이 값들을
+            # 아예 못 본다(n_strata 가 그 상태였다, 2026-09-16 확인). score_pooled 는
+            # **설명용이지 판정용이 아니다**(_passes 는 절대 이 키를 읽지 않는다) -
+            # score(MH 가중)와 갈리면 심슨의 역설이 있다는 뜻이라 근거 줄이 보여 준다.
+            "n_strata": cand.get("n_strata"),
+            "score_pooled": cand.get("score_pooled"),
+            "strata_detail": cand.get("strata_detail", []),
+            # 이 후보가 가리키는 실제 wafer. 카운트만으로는 두 후보가 같은 wafer 를
+            # 말하는지(교락) 다른 wafer 를 말하는지(독립 근거) 구분할 수 없다 —
+            # 축이 여럿일 때 그 둘이 게이트에게 똑같아 보이는 것이 문제였다.
+            "target_wafers": cand["target_wafers"],
+            "control_wafers": cand["control_wafers"],
+            # 게이트는 이 값을 **판정에 쓰지 않는다**(_passes 참조). 리포트와 감사
+            # 기록에 흐르게 하는 것이 목적이다 - 자동 차단은 실데이터를 본 뒤에 얹는다.
+            "p_permutation": cand.get("p_permutation"),
+            # p 만 실으면 바닥값과 약한 신호가 같은 숫자로 보인다. 소표본에서는
+            # p 가 1/(경우의 수) 밑으로 못 내려가므로 그 바닥값을 함께 보낸다 —
+            # hypotheses.yaml 이 LLM 에게 이 필드를 읽으라고 지시한다.
+            "p_min_possible": cand.get("p_min_possible"),
+            # 바닥에 닿았는지는 도구가 센다. 두 숫자는 반올림돼 오므로 소비자가
+            # 다시 비교하면 참조 회차가 아주 많을 때 서로 같아 보인다.
+            "p_at_floor": cand.get("p_at_floor"),
+            "n_permutations_total": cand.get("n_permutations_total"),
+            # 바닥값은 1/(참조 회차+1) 이고 참조 회차는 후보마다 다르다. 이 숫자가
+            # 없으면 n_permutations_total 과 p_min_possible 이 서로 안 맞아 보인다.
+            "n_reference": cand.get("n_reference"),
         })
+        # metro 후보만 갖는 것들. 이게 없으면 LLM 은 "THK >= 129.0" 이라는 key
+        # 문자열을 다시 파싱해야 하고, 그러다 129.0 을 놓치거나 방향을 뒤집는다.
+        for extra in ("item", "split_value", "split_direction"):
+            if extra in cand:
+                candidates[-1][extra] = cand[extra]
     return {
         "hypothesis_id": spec["id"],
         "legend": spec["legend"],
         "status": res.get("status"),
         "candidates": candidates,
+        # 최상위 통계 — 후보별 p 는 "이 후보 하나" 를, 이 둘은 "목록 전체" 를 말한다.
+        # yaml 이 LLM 에게 결과 최상위에서 읽으라고 지시하는 자리다.
+        "fdr_table": res.get("fdr_table", []),
+        "p_family_wise": res.get("p_family_wise"),
+        "p_family_wise_min_possible": res.get("p_family_wise_min_possible"),
         "meta": res.get("meta"),
         "note": res.get("note"),
     }

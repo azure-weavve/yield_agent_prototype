@@ -48,6 +48,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import os
 import re
 import sqlite3
@@ -58,6 +59,7 @@ from pathlib import Path
 # 저장소 루트가 빠진다. generate_dummy.py 와 같은 방어다.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import yaml                            # noqa: E402  대응표(colmap) 로드용. requirements 에 이미 있음
 import ya_config                       # noqa: E402
 from ya_console import say as _say     # noqa: E402  cp949 콘솔에서 리포트가 통째로 사라지는 것을 막는다
 
@@ -580,6 +582,182 @@ def _print(r: dict) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# CSV 입력 (P1-3 사례 자료) — _extract() 와 별도 경로. 원천 컬럼명이 이미 계약 키면
+# 대응표 없이, 아니면 대응표(YAML)로 계약 키에 맞춘다. transform_*/load()/validate() 는
+# 손대지 않는다 — 여기서 만든 dict 를 그대로 넘긴다.
+# --------------------------------------------------------------------------- #
+YIELD_REQUIRED = {"root_lot_id", "lot_id", "lot_type", "yield", "date"}
+STEPS_REQUIRED = {"root_lot_id", "step_seq", "eqp_id"}
+
+# 대응표 대응 대상으로 허용하는 계약 키 (파일별). 오타(예: "chid" — 맞는 키는 "ch_id")를
+# 조용히 통과시키면 그 컬럼은 이름 그대로 남아 필수 컬럼 검사는 통과해 버리고, 값은
+# transform_* 가 안 읽는 자리에 가 있어 원인을 알 수 없는 결측으로 나타난다.
+YIELD_CONTRACT_KEYS = {"root_lot_id", "wafer_id", "wafer_no", "lot_id", "lot_type",
+                       "yield", "date", "defect_type"}
+STEPS_CONTRACT_KEYS = {"root_lot_id", "wafer_id", "wafer_no", "step_seq", "eqp_id",
+                       "area", "ch_id", "ppid", "timestamp"}
+
+
+def _rename_row(row: dict, mapping: dict) -> dict:
+    """대응표에 있는 원천 컬럼명만 계약 키로 바꾼다. 없는 컬럼은 이름 그대로 통과한다."""
+    return {mapping.get(k, k): v for k, v in row.items()}
+
+
+def _validate_colmap_structure(cmap, path) -> None:
+    """대응표 자체의 형식 오류를 행을 읽기 전에 잡는다. 최상위 섹션 이름 오타
+    ("step:" 처럼 "steps:" 를 잘못 씀)나 대응 대상 오타("chid" 처럼 계약 키가 아닌
+    값)를 조용히 넘기면, 그 대응은 통째로 안 먹히고(오타 섹션) 원천 컬럼명이 그대로
+    통과하거나, 값이 계약이 안 읽는 자리(오타 대상)에 실려 필수 컬럼 검사조차
+    통과해 버린다 — 뒤늦게 엉뚱한 결측으로만 드러난다.
+    """
+    if not isinstance(cmap, dict):
+        raise ValueError(f"대응표 최상위는 dict 여야 함(yield/steps 키): {path} "
+                         f"(읽은 값: {cmap!r})")
+    bad_sections = sorted(set(cmap) - {"yield", "steps"})
+    if bad_sections:
+        raise ValueError(f"대응표에 알 수 없는 섹션: {bad_sections} (파일: {path}, "
+                         f"허용: yield/steps)")
+
+    for label, keys in (("yield", YIELD_CONTRACT_KEYS), ("steps", STEPS_CONTRACT_KEYS)):
+        section = cmap.get(label)
+        if section is None:
+            continue
+        if not isinstance(section, dict):
+            raise ValueError(f"대응표의 '{label}' 섹션은 dict 여야 함: {path} "
+                             f"(읽은 값: {section!r})")
+        bad_targets = sorted(v for v in section.values() if v not in keys)
+        if bad_targets:
+            raise ValueError(f"대응표 '{label}' 섹션의 대응 대상이 계약 키가 아님: "
+                             f"{bad_targets} (파일: {path}, 허용: {sorted(keys)})")
+
+
+def _validate_csv_header(header, mapping: dict, required: set, label: str, path) -> None:
+    """행을 읽기 전에 끝내는 검증. 하나라도 조용히 넘기면 뒤에서 원인을 알 수 없는
+    결측·덮어쓰기로 나타난다 (transform_* 의 KeyError 는 힌트가 없다).
+
+      1) 대응표의 원천 컬럼이 헤더에 없음 → 오타를 조용히 넘기지 않는다
+      2) 대응 후 같은 계약 키로 겹치는 컬럼 → 두 원천이 같은 키로 대응됐거나, 대응
+         결과가 매핑 안 된 통과 컬럼과 이름이 같아 컬럼 순서에 따라 조용히 덮어써짐
+      3) wafer_id 와 wafer_no 가 대응표 탓에 동시에 존재함 → _wafer_no() 가 wafer_no
+         를 조용히 우선하므로 멈춘다
+      4) 대응 후에도 필수 키가 없음 → 파일명·빠진 키·실제 헤더를 담아 멈춘다
+    """
+    header_set = set(header)
+    missing_src = sorted(s for s in mapping if s not in header_set)
+    if missing_src:
+        raise ValueError(f"{label} 대응표의 원천 컬럼이 CSV 헤더에 없음: {missing_src} "
+                         f"(파일: {path}, 헤더: {header})")
+
+    renamed_list = [mapping.get(c, c) for c in header]
+    dup = sorted({c for c in renamed_list if renamed_list.count(c) > 1})
+    if dup:
+        raise ValueError(f"{label} 대응 후 같은 계약 키로 겹치는 컬럼: {dup} "
+                         f"(파일: {path}, 헤더: {header}): 두 원천이 같은 키로 "
+                         f"대응됐거나, 대응 결과가 매핑 안 된 통과 컬럼과 충돌함")
+
+    renamed_cols = set(renamed_list)
+    if ("wafer_id" in renamed_cols and "wafer_no" in renamed_cols
+            and set(mapping.values()) & {"wafer_id", "wafer_no"}):
+        raise ValueError(f"{label} wafer_id 와 wafer_no 가 대응표 탓에 동시에 존재함 "
+                         f"(파일: {path}, 헤더: {header}): _wafer_no() 가 wafer_no 를 "
+                         f"조용히 우선하므로 대응표를 하나로 좁힐 것")
+
+    missing_req = set(required) - renamed_cols
+    # wafer_id 는 wafer_no 로 와도 된다 (_wafer_no() 참조) — 계약 키 자체가 이형이다
+    if "wafer_id" not in renamed_cols and "wafer_no" not in renamed_cols:
+        missing_req.add("wafer_id(또는 wafer_no)")
+    if missing_req:
+        raise ValueError(f"{label} 필수 컬럼 없음: {sorted(missing_req)} "
+                         f"(파일: {path}, 헤더: {header})")
+
+
+def _open_csv(path, label):
+    """utf-8-sig 로 연다 — 엑셀 저장 BOM 을 흡수한다. UTF-8 로 못 읽으면(예: cp949 로
+    저장된 파일) 인코딩을 추측하지 않고 파일명을 담아 멈춘다."""
+    f = open(path, "r", encoding="utf-8-sig", newline="")
+    try:
+        reader = csv.DictReader(f)
+        header = reader.fieldnames
+        if not header:
+            raise ValueError(f"{label} CSV 헤더가 비었음: {path}")
+    except UnicodeDecodeError as e:
+        f.close()
+        raise ValueError(f"{label} UTF-8 로 읽을 수 없음: {path} ({e})") from e
+    except Exception:
+        f.close()
+        raise
+    return f, reader, header
+
+
+def _read_yield_csv(path, mapping, yield_unit):
+    """수율 CSV 는 작아서 리스트로 읽는다(D6)."""
+    f, reader, header = _open_csv(path, "yield")
+    try:
+        _validate_csv_header(header, mapping, YIELD_REQUIRED, "yield", path)
+        rows = []
+        for row in reader:
+            r = _rename_row(row, mapping)
+            if yield_unit == "ratio":
+                # validate() 의 범위 검사는 0~100 이라 비율(0~1)을 그대로 실으면
+                # 전부 '저수율'로 잡혀 조용히 통과한다 — 사람이 명시한 단위로 여기서 바꾼다.
+                r["yield"] = float(r["yield"]) * 100
+            rows.append(r)
+    except UnicodeDecodeError as e:
+        raise ValueError(f"yield UTF-8 로 읽을 수 없음: {path} ({e})") from e
+    finally:
+        f.close()
+    return rows
+
+
+def _read_steps_csv(path, mapping):
+    """공정 이력은 제너레이터로 넘긴다(D6) — load() 가 이미 배치 적재라 리스트로 다
+    올릴 필요가 없다. 헤더 검증은 짧은 open/close 로 즉시 끝내고 바로 닫는다 — 핸들을
+    들고 있다가 제너레이터가 한 번도 안 돌면(예: yield 단계가 먼저 실패해 load() 가
+    step_history 삽입까지 못 감) 핸들이 열린 채 남는다. Windows 에서는 그 상태로
+    같은 파일을 지우거나 다시 쓰려 하면 WinError 32(사용 중)로 터진다. 실제로 여는
+    것은 제너레이터가 처음 소비되는 시점(`with` 진입)이다."""
+    f, reader, header = _open_csv(path, "steps")
+    f.close()
+    _validate_csv_header(header, mapping, STEPS_REQUIRED, "steps", path)
+
+    def _gen():
+        with open(path, "r", encoding="utf-8-sig", newline="") as f2:
+            try:
+                for row in csv.DictReader(f2):
+                    yield _rename_row(row, mapping)
+            except UnicodeDecodeError as e:
+                raise ValueError(f"steps UTF-8 로 읽을 수 없음: {path} ({e})") from e
+    return _gen()
+
+
+def read_csv_records(yield_csv, steps_csv, yield_unit, colmap=None):
+    """CSV 두 개(+ 선택 대응표) → load() 입력 계약과 같은 형태로 돌려준다.
+
+    yield_unit: 'percent'(그대로) 또는 'ratio'(x100). 사람이 명시하게 해서 validate()
+    의 범위 검사가 못 잡는 비율 함정을 막는다(요청서 5-2).
+    colmap: {'yield': {원천컬럼: 계약키}, 'steps': {...}} 형태 YAML 경로. 없으면
+    CSV 헤더가 이미 계약 키라고 본다(대응 불필요).
+    """
+    if yield_unit not in ("percent", "ratio"):
+        raise ValueError(f"yield_unit 은 'percent' 또는 'ratio' 여야 함: {yield_unit!r}")
+
+    cmap = {}
+    if colmap:
+        loaded = yaml.safe_load(Path(colmap).read_text(encoding="utf-8"))
+        # `or {}` 를 파싱 결과에 바로 쓰면 list-form YAML("- yield\n- steps")처럼
+        # falsy 가 아닌 형식 오류까지 빈 dict 로 뭉개 버려 구조 검증이 안 돈다.
+        # None(빈 파일)만 빈 dict 로 취급하고, 나머지는 그대로 구조 검증에 넘긴다.
+        if loaded is None:
+            loaded = {}
+        _validate_colmap_structure(loaded, colmap)
+        cmap = loaded
+
+    yield_records = _read_yield_csv(yield_csv, cmap.get("yield") or {}, yield_unit)
+    step_records = _read_steps_csv(steps_csv, cmap.get("steps") or {})
+    return yield_records, step_records
+
+
+# --------------------------------------------------------------------------- #
 # 진입점
 # --------------------------------------------------------------------------- #
 def _extract():
@@ -602,13 +780,36 @@ def main():
                     help=f"적재 대상 DB (기본 {ya_config.DB_PATH}: 더미와 동일, 덮어씀 주의)")
     ap.add_argument("--force", action="store_true",
                     help="치명적 정합성 오류가 있어도 기존 DB 를 교체한다")
+    ap.add_argument("--yield-csv", help="사례 수율 CSV 경로 (지정 시 --steps-csv 도 필수)")
+    ap.add_argument("--steps-csv", help="사례 공정 이력 CSV 경로 (지정 시 --yield-csv 도 필수)")
+    ap.add_argument("--yield-unit", choices=["percent", "ratio"],
+                    help="CSV 입력일 때 필수. yield 컬럼 단위(percent=0~100, ratio=0~1)")
+    ap.add_argument("--colmap", help="원천 컬럼명 -> 계약 키 대응표 YAML 경로 (선택)")
     args = ap.parse_args()
 
     db = Path(args.db)
-    if db == Path(ya_config.DB_PATH):
-        _say(f"[주의] {db} 는 더미 DB 와 같은 경로입니다. 기존 내용이 대체됩니다.")
+    # 상대경로("data/yield.db", "./data/yield.db")는 절대경로인 ya_config.DB_PATH 와
+    # 문자열/미해석 Path 로 비교하면 걸러지지 않는다 — repo 루트에서 돌리면 더미 보호가
+    # 조용히 뚫린다. 비교할 때만 resolve() 하고, load() 에 넘기는 db 는 원래 값 그대로 둔다.
+    is_dummy_path = db.resolve() == Path(ya_config.DB_PATH).resolve()
 
-    yield_records, step_records = _extract()
+    if args.yield_csv or args.steps_csv:
+        if not (args.yield_csv and args.steps_csv):
+            ap.error("--yield-csv 와 --steps-csv 는 함께 지정해야 함")
+        if not args.yield_unit:
+            ap.error("CSV 입력은 --yield-unit 이 필수 (percent 또는 ratio)")
+        if is_dummy_path:
+            # --force 로도 못 넘긴다 — force 는 fatal 무시용이지 더미 보호용이 아니다
+            ap.error(f"CSV 입력은 --db 를 더미 DB 경로가 아닌 값으로 지정해야 함: {db}")
+        yield_records, step_records = read_csv_records(
+            args.yield_csv, args.steps_csv, args.yield_unit, colmap=args.colmap)
+    else:
+        if args.yield_unit or args.colmap:
+            ap.error("--yield-unit/--colmap 은 --yield-csv/--steps-csv 와 함께 써야 함")
+        if is_dummy_path:
+            _say(f"[주의] {db} 는 더미 DB 와 같은 경로입니다. 기존 내용이 대체됩니다.")
+        yield_records, step_records = _extract()
+
     report = load(yield_records, step_records, db, force=args.force)
     raise SystemExit(0 if report["swapped"] else 1)
 

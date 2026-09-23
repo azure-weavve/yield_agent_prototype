@@ -3,39 +3,120 @@
 목적: 수만~수십만 개 센서를 보기 전에, **어느 스텝의 어느 설비/챔버가 의심스러운지**를
 설비 이력(step_history)만으로 좁힌다. 특징 차원이 스텝 수(~1000) 수준이라 싸다.
  
-핵심 계산 — 후보 (스텝, 설비/챔버) 마다 2x2:
- 
+핵심 계산 — 후보 (스텝, 설비/챔버) 마다 root_lot(stratum)별 2x2:
+
                 통과    미통과
-    target       a       b        coverage_target  = a / (a+b)
-    control      c       d        coverage_control = c / (c+d)
-                                  score = coverage_target - coverage_control
- 
-score = 1.0 이면 타깃 전원이 거쳤고 대조군은 아무도 안 거친 완전 분리 신호.
+    target       a       b        coverage_target  = a / (a+b)   (stratum 합산 — 표시용)
+    control      c       d        coverage_control = c / (c+d)   (stratum 합산 — 표시용)
+
+    score = Mantel-Haenszel 위험차 가중평균 (**후보가 나타난 stratum 에 한한 합** —
+            아래 "RR-M5" 참고)
+          = Σ w_i·(a_i/nt_i - c_i/nc_i) / Σ w_i,  w_i = nt_i·nc_i / (nt_i+nc_i)
+
+score = 1.0 이면 타깃 전원이 거쳤고 대조군은 아무도 안 거친 완전 분리 신호(단일 stratum).
+**stratum 이 여럿이면 score 는 위 coverage_target/coverage_control(stratum 을 합산한
+표시용 수치)의 차와 다를 수 있다** — 층별 비율이 다르면 심슨의 역설에 노출되기 때문에
+2026-09-17 에 pooled(합산) 대신 MH 가중으로 바꿨다(`_score_map`,
+`docs/2026-09-16-pooling-전제-측정.md` 의 재현 사례). stratum 이 하나뿐이거나 모든
+stratum 의 (타깃 수, 대조군 수) 가 같으면 두 값은 대수적으로 같다.
  
 설계 원칙:
-- **p-value 를 계산하지 않는다.** 후보가 수천 개라 다중비교로 유의성 주장이 불가능하다.
-  원시 카운트(a/b/c/d)를 그대로 실어, "결론이 아니라 후보"임이 드러나게 한다.
+- **p 를 낸다 — 단, 공식이 아니라 직접 세기로.** 예전에는 "후보가 수천 개라 다중비교로
+  유의성 주장이 불가능하다" 는 이유로 p 를 내지 않았다. 순열 기반 FDR 이 그 전제를
+  없앴다. 공식(BH 등)의 독립 가정에 기대는 대신, 라벨을 섞은 데이터에서 가짜가 몇 개
+  나오는지 실측해 임계값별로 싣는다. 원시 카운트(a/b/c/d)는 그대로 함께 실어,
+  "결론이 아니라 후보"임이 계속 드러나게 한다.
+  게이트 판정(`_passes`)은 p 를 보지 않는다. 다만 p 는 LLM 에게도 보이므로 LLM 이
+  낸 confidence 를 통해 간접적으로 판단에 영향을 줄 수 있다.
+- **섞기는 root_lot 안에서만.** 집계가 층화돼 있으므로 귀무도 같은 축으로 섞어야
+  lot 효과가 신호로 둔갑하지 않는다.
 - **root_lot 별 층화.** 대조군은 항상 타깃과 같은 root_lot 에서 나온다(route/시간 교락 차단).
-  타깃이 여러 root_lot 에 걸치면(EDS 확장 케이스) stratum 별로 세고 카운트를 합산한다.
-- **결측을 신호로 만들지 않는다.** 분모는 step_history 행이 실제로 있는 wafer 로 한정하고,
-  이력이 없는 wafer 는 missing_history 로 따로 보고한다.
+  타깃이 여러 root_lot 에 걸치면(EDS 확장 케이스) stratum 별로 센다 — **원시 카운트
+  (a/b/c/d, `coverage_target`/`coverage_control`)는 stratum 을 합산한 표시용 값이지만,
+  `score` 자체는 합산이 아니라 Mantel-Haenszel 가중평균이다**(위 "핵심 계산" 참고). 이
+  구분이 없으면 다층 상황에서 점수도 합계로 읽혀 심슨의 역설을 놓친다(m3, 2026-09-17 리뷰).
+- **분모는 그 질문에 답할 수 있는 wafer 만.** 후보 (레벨, 스텝) 마다 "그 스텝에 이력이
+  있고 그 레벨 컬럼이 결측이 아닌 wafer" 를 분모로 쓴다. 스텝을 안 지난 wafer 를
+  '미통과' 로 세면 score 가 챔버 분리도가 아니라 스텝 통과 여부를 반영한다.
+  예외는 step_passage — 모든 wafer 가 "지났는가" 에 답할 수 있어 legend 에
+  denominator: all 을 단다. 이력이 아예 없는 wafer 는 missing_history 로 따로 보고한다.
 - **lot_type 은 필터가 아니라 컨텍스트.** 평가랏에는 설비 작업 후 검증랏이 섞여 있어
   배제하면 단서를 버린다. 분포만 meta 에 싣는다.
  
 의존 테이블 (ETL 선적재 대상):
     step_history(wafer_id, step_seq, eqp_id, ch_id·ppid NULL 허용, timestamp)
     yield(wafer_id, ..., root_lot_id, lot_type)
+
+성능 — 단일 수치로 적을 수 없다. **비용 ~ 집계 키 수 x 실제 회차 수** (wafer 수도
+영향을 준다). 두 인자를 따로 봐야 한다.
+
+- **집계 키 수**: 순열 루프가 매 회차 도는 것은 `_aggregate` 의 `passed` 키,
+  즉 레벨마다 (스텝, 그 스텝에서 관측된 설비/챔버/ppid) **조합 전체**다.
+  설비 종류가 많을수록 비례해 는다. 아래 표의 "score>0" 은 그중 절단을 통과해
+  후보로 실리는 수일 뿐이니, 비용 산정에는 왼쪽 열을 쓸 것.
+- **실제 회차 수**: `n_permutations` 가 그대로 쓰이는 것이 아니다.
+  `_permutation_stats` 를 보라 - `n_permutations_total <= PERM_EXHAUSTIVE_MAX`
+  (=10000) 이면 **전수 열거**로 `n_permutations_total - 1` 회를 돌고
+  `n_permutations` 는 무시된다. 넘으면 그때만 무작위 표본 `n_permutations` 회다.
+
+실측 A (2026-08-11, 합성 데이터. 타깃 20 / 대조군 100 한 root_lot, 설비 4종 x
+챔버 2종, `n_permutations=1000`, 표본 경로):
+
+    스텝  50 -> 집계 키  600 (score>0  289) ->  0.8s
+    스텝 100 -> 집계 키 1200 (score>0  552) ->  1.5s
+    스텝 300 -> 집계 키 3600 (score>0 1675) ->  5.2s
+    스텝 800 -> 집계 키 9600 (score>0 4393) -> 17.1s
+
+실측 B (2026-08-11, 같은 합성 데이터. **타깃 7 / 대조군 7**, 스텝 300):
+`n_permutations_total` = C(14,7) = 3432 로 상한 아래라 전수 열거를 타고 3431 회를
+돈다. 그래서 **집계 키가 같은 스텝 300 인데 5.2s 가 아니라 13.8s** 다. 그룹이
+작을수록 느려지는 구간이 있다. 여기서 `n_permutations` 를 1000 -> 100 으로 낮춰도
+13.87s 로 **전혀 안 변한다** (실측). 이 경로에서는 그 노브가 무효다.
+
+실측 C (2026-08-10, 더미 DB 157 wafer): 전수 열거 경로(타깃 10/대조군 50,
+`n_permutations_total`=28) 약 3.6ms. 표본 경로(타깃 30/대조군 127,
+`n_permutations_total`~1.3e14) 약 148ms.
+
+**실데이터 첫 투입 주의.** 이 모듈이 상정하는 실데이터는 스텝 ~1000 규모이고,
+가설 3개(eqp_ch·ppid·step_passage)가 각각 이 계산을 따로 돌린다. 60초 상한에
+닿는 길이 둘이라 대응도 둘이다.
+
+1. 그룹이 커서 표본 경로를 탈 때 -> `COMMONALITY_PERMUTATIONS` 를 100~200 으로
+   낮춘다. 회차 수에 선형이고, 낮추면 p 의 바닥값(1/(n+1))이 올라갈 뿐 후보
+   목록 자체는 바뀌지 않는다.
+2. 그룹이 작아 전수 열거를 탈 때 -> 위 노브는 **안 듣는다.** 회차가
+   `n_permutations_total - 1` 로 정해지며 최대 9999 회, 곧 기본 1000 회의 10배다.
+   이때는 `PERM_EXHAUSTIVE_MAX` 를 내려 표본 경로로 보내야 한다(지금은 이 모듈의
+   상수라 config 노출이 없다 - 실투입에서 걸리면 그때 빼는 것을 검토할 것).
 """
  
+import itertools
+import math
+import random
 import sqlite3
 from contextlib import contextmanager
  
 import ya_config
  
-# config 에 없으면 쓰는 기본값 (실데이터 보고 조정 — 지금 못 박지 않는다)
-MIN_TARGET = getattr(ya_config, "COMMONALITY_MIN_TARGET", 2)
-TOP_K = getattr(ya_config, "COMMONALITY_TOP_K", 20)
-MIN_SCORE = getattr(ya_config, "COMMONALITY_MIN_SCORE", 0.0)
+# 탐색 범위 (실데이터 보고 조정 — 지금 못 박지 않는다). 판별선은 여기가 아니라
+# domain/engine.py 가 읽는 ya_config.COMMONALITY_PASS_* 다.
+#
+# ⚠️ `getattr(ya_config, ..., 기본값)` 으로 읽지 않는다. 그 형태는 이름이 틀려도
+#    조용히 기본값으로 떨어져서, 실제로 세 상수가 config 에 없는 이름을 찾느라
+#    **env 로 조정이 안 되는 상태였는데 아무도 못 알아챘다**(2026-08-23 확인).
+#    직접 참조하면 이름이 틀린 순간 AttributeError 로 즉시 걸린다.
+MIN_TARGET = ya_config.COMMONALITY_MIN_TARGET
+TOP_K = ya_config.COMMONALITY_TOP_K
+MIN_SCORE = ya_config.COMMONALITY_MIN_SCORE
+
+# 순열검정 반복 횟수. 0 이면 순열을 돌리지 않는다 (기존 동작).
+N_PERMUTATIONS = ya_config.COMMONALITY_PERMUTATIONS
+# 층화 경우의 수가 이 이하면 전수 열거한다 — 정확하고 더 빠르다.
+PERM_EXHAUSTIVE_MAX = 10000
+# 고정 시드. 같은 입력이 같은 p 를 내야 테스트도 감사도 성립한다.
+PERM_SEED = 20260809
+# FDR 표의 임계값 사다리. 실데이터를 보고 조정한다 — 지금 못 박지 않는다.
+FDR_THRESHOLDS = (0.9, 0.8, 0.7, 0.6, 0.5, 0.4)
 
 # 계산 자체가 성립하지 않은 상태들. **legend 와 무관한 그룹 수준 사실**이라 다른
 # legend 로 다시 돌려도 같은 답이 나온다 — 게이트(graph/nodes.py)가 "남은 가설을 더
@@ -49,11 +130,14 @@ EQP_CH_LEGEND = [
     {"level": "chamber", "columns": ["eqp_id", "ch_id"]},
 ]
 
-# 원천의 결측 표기. 값이 아니라 "없음" 이라 후보 키를 만들면 안 된다.
-#   ch_id='-'     : 챔버 개념이 없는 설비 → "AAAAA_-" 가 설비 후보와 중복 계상됐다
-#   ppid/area='-' : 스텝 skip (eqp_id='MSKPI1' 등)
-# 2026-08-07 실데이터 발견. ch_id 약 10% / ppid 2.5% / area 1.25%.
-MISSING_TOKENS = frozenset({"-", "--", "N/A", "NA", ""})
+# legend 컬럼값이 이 토큰이면 결측(NULL/빈문자열과 동일 취급) — ch_id·ppid 등 챔버·PPID
+# 개념이 없는 스텝에서 흔히 쓰는 결측 토큰. 2·3단계(metro) 분모도 같은 집합을 쓴다.
+# 판정은 legend 의 모든 컬럼에 걸리지만 eqp_id 는 해당 없다 — 사내에서 스킵은 MSKIP1
+# 이라는 실제 설비 코드로 기록하기로 약속돼 있어 eqp_id 에 "-" 가 들어오지 않는다
+# (2026-08-09 확인). 그 약속이 바뀌면 무엇이 무너지는지는
+# tests/test_commonality.py::test_missing_token_on_eqp_id_also_excludes_equipment_denominator
+# 에 적어 뒀다.
+MISSING_TOKENS = frozenset({"-"})
 
 
 @contextmanager
@@ -108,14 +192,15 @@ def _history(conn, wafer_ids: list[str], legend) -> list[sqlite3.Row]:
 def _keys(row, legend) -> list[tuple]:
     """한 이력 행이 기여하는 후보 키들. 각 항목 = (level, step, keystr, colvals).
 
-    레벨 컬럼이 하나라도 NULL/빈문자열이면 그 레벨은 건너뛴다(가짜 키 금지 —
-    ch_id 없는 단일 챔버 설비/챔버 개념 없는 스텝의 챔버 레벨이 자연히 빠진다).
+    레벨 컬럼이 하나라도 NULL/빈문자열/MISSING_TOKENS 면 그 레벨은 건너뛴다(가짜 키
+    금지 — ch_id 없는 단일 챔버 설비/챔버 개념 없는 스텝의 챔버 레벨이 자연히 빠진다).
     """
     step = row["step_seq"]
     out = []
     for lvl in legend:
         vals = [row[col] for col in lvl["columns"]]
-        if any(v is None or str(v).strip() in MISSING_TOKENS for v in vals):
+        if any(v is None or str(v).strip() == "" or str(v).strip() in MISSING_TOKENS
+               for v in vals):
             continue
         keystr = "_".join(str(v) for v in vals)
         colvals = dict(zip(lvl["columns"], vals))
@@ -123,31 +208,553 @@ def _keys(row, legend) -> list[tuple]:
     return out
 
 
-def _count_stratum(rows, wafers: set[str], legend) -> tuple[dict, set, dict]:
-    """stratum 내 후보키 -> 그 키를 거친 wafer 집합, 이력 존재 wafer, 키->colvals."""
-    passed: dict[tuple, set] = {}
-    seen: set[str] = set()
+def _build_index(rows, bits: dict[str, int], legend) -> tuple[dict, dict, int, dict]:
+    """이력 행을 한 번만 훑어 wafer 를 비트로 색인한다.
+
+    passed  후보키 -> 그 키를 거친 wafer 비트마스크
+    answer  (레벨, 스텝) -> **그 질문에 답할 수 있는** wafer 비트마스크 = 분모 재료
+    seen    이력이 하나라도 있는 wafer 비트마스크 (missing_history 보고용)
+    colmap  후보키 -> legend 컬럼값
+
+    순열검정은 **라벨만** 바꾸므로 이 색인은 회차마다 다시 만들 필요가 없다. 행을
+    다시 훑는 대신 마스크 교집합의 popcount 로 세면 회차당 비용이 행 수가 아니라
+    후보 키 수에 비례한다.
+
+    answer 를 따로 세는 이유: `_keys` 가 결측 레벨을 이미 건너뛰므로, 거기서 나온
+    (레벨, 스텝) 이 곧 "이 wafer 는 그 질문에 답할 수 있다" 는 뜻이다. seen 을
+    분모로 쓰면 그 스텝을 안 지난 wafer 와 컬럼이 결측인 wafer 가 '미통과' 로 섞인다.
+    """
+    passed: dict[tuple, int] = {}
+    answer: dict[tuple, int] = {}
+    seen = 0
     colmap: dict[tuple, dict] = {}
     for r in rows:
-        wid = r["wafer_id"]
-        if wid not in wafers:
+        b = bits.get(r["wafer_id"])
+        if b is None:
             continue
-        seen.add(wid)
+        seen |= b
         for level, step, keystr, colvals in _keys(r, legend):
+            answer[(level, step)] = answer.get((level, step), 0) | b
             key = (level, step, keystr)
-            passed.setdefault(key, set()).add(wid)
+            passed[key] = passed.get(key, 0) | b
             colmap.setdefault(key, colvals)
-    return passed, seen, colmap
- 
- 
+    return passed, answer, seen, colmap
+
+
+def _aggregate(strata_masks, passed, answer, seen, universal,
+               collect_bits: bool = False) -> tuple[dict, list]:
+    """라벨(stratum 별 타깃·대조군 마스크)에서 후보별 2x2 카운트를 낸다 — 순수 함수.
+
+    strata_masks = [(root_lot_id, t_mask, c_mask), ...]
+
+    **실제 데이터와 순열 귀무가 이 함수 하나를 같이 탄다.** 귀무를 다른 코드로 세면
+    분모 규칙·절단·stratum 스킵이 갈려, 실제와 다른 것을 재게 된다(설계 §1-4).
+
+    `collect_bits` 는 **출력만 늘린다.** 켜면 후보가 가리키는 wafer 마스크와 층별
+    상세(`strata_detail` — root_lot_id·타깃/대조군 pass·total·d)를 카운트와 같은
+    누적에서 함께 모은다. 귀무는 점수만 읽고 목록은 버리므로 기본은 꺼 두는데,
+    켠 채로 순열을 돌리면 실측 +22% 였다(2026-08-23, 타깃 5/대조군 92).
+    ⚠️ 이 플래그가 a/b/c/d·mh_num/mh_den/mh_scale(Mantel-Haenszel 누적자, 아래
+    참고)이나 stratum 스킵에 영향을 주게 만들면 안 된다 — 그 순간 위 문단이
+    거짓이 되고 귀무가 실제와 다른 것을 재기 시작한다. strata_detail 도 마찬가지로
+    출력 전용이다 — 담느냐 마느냐가 점수·카운트를 바꾸면 안 된다.
+    tests/test_commonality.py 가 이 값들이 플래그와 무관함을 단언으로 지킨다.
+
+    누적자는 표시용 pooled 카운트 a/b/c/d, stratum 수 strata, 그리고 **Mantel-
+    Haenszel 위험차 가중의 분자·분모를 정수쌍으로 정확히 누적하는 세 필드**
+    mh_num/mh_den/mh_scale — **float 로 누적하지 않는다** (2026-09-17 리뷰
+    R-B1, blocking). float `w*d` 누적은 두 가지를 깼다:
+    ①stratum 모양이 회차마다 다르면 수학적으로 같은 값이 다른 double 이 되어
+    `_null_distribution` 의 `>= obs` 동점 판정이 비보수적으로 어긋난다(순열 p 가
+    실제보다 작게 나온다), ②층 간 상쇄로 참값이 정확히 0 인 후보가 부동소수점
+    잔여 오차(예: `+1.1e-16`)로 `s > MIN_SCORE(0.0)` 를 통과해 없어야 할 후보가
+    생긴다. 정수 분자/분모로 누적하면 두 문제 다 근본에서 사라진다 — 같은
+    유리수는 항상 같은 분자/분모를 거쳐 같은(정확히 반올림된) double 이 되고,
+    참값 0 은 분자가 정확히 0 인 정수로 남는다.
+
+    **대수적 트릭**: stratum `i` 의 두 기여분 `w_i·d_i`·`w_i` 는 공통 분모
+    `m_i = nt_i+nc_i` 를 갖는다 — `w_i·d_i = (a_i·nc_i - c_i·nt_i)/m_i`,
+    `w_i = (nt_i·nc_i)/m_i`. 그래서 두 분자(mh_num/mh_den)가 **분모 하나**
+    (mh_scale, stratum 을 지날 때마다 누적한 `m_i` 들의 곱)를 공유한다. 분자를
+    갱신할 때만 정수 곱셈·덧셈을 쓰고(나눗셈 없음), 최종 score(`_score_map`)에서
+    `mh_num/mh_den` 을 한 번 나누면 공유 분모(mh_scale)가 대수적으로 약분돼
+    사라진다 — 그래서 mh_scale 자체는 `_score_map` 밖으로 안 나간다. stratum 이
+    하나뿐이면 `mh_num/mh_den = (a·nc-c·nt)/(nt·nc)` 로 단순화된다.
+
+    **⚠️ 성능: 나눗셈을 없애도 비용이 안 사라진다 — 실측했다(2026-09-17 리뷰
+    R-M-b).** "누적자가 늘어나도 리스트가 아니니 순열 루프에 비용이 안 붙는다"
+    는 예전 주장은 **거짓으로 실측됐다.** 곱셈·덧셈이 나눗셈보다 하나하나는
+    싸지만, 이 방식은 stratum 마다 정수 곱셈을 **여덟 번**(옛 float 방식은
+    나눗셈 둘 포함 다섯 번) 쓰므로 연산 개수 자체가 늘고, CPython 의 임의정밀도
+    정수는 float 보다 객체당 오버헤드가 더 크다. 같은 방법(4 root_lot × 30
+    wafer × 150 step, `n_permutations=300`, `main` 커밋 `d1a07dc` 대비)으로
+    재측정: `_aggregate` 마이크로벤치 **+39.7%**, 전 경로 `find_commonality`
+    **+34.1%** — 이 수정 이전(float `w*d` 누적, 순열 p 동점 손실 버그가 있던
+    상태)의 실측 +33%/+23.1% 보다 오히려 근소하게 **크다**. 즉 이 구현에서는
+    "나눗셈을 줄이면 초과분이 완화된다" 는 가설이 **성립하지 않았다** — 정확성
+    (R-B1)과 이 정도의 성능 비용은 함께 온다.
+
+    **RR-M4(2026-09-20 재리뷰) — 단일 stratum 고속 경로는 시도했다가 되돌렸다
+    (사용자 결정 2026-09-20).** 옛 float 식(`a/nt - c_/nc`)으로 빠지는 분기를
+    넣었더니 전 경로가 10~13% 빨라졌으나 **R-B1 이 막은 동점 손실이 그대로
+    재발했다.** 당시 안전 근거는 *"stratum 이 하나면 한 실행의 모든 회차가 같은
+    모양이라 같은 유리수가 다른 double 이 될 일이 없다"* 였는데 **거짓이다** —
+    모양(`nt`,`nc`)이 같아도 `a`·`c_` 는 회차마다 변하고, `fl(a/nt) - fl(c_/nc)`
+    는 그 차의 실수값만으로 정해지지 않는다. `nt<=40`·`nc<=80` 전수에서 **참값이
+    같은데 double 이 다른 (a,c) 쌍이 335,717건**이다(예: `nt=2, nc=6` 에서 참값
+    `-1/6` 이 `-0.16666666666666666` 과 `-0.16666666666666663` 으로 갈린다).
+
+    ⚠️ **정정(2026-09-21 3차 리뷰 TR-M2)** — 이 335,717쌍이 **후보별 순열 p**
+    (`_null_distribution` 의 `>= obs`)에서 실제로 서로 비교된다는 이전 기록은
+    거짓이었다. legend 축은 stratum 안에서만 섞으므로 ①`nt_i+nc_i` 가 라벨
+    불변이고(`_null_distribution` 독스트링이 이미 적어 둔 사실), ②`a_i+c_i`도
+    라벨 불변이다 — S=1 이면
+    `_size_map` 이 `nt` 를 고정해 **`nc`·`a+c_` 도 함께 고정**되고, 그러면
+    `a/nt - (a+c_-a)/nc` 는 `a` 의 순증가 단사 함수라 같은 참값이 두 `a` 에서
+    나올 수 없다(전수 확인: `a+c_` 고정 제약을 넣으면 동점 충돌 0건).
+    동점이 실제로 새는 자리는 둘이고 **메커니즘이 서로 다르다**(FR-9, 5차 리뷰가
+    재정정 2026-09-21).
+    - **FDR 임계 카운트**(`_null_distribution` 의 `null_counts[t] += sum(1 for v
+      in vals if v >= t)`)는 후보끼리가 아니라 **상수 임계**(`FDR_THRESHOLDS`)와
+      비교한다. 그래서 stratum 모양과 **무관하게** 샌다 - 모양이 하나로 고정된
+      S=1 에서도, 참값이 정확히 임계인 점수가 float 로는 임계 아래 double 이 되어
+      카운트에서 빠질 수 있다(예: `nt=3, nc=15, a=2, c_=4` 의 참값 0.4 가
+      `0.39999999999999997`. `nt,nc<=30` 전수에서 149건, 5차 리뷰 실측).
+    - **family-wise `null_max`**(`_family_wise_p` 의 `v >= best`)는 회차 **안 전체
+      후보의 최댓값**을 관측 1등과 비교하므로 **후보를 가로지른다** - 모양이 다른
+      후보가 같은 참값을 다른 double 로 내면 동점이 "못 넘음" 으로 떨어져 p 가
+      실제보다 작아진다(비보수적).
+    후보별 `>= obs` 는 위에서 본 대로 새지 않으므로, 이 둘은 2026-08-28 의 참조집합
+    조건화(`_size_map`)와는 **무관한 자리**다.
+
+    **그리고 그 분기로 얻을 몫도 거의 없었다.** S=1 이면 위 점화식이 이미
+    `mh_num = a·nc - c_·nt`, `mh_den = nt·nc` 로 환원되어 `_score_map` 이 **정확한
+    유리수를 한 번만** 나눈다(`nt,nc<=29` 전수에서 `Fraction` 과 일치 확인). 분기로
+    아낄 수 있는 것은 `mh_scale` 부기(정수 곱셈 여덟 번 -> 세 번)뿐이고, 측정된
+    10~13% 는 그 부기가 아니라 **정수를 float 로 바꾼** 몫이었다. 즉 속도가 나오는
+    형태는 안전하지 않고 안전한 형태는 속도가 거의 안 난다. 성능 초과분
+    (+39.7%/+34.1%)의 수용 여부는 **사내 실데이터를 본 뒤에** 다시 판단한다.
+
+    **rm8(기록만) — `mh_num`/`mh_den`/`mh_scale`(다층 경로)은 stratum 수 S 에
+    대해 자릿수가 O(S) 로 자란다** - 공통 분모(mh_scale)를 약분하지 않고 그대로
+    곱해 나가기 때문이다. S=200 까지 실측한 **자릿수(정수 비트 길이) 배율**은
+    2.4배 수준이라(시간이 아니라 자릿수 배율이다 - tm6, 2026-09-21 3차 리뷰)
+    병리적이지 않고, 최종 score 는 항상 [-1, 1] 구간이라 오버플로우 걱정도
+    없다 - 별도 조치 없이 기록만 남긴다.
+    """
+    agg: dict[tuple, dict] = {}
+    strata_report = []
+    for rl, t_mask, c_mask in strata_masks:
+        t_seen = t_mask & seen
+        c_seen = c_mask & seen
+        # 이력이 아예 없는 쪽이 있으면 이 stratum 은 비교가 성립하지 않는다
+        if not t_seen or not c_seen:
+            continue
+        strata_report.append({"root_lot_id": rl,
+                              "n_target": t_seen.bit_count(),
+                              "n_control": c_seen.bit_count()})
+        for key, p_bits in passed.items():
+            a = (p_bits & t_mask).bit_count()
+            c_ = (p_bits & c_mask).bit_count()
+            if a == 0 and c_ == 0:
+                # 이 stratum 에 이 키가 없다. ⚠️ **RR-M5(2026-09-20 재리뷰)** —
+                # 이 스킵은 D1/예외 표가 다룬 `nt_i==0 or nc_i==0` 스킵과 별개다.
+                # pooled 시절에는 "분자·분모 양쪽에서 대칭으로 뺀다" 로 옳았지만,
+                # MH 가중평균에서는 `d_i=0` 이고 `w_i>0` 인 **정보 있는** stratum
+                # 을 평균에서 빼는 것이라 점수가 부풀 수 있다(리뷰어 예시: 포함
+                # 시 0.188 인데 지금은 1.000). **사용자 결정: 기존 동작이라
+                # 회귀가 아니므로 지금은 그대로 둔다** - 추정량 정의를 고치면
+                # 점수가 전반적으로 낮아져 전체 재검증이 필요하고, 그 판단은
+                # 실데이터를 본 뒤가 맞다(운영 빈도는 `docs/next_step_claude.md`
+                # P1-4 의 열린 질문). 그래서 위 "핵심 계산" 의 Σ 는 **이 스킵을
+                # 통과한(=후보가 나타난) stratum 에 한한 합**이다 - 조건 없이
+                # "stratum 별 위험차의 MH 가중평균" 이라고만 적으면 이 스킵이
+                # 없는 것처럼 읽힌다.
+                continue
+            level, step, _keystr = key
+            if level in universal:
+                nt, nc = t_seen.bit_count(), c_seen.bit_count()
+            else:
+                ans = answer.get((level, step), 0)
+                nt = (ans & t_mask).bit_count()
+                nc = (ans & c_mask).bit_count()
+            # 한쪽이 그 질문에 아무도 답하지 못하면 대비할 짝이 없다.
+            # (예: 대조군이 그 스텝에 아예 안 갔다 -> step_passage 축이 잡을 일이다)
+            if nt == 0 or nc == 0:
+                continue
+            e = agg.setdefault(key, {"a": 0, "b": 0, "c": 0, "d": 0, "strata": 0,
+                                     "mh_num": 0, "mh_den": 0, "mh_scale": 1})
+            e["a"] += a
+            e["b"] += nt - a
+            e["c"] += c_
+            e["d"] += nc - c_
+            e["strata"] += 1
+            # Mantel-Haenszel 위험차 가중 — **정수 정확 산술**(R-B1). m 은 이
+            # stratum 기여분의 공통 분모, term_n/term_d 는 각각 분자(가중차)·
+            # 분모(가중치)의 이 stratum 몫이다. 나눗셈은 전혀 없다 — 곱셈·덧셈뿐.
+            # ⚠️ **stratum 이 하나뿐이어도 이 경로를 탄다.** 옛 float 식으로
+            # 빠지는 분기를 2026-09-20 에 넣었다가 되돌렸다 — 동점을 잃는다
+            # (위 독스트링의 "RR-M4" 절).
+            m = nt + nc
+            term_n = a * nc - c_ * nt          # w_i·d_i 의 분자 (분모는 m)
+            term_d = nt * nc                   # w_i 의 분자 (분모는 m)
+            scale = e["mh_scale"]
+            e["mh_num"] = e["mh_num"] * m + term_n * scale
+            e["mh_den"] = e["mh_den"] * m + term_d * scale
+            e["mh_scale"] = scale * m
+            # 출력만 늘린다 — 위 여덟 줄(카운트 다섯 + mh_num/mh_den/mh_scale)에
+            # 영향이 없다. 키를 기본 dict 에 넣지 않고 여기서만 만드는 이유는
+            # 귀무 경로의 dict 크기를 원래대로 두기 위해서다(넣었더니 순열
+            # 비용이 붙었다). 마스크도 여기서 다시 잡는다 — 관측은 한 번뿐이라
+            # 재계산이 싸고, 귀무 경로에는 분기 하나만 남는다.
+            if collect_bits:
+                e["a_bits"] = e.get("a_bits", 0) | (p_bits & t_mask)
+                e["c_bits"] = e.get("c_bits", 0) | (p_bits & c_mask)
+                # 표시용 — 관측 경로에서만 만들어지므로 permutation 간 일관성이
+                # 필요 없다(스코어 계산과 무관한 별도 float 나눗셈). 소수점 3자리로
+                # 반올림해 "이 stratum 만 보면" 을 사람이 읽게 한다.
+                e.setdefault("strata_detail", []).append({
+                    "root_lot_id": rl,
+                    "target_pass": a, "target_total": nt,
+                    "control_pass": c_, "control_total": nc,
+                    "d": round(a / nt - c_ / nc, 3),
+                })
+    return agg, strata_report
+
+
+def _score_map(agg) -> dict[tuple, float]:
+    """후보키 -> score. MIN_SCORE 이하는 뺀다. 반올림하지 않는다.
+
+    **score 는 후보가 나타난 stratum(root_lot)별 위험차의 Mantel-Haenszel
+    가중평균이다**(RR-M5, 2026-09-20 재리뷰 - `_aggregate` 의 `a == 0 and
+    c_ == 0` 스킵으로 나타나지 않은 stratum 은 평균에서 빠진다. 사용자 결정으로
+    지금은 그대로 둔다) — stratum 을 먼저 합산한 뒤 한 번에 나누지 않는다.
+    합산부터 하면(옛 방식)
+    stratum 별 타깃/대조군 비율이 다를 때 심슨의 역설에 노출된다(`_aggregate` 의
+    mh_num/mh_den 이 그 가중을 **정수로 정확히** 계산해 뒀다 — 여기서 나누는 것이
+    이 계산 경로에서 일어나는 **유일한 나눗셈**이다). stratum 이 하나뿐이거나
+    모든 stratum 의 `(nt_i, nc_i)` **쌍**이 같으면(표본 크기만 같아서는 부족하다 —
+    타깃·대조군 각각의 크기가 stratum 마다 같아야 한다) 옛 pooled 값과 대수적으로
+    같다(`docs/2026-09-16-pooling-전제-측정.md`).
+
+    mh_num/mh_den 이 정수라서 이 나눗셈은 **정확한 유리수를 한 번만 반올림**한다
+    (2026-09-17 리뷰 R-B1) — 그래서 수학적으로 같은 값은 항상 같은 double 이 된다.
+    float 로 미리 나눠 누적했다면(`w_i·d_i` 를 float 로 더한 뒤 여기서 다시 나누는
+    옛 방식) stratum 모양이 다른 회차끼리 같은 유리수가 다른 double 이 될 수
+    있었고, 그러면 `_null_distribution` 의 동점 판정(`>= obs`)이 비보수적으로
+    어긋나거나(순열 p 가 실제보다 작아짐), 층 간 상쇄로 참값이 정확히 0 인
+    후보가 부동소수점 잔여 오차로 `s > MIN_SCORE` 를 통과했다(참값 0 은 이제
+    분자가 정확히 정수 0 이라 그런 일이 없다).
+
+    귀무에도 **같은 절단**을 건다. 게이트를 못 지날 후보를 귀무에 세면 기준선만
+    올라가 실제가 손해를 본다(설계 §1-4). 반올림을 안 하는 이유는 귀무와 관측을
+    같은 정밀도로 비교하기 위해서다 — 후보에 실리는 값만 마지막에 반올림한다.
+    """
+    out: dict[tuple, float] = {}
+    for key, e in agg.items():
+        den = e["mh_den"]
+        if den == 0:
+            continue          # 대비할 수 있는 stratum 이 없다 — 0으로 나누지 않는다
+        s = e["mh_num"] / den          # 정수 나눗셈 한 번 — 정확한 유리수를 반올림
+        if s > MIN_SCORE:
+            out[key] = s
+    return out
+
+
+def _size_map(agg) -> dict[tuple, int]:
+    """후보키 -> 그 회차의 타깃 표본 크기(nt). **점수와 달리 절단을 걸지 않는다.**
+
+    `_null_distribution` 이 귀무 참조집합을 "관측과 같은 표본 크기의 회차" 로 제한할
+    때 쓰는 값이다. 여기서 MIN_SCORE 절단까지 같이 걸면 **'진짜로 못 넘은 회차'** 가
+    분모에서도 빠져 과보정이 된다(무신호 데이터에서 p<=0.05 가 명목 5.0% 대신 0.6%
+    로 주저앉는다 - 2026-08-28 실측). 여기서 거르는 것은 **계산 자체가 성립하지 않는
+    회차**(타깃이나 대조군이 통째로 빈 회차)뿐이다.
+
+    **이 조건화는 pooled `nt` 다**(D5, 2026-09-17 리뷰) — `e["a"] + e["b"]` 는
+    stratum 을 합산한 타깃 표본 수이지, MH 가중이 걸리는 `mh_num`/`mh_den` 과
+    같은 축이 아니다. `_score_map` 의 추정량은 stratum 별로 가중되지만 순열
+    참조집합을 좁히는 이 조건화는 여전히 pooled 값 하나로만 회차를 맞춘다 -
+    의도적으로 안 바꾼 것이다(2026-08-28 실측이 이 기준 위에 서 있고, `nc`·
+    stratum 까지 넓히면 검정력만 깎인다는 실측이 `_null_distribution` 독스트링에
+    있다). 다음 사람이 "추정량만 층화하고 조건화는 왜 pooled 인가" 로 돌아오는
+    자리라 여기 적어 둔다.
+    """
+    out: dict[tuple, int] = {}
+    for key, e in agg.items():
+        nt, nc = e["a"] + e["b"], e["c"] + e["d"]
+        if nt == 0 or nc == 0:
+            continue
+        out[key] = nt
+    return out
+
+
+def _bits_of(mask: int) -> list[int]:
+    """마스크를 개별 비트 목록으로. 순열이 이 목록에서 뽑는다."""
+    out = []
+    while mask:
+        low = mask & -mask
+        out.append(low)
+        mask ^= low
+    return out
+
+
+def _n_permutations_total(strata_masks, seen: int) -> int:
+    """층화 섞기의 경우의 수 = stratum 별 조합 수의 곱.
+
+    lot 을 가로질러 섞지 않으므로 전체 섞기(n! 급)보다 훨씬 작다. 이 값이 작다는
+    것 자체가 "이 데이터로는 p 를 그 아래로 못 내린다" 는 뜻이라 결과에 싣는다.
+
+    풀을 `seen` 으로 걸러낸다 — 이력이 아예 없는 wafer 는 `_aggregate` 에서 a/c_/
+    분모 어디에도 기여하지 않는 불활성 wafer 라 섞어도 agg 가 안 바뀐다. 안 걸러
+    내면 경우의 수만 부풀어 p_min_possible(=1/(n_used+1))이 실제로 달성 불가능한
+    값이 된다.
+    """
+    total = 1
+    for _rl, t_mask, c_mask in strata_masks:
+        pool = ((t_mask | c_mask) & seen).bit_count()
+        k = (t_mask & seen).bit_count()
+        total *= math.comb(pool, k)
+    return total
+
+
+def _iter_label_sets(strata_masks, n_total: int, n_iter: int, rng, seen: int):
+    """회차마다 [(rl, t_mask, c_mask), ...] 를 내놓는다.
+
+    **stratum 안에서만 섞는다.** lot 을 가로지르면 lot 효과가 신호로 잡힌다.
+    lot A 에 언제나 타깃 8장이 남아야, "두께 상위에 타깃이 몰린다" 는 lot 효과가
+    귀무에도 그대로 남아 올바르게 기각된다 (설계 §2-2).
+
+    이력 없는 wafer(`seen` 밖)는 섞지 않고 원래 쪽에 고정한다 — 불활성이라
+    `_n_permutations_total` 도 같은 기준으로 걸러낸다(그 함수 docstring 참고).
+    라벨의 t|c 합집합은 원래 t_mask|c_mask 와 항상 같아야 한다 — "그 wafer 가
+    사라졌다" 가 아니라 "섞을 후보에서만 뺐다" 는 뜻이어야 하기 때문이다.
+
+    경우의 수가 적으면 전수 열거한다 — 정확하고 더 빠르다. 그때 **관측 라벨은
+    건너뛴다.** 관측을 귀무 표본에 넣으면 "넘은 횟수" 가 항상 1 이상이 되어
+    p_min_possible 이 절대 달성되지 않고, 공간 부족을 읽을 수 없게 된다.
+    """
+    pools = [(rl, _bits_of((t_mask | c_mask) & seen), (t_mask & seen).bit_count(),
+              t_mask, c_mask, t_mask & ~seen)
+             for rl, t_mask, c_mask in strata_masks]
+
+    if n_total <= PERM_EXHAUSTIVE_MAX:
+        per_stratum = [list(itertools.combinations(pool, k))
+                       for _rl, pool, k, _t, _c, _fixed_t in pools]
+        for combo in itertools.product(*per_stratum):
+            labels, is_observed = [], True
+            for (rl, _pool, _k, t_mask, c_mask, fixed_t), picked in zip(pools, combo):
+                t = fixed_t
+                for b in picked:
+                    t |= b
+                if t != t_mask:
+                    is_observed = False
+                labels.append((rl, t, (t_mask | c_mask) ^ t))
+            if is_observed:
+                continue
+            yield labels
+    else:
+        for _ in range(n_iter):
+            labels = []
+            for rl, pool, k, t_mask, c_mask, fixed_t in pools:
+                t = fixed_t
+                for b in rng.sample(pool, k):
+                    t |= b
+                labels.append((rl, t, (t_mask | c_mask) ^ t))
+            yield labels
+
+
+def _null_distribution(strata_masks, seen, observed: dict[tuple, float],
+                       observed_sizes: dict[tuple, int],
+                       n_iter: int, seed: int, score_fn):
+    """라벨을 섞어 귀무 분포를 재고 후보별 p 를 낸다. **후보의 생김새는 모른다.**
+
+    `score_fn(labels) -> ({후보키: score}, {후보키: 타깃 표본 크기})` 를 받으므로,
+    후보가 (스텝, 설비) 든
+    (스텝, item, 분할점, 방향) 이든 이 루프는 그대로다. metro 도구가 이 함수를
+    같이 쓴다 (`tools/metro_commonality.py`) — 통계 루프를 두 벌로 두면 한쪽만
+    고쳐졌을 때 두 도구의 p 가 조용히 다른 뜻이 된다.
+
+    **한 회차 = 라벨 한 번 섞기 -> 전 후보 계산.** 후보마다 따로 섞으면 후보 간
+    상관이 깨진다. 같은 라벨을 쓰면 "같은 스텝의 키들이 함께 움직인다" 는 성질이
+    귀무에도 남아, 상관 때문에 가짜가 무더기로 나오는 현상이 기준선에 자동
+    반영된다 (설계 §2-5).
+
+    p = (귀무가 관측 이상인 횟수 + 1) / (**참조 회차** + 1). 1을 더하는 이유는 0번
+    넘었다고 p = 0 이 될 수는 없기 때문이다.
+
+    **참조 회차 = 표본 크기가 관측과 같은 회차.** 예전에는 섞은 회차 전부였는데,
+    계측 샘플링이 걸리면 회차마다 계측된 타깃 장수(nt)가 달라진다 - 관측 후보는 큰
+    nt 로 만들어진 것인데 귀무 회차 대부분은 nt 가 작아 후보가 **아예 안 생기고**,
+    없는 것을 `-inf` 로 읽어 "안 넘었다" 로 셌다. 정의되지 않은 것과 넘지 못한 것이
+    같은 취급을 받아 귀무가 약해 보이고 p 가 작아진다.
+
+    실측(무신호 합성 데이터, 4 lot x 타깃 5 x 대조군 20, lot 당 3장 계측):
+
+        추정량                p<=0.05   p<=0.10   p<=0.50
+        명목                    5.0%     10.0%     50.0%
+        섞은 회차 전부(옛)      6.2%     15.4%     93.3%   <- 순위가 못 쓰게 된다
+        표본 크기 일치(현재)    1.4%      6.4%     55.5%   <- 보수적 쪽으로 치우친다
+
+    **꼬리(p<=0.05)보다 몸통이 심하게 망가지는 것이 핵심이다.** `graph/evidence.py`
+    의 `dominates` 는 순열 p 를 **축을 가로지르는 유일한 자**로 쓰는데, 계측 축의 p
+    만 0 쪽으로 압축되면 metro 가 구조적으로 다른 축을 이긴다 - 그 순위 규칙이
+    막으려던 현상이 통계 쪽에서 되살아난다. 단 p 는 **자기 바닥과 함께** 읽어야
+    하고, 비교는 두 후보의 공통 해상도에서 이뤄진다.
+
+    대가는 검정력이다. 참조 회차가 줄어 `p_min_possible` 이 올라간다(위 실측에서
+    300회 -> 평균 68회). 그래서 **바닥값을 후보마다 따로 싣는다** - 스칼라 하나로는
+    후보마다 다른 바닥을 말할 수 없다. 참조 회차가 0이면 판단 근거가 없다는 뜻이라
+    p 도 바닥도 1.0 이다("비교할 것이 없었다" 를 작은 p 로 내보내면 안 된다).
+
+    전수 계측이나 고정 슬롯처럼 **nt 가 안 움직이는 조건에서는 옛 값과 완전히 같다.**
+
+    **여기서 맞추는 "표본 크기" 는 타깃 쪽(nt) 하나뿐이다.** legend 축은 nt+nc 가
+    라벨 불변이라 결과가 같지만 metro 는 아니다 - 관측이 (nt=2, nc=1) 인 후보의 참조
+    회차에 (nc=4) 짜리가 섞인다. 그런데도 **nc·strata 까지 넓히지 않는다**: 넓혀서
+    재보면 검정력만 깎이고 보정은 안 된다(p<=0.05 가 2.7% -> 1.4% 로 더 보수적이 될
+    뿐 p<=0.10·p<=0.50 은 9.6%·46.6% 로 동일, 참조 회차 중앙값은 255 -> 131).
+    다음 사람이 "조건화가 절반뿐인데?" 로 되돌아오는 자리라 여기 적어 둔다.
+    """
+    n_total = _n_permutations_total(strata_masks, seen)
+    exhaustive = n_total <= PERM_EXHAUSTIVE_MAX
+    n_used = (n_total - 1) if exhaustive else n_iter
+    if n_used <= 0:
+        return None                    # 섞을 수 있는 다른 배치가 없다
+
+    rng = random.Random(seed)
+    exceed = {k: 0 for k in observed}
+    reference = {k: 0 for k in observed}
+    null_counts = {t: 0 for t in FDR_THRESHOLDS}
+    null_max: list[float] = []
+
+    for labels in _iter_label_sets(strata_masks, n_total, n_iter, rng, seen):
+        null_scores, null_sizes = score_fn(labels)
+        for key, obs in observed.items():
+            # 표본 크기가 다른 회차는 그 후보의 귀무 표본이 아니다. 관측을 못 넘은
+            # 것이 아니라 **같은 것을 재지 않았다.**
+            # `is None` 을 따로 보는 이유: `None != None` 은 거짓이라, 크기를 안 실어
+            # 주면 모든 회차가 참조집합에 들어가 **옛 편향 계산으로 소리 없이
+            # 되돌아간다.** 크기가 없으면 비교 불가로 센다.
+            null_size = null_sizes.get(key)
+            if null_size is None or null_size != observed_sizes.get(key):
+                continue
+            reference[key] += 1
+            if null_scores.get(key, float("-inf")) >= obs:
+                exceed[key] += 1
+        # FDR·family-wise 는 후보 하나가 아니라 **목록 전체**를 재는 값이라 회차를
+        # 안 거른다 - "이 회차에 임계를 넘은 후보가 몇이었나" 가 물음이기 때문이다.
+        vals = list(null_scores.values())
+        for t in FDR_THRESHOLDS:
+            null_counts[t] += sum(1 for v in vals if v >= t)
+        null_max.append(max(vals) if vals else 0.0)
+
+    return {
+        "p": {k: (n + 1) / (reference[k] + 1) for k, n in exceed.items()},
+        "p_min_possible": {k: 1 / (r + 1) for k, r in reference.items()},
+        # **"바닥에 닿았다" 는 비교가 아니라 셈이다.** p 와 바닥은 4자리로 반올림돼
+        # 나가므로 소비자가 두 숫자를 == 로 재보면 참조 회차가 13,333~19,999 이거나 40,000 이상일 때
+        # 1/13334 과 2/13334 이 둘 다 0.0001 이 되어, 귀무가 넘은 후보가 "이 표본의
+        # 최소값" 으로 나간다(뒤 구간은 둘 다 0.0 으로 반올림된다). 넘은 횟수를 아는 자리는 여기뿐이라 여기서 싣는다.
+        #
+        # **참조 회차 0은 제외한다.** 거기서도 넘은 횟수가 0 이지만 뜻이 정반대다 -
+        # "이 표본이 낼 수 있는 최강" 이 아니라 **비교할 귀무 표본이 하나도 없었다**
+        # 이고, p 도 바닥도 1.0 이다. 안 빼면 소비자가 분기 순서로만 둘을 가르게 된다.
+        "p_at_floor": {k: reference[k] > 0 and n == 0 for k, n in exceed.items()},
+        # family-wise 는 회차별 **최댓값**을 재므로 참조집합을 안 좁힌다 - 바닥도
+        # 회차 전부에서 나온다. 후보별 바닥의 최솟값과 **다른 값**이다(그쪽은 좁혀진
+        # 참조집합에서 나오므로 항상 이보다 크거나 같다). 두 도구가 같은 식을 각자
+        # 쓰면 한쪽만 고쳐졌을 때 조용히 갈리므로 여기서 한 번만 낸다.
+        "p_family_wise_min_possible": 1 / (n_used + 1),
+        "n_reference": reference,
+        "n_permutations_total": n_total,
+        "n_used": n_used,
+        "null_counts": null_counts,
+        "null_max": null_max,
+    }
+
+
+def _permutation_stats(strata_masks, passed, answer, seen, universal,
+                       observed: dict[tuple, float],
+                       observed_sizes: dict[tuple, int], n_iter: int, seed: int):
+    """EQP_CH·PPID·step_passage 축의 귀무 분포. 집계를 `_null_distribution` 에 넘긴다.
+
+    **귀무가 실제와 같은 함수(`_aggregate` + `_score_map`)를 탄다.** 귀무를 다른
+    코드로 세면 분모 규칙·절단·stratum 스킵이 갈려 실제와 다른 것을 재게 된다.
+    """
+    def _scores(labels):
+        null_agg, _ = _aggregate(labels, passed, answer, seen, universal)
+        return _score_map(null_agg), _size_map(null_agg)
+
+    return _null_distribution(strata_masks, seen, observed, observed_sizes,
+                              n_iter, seed, _scores)
+
+
+def _fdr_table(scores: dict, null_counts: dict, n_used: int) -> list[dict]:
+    """임계값별로 "이 목록에 가짜가 몇 개 섞여 있나" 를 센다.
+
+    공식도 가정도 없다. 실제에서 임계를 넘은 후보 수와, 라벨을 섞었을 때 같은
+    임계를 넘은 후보 수의 평균을 나란히 놓는다. 출력이 "5개 중 0.6개쯤이 가짜"
+    라서 엔지니어가 p 값 해석 없이 바로 쓴다 (설계 §3).
+
+    후보가 하나도 없는 임계는 싣지 않는다 - 읽을 것이 없다.
+
+    회차 수(`n_used`)를 행마다 싣는 이유는 소표본에서 `n_null_mean` 이
+    양자화되기 때문이다. 19회를 돌렸으면 평균이 0/19, 1/19 ... 값만 가지므로,
+    회차 수 없이는 작은 평균이 "거의 안 나온다" 인지 "이 표본의 바닥" 인지
+    구분되지 않는다 (후보별 p 에 p_min_possible 을 붙이는 것과 같은 이유).
+    """
+    vals = list(scores.values())
+    table = []
+    for t in FDR_THRESHOLDS:
+        n_obs = sum(1 for v in vals if v >= t)
+        if n_obs == 0:
+            continue
+        n_null = null_counts.get(t, 0) / n_used
+        table.append({
+            "threshold": t,
+            "n_observed": n_obs,
+            "n_null_mean": round(n_null, 3),
+            "fdr": round(min(1.0, n_null / n_obs), 3),
+            "n_used": n_used,
+        })
+    return table
+
+
+def _family_wise_p(scores: dict, null_max: list[float], n_used: int) -> float | None:
+    """1등이 우연일 확률. 회차별 최댓값 분포에 관측 1등을 대본다.
+
+    재료(null_max)를 순열 루프에서 이미 모았으므로 계산을 다시 하지 않는다.
+    후보별 p 는 "이 후보 하나" 를, 이 값은 "전체를 통틀어 최고" 를 말한다.
+    """
+    if not scores or not null_max:
+        return None
+    best = max(scores.values())
+    exceed = sum(1 for v in null_max if v >= best)
+    return round((exceed + 1) / (n_used + 1), 4)
+
+
+def _names(mask: int, bits: dict[str, int]) -> list[str]:
+    """비트마스크를 wafer id 목록으로 되돌린다 (보고용)."""
+    return sorted(w for w, b in bits.items() if mask & b)
+
+
 def find_commonality(target_wafers: list[str], control_wafers: list[str],
                      legend: list[dict] | None = None,
-                     top_k: int | None = None) -> dict:
+                     top_k: int | None = None,
+                     n_permutations: int | None = None) -> dict:
     """타깃 그룹이 공유하는데 대조군은 거치지 않은 (스텝, 설비/챔버) 후보를 찾는다.
  
     반환 status:
       - "insufficient_group": 타깃이 너무 적어 commonality 가 정의상 무의미
-      - "no_paired_stratum" : 타깃과 대조군이 같은 root_lot 에서 짝지어지지 않음
+      - "no_paired_stratum" : 비교할 짝이 없다. **경로가 둘이고 조치가 다르다** —
+                              (1) 대조군이 타깃과 다른 root_lot 에만 있다(대조군
+                              선정을 다시 한다) (2) step_history 가 있는 짝이 없다
+                              (적재·추출 범위를 뒤진다). **어느 경로인지 말하는 것은
+                              note 다.** meta.missing_history 는 두 경로 다 세어서
+                              내되 분모가 다르다 — (1) 은 요청 wafer 전체, (2) 는
+                              짝지어진 stratum 안이다. (2) 는 한쪽이 통째로 결측일
+                              때만 도달하므로 목록이 비지 않는다. 그래서 빈 목록이면
+                              (1) 이지만, 비어 있지 않은 것으로는 못 가른다.
       - "no_signal"         : 계산은 됐으나 분리되는 후보가 없음
                               → 원인 없음이 아니라 **lot 내부 대조로는 안 보임**.
                                 원인이 root_lot 전체에 걸리면 타깃·대조군이 같은 챔버를
@@ -157,6 +764,7 @@ def find_commonality(target_wafers: list[str], control_wafers: list[str],
     """
     legend = EQP_CH_LEGEND if legend is None else legend
     top_k = TOP_K if top_k is None else top_k
+    n_permutations = N_PERMUTATIONS if n_permutations is None else n_permutations
     targets = sorted(set(target_wafers or []))
     controls = sorted(set(control_wafers or []) - set(targets))
  
@@ -164,7 +772,7 @@ def find_commonality(target_wafers: list[str], control_wafers: list[str],
         return {
             "status": "insufficient_group",
             "n_target": len(targets), "n_control": len(controls),
-            "candidates": [],
+            "candidates": [], "fdr_table": [], "p_family_wise": None, "p_family_wise_min_possible": None,
             "note": (f"타깃 {len(targets)}장 < 최소 {MIN_TARGET}장. "
                      f"단일 wafer 는 정의상 모든 경로가 '공통'이라 분석 불가 - "
                      f"EDS 유사 wafer 로 타깃을 확장해야 한다."),
@@ -172,8 +780,7 @@ def find_commonality(target_wafers: list[str], control_wafers: list[str],
  
     with _conn() as conn:
         meta = _wafer_meta(conn, targets + controls)
-        t_rows = _history(conn, targets, legend)
-        c_rows = _history(conn, controls, legend)
+        rows = _history(conn, targets + controls, legend)
  
     # ---- root_lot 별 층화 (대조군이 타깃과 같은 route/시기에서 나오도록) ----
     strata: dict[str, dict] = {}
@@ -191,62 +798,87 @@ def find_commonality(target_wafers: list[str], control_wafers: list[str],
             "status": "no_paired_stratum",
             "n_target": len(targets), "n_control": len(controls),
             "candidates": [],
+            # 아래 "이력 결측" 경로와 status 를 공유하므로 **가르는 값을 양쪽에 다
+            # 싣는다.** 한쪽에만 있으면 "키가 없다" 와 "결측이 없다" 가 같아 보이고,
+            # status 서술이 가리키는 meta.missing_history 를 읽으면 KeyError 다.
+            #
+            # **세어서 낸다.** 상수 [] 로 두면 "확인했더니 없다" 와 "확인한 적이
+            # 없다" 가 같은 값이 되어, 결측이 있는 그룹이 "이력은 멀쩡하다" 로
+            # 보고된다. 분모는 아래 경로와 다르다 - 여기는 짝지어진 stratum 이
+            # 없으므로 요청받은 wafer 전체에서 센다.
+            "meta": {"missing_history": sorted(set(targets + controls)
+                                               - {r["wafer_id"] for r in rows})},
+            "fdr_table": [], "p_family_wise": None, "p_family_wise_min_possible": None,
             "note": ("타깃과 같은 root_lot 에 속한 대조군 wafer 가 없다. "
                      "route/시간 교락 없이 비교할 짝이 없어 계산을 중단했다."),
         }
  
-    # ---- stratum 별 2x2 집계 후 카운트 합산 ----
-    agg: dict[tuple, dict] = {}
-    colmap_all: dict[tuple, dict] = {}
-    strata_report, missing = [], []
-    t_seen_all, c_seen_all = set(), set()
+    # ---- wafer 를 비트로 색인 (순열이 이 색인을 재사용한다) ----
+    wafers_all = targets + controls
+    bits = {w: 1 << i for i, w in enumerate(wafers_all)}
+    passed, answer, seen_bits, colmap_all = _build_index(rows, bits, legend)
 
+    # denominator: all 인 레벨은 모든 wafer 가 답할 수 있다 (step_passage).
+    universal = {lvl["level"] for lvl in legend if lvl.get("denominator") == "all"}
+
+    strata_masks = []
     for rl, s in sorted(paired.items(), key=lambda kv: (kv[0] is None, kv[0])):
-        t_passed, t_seen, t_colmap = _count_stratum(t_rows, s["target"], legend)
-        c_passed, c_seen, c_colmap = _count_stratum(c_rows, s["control"], legend)
-        colmap_all.update(t_colmap)
-        colmap_all.update(c_colmap)
-        t_seen_all |= t_seen
-        c_seen_all |= c_seen
-        missing += sorted((s["target"] | s["control"]) - t_seen - c_seen)
- 
-        # 분모: 이력이 실제로 있는 wafer 만 (결측을 '미통과'로 오해하지 않게)
-        nt, nc = len(t_seen), len(c_seen)
-        if nt == 0 or nc == 0:
-            continue
-        strata_report.append({"root_lot_id": rl, "n_target": nt, "n_control": nc})
- 
-        for key in set(t_passed) | set(c_passed):
-            e = agg.setdefault(key, {"a": 0, "b": 0, "c": 0, "d": 0, "strata": 0})
-            a = len(t_passed.get(key, ()))
-            c_ = len(c_passed.get(key, ()))
-            e["a"] += a
-            e["b"] += nt - a
-            e["c"] += c_
-            e["d"] += nc - c_
-            e["strata"] += 1
- 
+        t_mask = 0
+        for w in s["target"]:
+            t_mask |= bits[w]
+        c_mask = 0
+        for w in s["control"]:
+            c_mask |= bits[w]
+        strata_masks.append((rl, t_mask, c_mask))
+
+    agg, strata_report = _aggregate(strata_masks, passed, answer, seen_bits, universal,
+                                    collect_bits=True)   # 관측만 — 귀무는 목록을 안 쓴다
+
+    # 이력이 아예 없는 wafer 는 신호가 아니라 보고 대상이다. stratum 이 스킵돼도
+    # 집계와 무관하게 세야 하므로 _aggregate 밖에 둔다.
+    t_seen_all_bits = c_seen_all_bits = missing_bits = 0
+    for _rl, t_mask, c_mask in strata_masks:
+        t_seen_all_bits |= t_mask & seen_bits
+        c_seen_all_bits |= c_mask & seen_bits
+        missing_bits |= (t_mask | c_mask) & ~seen_bits
+    t_seen_all = set(_names(t_seen_all_bits, bits))
+    c_seen_all = set(_names(c_seen_all_bits, bits))
+    missing = _names(missing_bits, bits)
+
     if not strata_report:
         return {
             "status": "no_paired_stratum",
             "n_target": len(targets), "n_control": len(controls),
-            "candidates": [], "missing_history": sorted(set(missing)),
+            "candidates": [],
+            # **정상 경로와 같은 자리에 둔다.** 여기서만 최상위에 있으면 소비자는
+            # 경로마다 다른 곳을 봐야 하고, 한쪽을 안 보면 "누가 결측인가" 를 못 댄다.
+            # 이 목록은 **짝지어진 stratum 안**에서 센 것이라 위 경로(요청 wafer
+            # 전체에서 센다)와 분모가 다르다. 여기는 한쪽이 통째로 결측일 때만
+            # 도달하므로 목록이 비지 않는다 - 경로 이름은 note 가 말한다.
+            "meta": {"missing_history": sorted(set(missing))},
+            "fdr_table": [], "p_family_wise": None, "p_family_wise_min_possible": None,
             "note": "step_history 가 있는 타깃/대조군 짝이 없다 (이력 결측 확인 필요).",
         }
  
     # ---- score 계산 + 절단 ----
     all_cols = _legend_columns(legend)
+    scores = _score_map(agg)
+
+    # ---- 순열검정 (라벨을 섞어 "탐색만으로 얼마나 좋아 보이는가" 를 실측) ----
+    perm = None
+    if n_permutations and scores:
+        perm = _permutation_stats(strata_masks, passed, answer, seen_bits,
+                                  universal, scores, _size_map(agg),
+                                  n_permutations, PERM_SEED)
+
     candidates = []
-    for (level, step, keystr), e in agg.items():
+    for key, score in scores.items():
+        level, step, keystr = key
+        e = agg[key]
         nt_tot, nc_tot = e["a"] + e["b"], e["c"] + e["d"]
-        if nt_tot == 0 or nc_tot == 0:
-            continue
         cov_t = e["a"] / nt_tot
         cov_c = e["c"] / nc_tot
-        score = cov_t - cov_c
-        if score <= MIN_SCORE:
-            continue
-        colvals = colmap_all.get((level, step, keystr), {})
+        colvals = colmap_all.get(key, {})
         cand = {
             "level": level,
             "step_seq": step,
@@ -257,10 +889,43 @@ def find_commonality(target_wafers: list[str], control_wafers: list[str],
             "coverage_target": round(cov_t, 3),
             "coverage_control": round(cov_c, 3),
             "score": round(score, 3),
+            # **설명용이지 판정용이 아니다** (D4). stratum 을 그냥 합산했으면 나왔을
+            # 값 — score(MH 가중)와 갈리면 심슨의 역설이 있다는 뜻이라 근거 줄이
+            # 이 값을 함께 보여 준다. 어떤 판정 코드도 이 키를 읽으면 안 된다
+            # (tests/test_engine.py::test_gate_verdict_never_reads_score_pooled).
+            "score_pooled": round(cov_t - cov_c, 3),
             "n_strata": e["strata"],
+            # 층별 원시 내역 — 항상 싣는다(D4). collect_bits 는 관측 경로에서만
+            # 켜므로(귀무는 절대 안 켠다) 이 키도 관측 후보에만 실린다.
+            "strata_detail": e.get("strata_detail", []),
+            # **이 후보가 가리키는 실제 wafer.** 카운트만 있으면 두 후보가 같은
+            # 3장을 말하는지 다른 3장을 말하는지 코드가 구분할 수 없다 - 축이
+            # 여럿일 때 한 사실의 두 이름(교락)과 독립 근거 둘이 같아 보인다.
+            # 길이는 정의상 target_pass·control_pass 와 같다(같은 누적에서 나온다).
+            "target_wafers": _names(e.get("a_bits", 0), bits),
+            "control_wafers": _names(e.get("c_bits", 0), bits),
         }
+        if perm:
+            cand["p_permutation"] = round(perm["p"][key], 4)
+            # **후보마다 다르다.** 참조집합이 표본 크기가 같은 회차로 좁혀지므로
+            # 바닥값도 후보마다 갈린다 - 스칼라 하나로는 말할 수 없다.
+            cand["p_min_possible"] = round(perm["p_min_possible"][key], 4)
+            # 반올림된 두 숫자를 소비자가 다시 비교하지 않도록 사실을 함께 싣는다.
+            cand["p_at_floor"] = perm["p_at_floor"][key]
+            cand["n_permutations_total"] = perm["n_permutations_total"]
+            # **바닥값을 설명하는 유일한 숫자다.** 바닥은 1/(참조 회차+1) 인데
+            # 참조 회차는 후보마다 다르므로, 이것 없이는 같은 결과 안에서
+            # n_permutations_total 70 인데 바닥이 0.0143 인 후보와 0.0278 인 후보가
+            # 나란히 나와 읽는 쪽이 모순으로 읽는다.
+            cand["n_reference"] = perm["n_reference"][key]
         for col in all_cols:               # legend 컬럼값을 이름별로 (미해당은 None)
             cand[col] = colvals.get(col)
+        # 같은 값이지만 **이 후보를 정의한 컬럼만** 담는다. 위의 평평한 쪽은 미해당
+        # 컬럼이 None 으로 들어 있어 "설비 후보에게 ch_id 가 있는가" 를 물을 수 없다.
+        # 그 유무가 설비 ETCH9 ⊃ 챔버 ETCH9_B(한 설명의 두 해상도)와 챔버 vs 레시피
+        # (다른 두 설명)를 가르는 유일한 재료다 - level 이름을 알아보는 것은 축이 늘면
+        # 깨지고, key 문자열 파싱은 hypotheses.yaml 이 금지한다.
+        cand["level_columns"] = {c: colvals[c] for c in all_cols if c in colvals}
         candidates.append(cand)
  
     candidates.sort(key=lambda r: (-r["score"], -r["coverage_target"],
@@ -279,25 +944,64 @@ def find_commonality(target_wafers: list[str], control_wafers: list[str],
             lt = meta.get(w, {}).get("lot_type") or "unknown"
             dist[lt] = dist.get(lt, 0) + 1
         return dist
- 
+
+    # 순열을 껐으면 p 를 설명하지 않는다 - 없는 필드를 읽으라고 하면 LLM 이 지어낸다.
+    note = ("후보는 결론이 아니다. 표본이 작아 우연한 분리가 흔하므로 "
+            "원시 카운트(target_pass/target_total)를 반드시 함께 판단하고, "
+            "지목된 스텝의 센서 비교로 검증해야 한다. target_total 은 그 질문에 "
+            "답할 수 있는 wafer 수이지 타깃 그룹 크기(n_target)가 아니다. "
+            # m5(2026-09-17 리뷰) — coverage_target/coverage_control 은 score 바로
+            # 옆에 실리는 숫자 두 개라 "그 차를 내면 score" 라고 재계산하기 쉽다
+            # (target_pass/target_total 로 다시 계산하지 말라는 지시보다도 더
+            # 직접적인 재료다). stratum 이 여럿이면 그 차는 score 와 다를 수 있다.
+            "coverage_target·coverage_control 은 stratum(root_lot)을 합산한 "
+            "표시용 값이다 - score 는 그 차가 아니라 stratum 별 위험차의 "
+            "Mantel-Haenszel 가중평균이다(n_strata 가 2 이상이면 값이 갈릴 수 "
+            "있다). coverage_target - coverage_control 을 다시 계산해 score 대신 "
+            "쓰지 마라. "
+            # rm9(2026-09-20 재리뷰) — strata_detail 의 stratum 별 d 는
+            # coverage_target/control 보다도 score 계산 재료에 더 가까워 보인다
+            # (이미 stratum 별로 나뉜 위험차라서). 그런데 stratum 마다 가중치
+            # w_i=nt_i·nc_i/(nt_i+nc_i) 가 달라 단순 평균은 MH 가중평균과 다르다.
+            # FR-9(2026-09-21 4차 리뷰) — 조건 없이 적으면 거짓이 되는 두 경우가
+            # 있다: stratum 이 1개면 평균할 것이 하나뿐이라 그대로 score 이고,
+            # stratum 마다 (nt_i, nc_i) 가 같으면 가중치가 전부 같아져 단순평균과
+            # MH 가중평균이 대수적으로 같다(D1, `_score_map` 독스트링과 같은 조건).
+            "stratum 이 2개 이상이고 그 모양(타깃·대조군 표본 수)이 서로 다를 "
+            "때는 strata_detail 의 stratum 별 d 를 단순 평균해도 score 가 나오지 "
+            "않는다 - stratum 마다 가중치가 달라 가중치 없는 평균은 score 와 "
+            "다르다.")
+    if perm:
+        note += (" p_permutation 은 라벨을 root_lot 안에서 섞었을 때 이만한 분리가 "
+                 "나오는 비율이다. p_min_possible 이 크면(예: 0.1 이상) 참조 회차가 "
+                 "적어 p 를 그 아래로 내릴 수 없다는 뜻이지 신호가 약하다는 뜻이 "
+                 "아니다. 참조 회차는 섞을 배치 자체가 적어도(작은 표본) 줄고 순열 "
+                 "회차 예산이 작아도 줄어든다 - n_reference 를 n_permutations_total "
+                 "과 비교하면 어느 쪽인지 갈린다.")
+
     result = {
         "status": "ok" if candidates else "no_signal",
         "n_target": len(t_seen_all), "n_control": len(c_seen_all),
         "strata": strata_report,
         "candidates": candidates,
         "truncated": truncated,
+        "fdr_table": _fdr_table(scores, perm["null_counts"], perm["n_used"]) if perm else [],
+        "p_family_wise": _family_wise_p(scores, perm["null_max"], perm["n_used"]) if perm else None,
+        # 1등의 p 도 후보별 p 와 같은 식이라 같은 바닥값에 걸린다. 근거 줄이
+        # 교정해 주는 후보별 p 와 달리 이건 최상위 값이라, 숫자를 함께 보내지
+        # 않으면 소표본의 바닥값이 "우연일 확률" 로 오독된다.
+        "p_family_wise_min_possible": (round(perm["p_family_wise_min_possible"], 4)
+                                       if perm else None),
         "meta": {
             # 시간 교락 진단용 — 두 그룹의 처리 시기가 어긋나면 '공통 설비'가 허상일 수 있다
-            "target_time_range": _ts(t_rows, t_seen_all),
-            "control_time_range": _ts(c_rows, c_seen_all),
+            "target_time_range": _ts(rows, t_seen_all),
+            "control_time_range": _ts(rows, c_seen_all),
             # 평가랏에는 설비 작업 후 검증랏이 섞인다 — 배제하지 않고 해석 재료로 넘긴다
             "target_lot_types": _lt(t_seen_all),
             "control_lot_types": _lt(c_seen_all),
             "missing_history": sorted(set(missing)),
         },
-        "note": ("후보는 결론이 아니다. 표본이 작아 우연한 분리가 흔하므로 "
-                 "원시 카운트(target_pass/target_total)를 반드시 함께 판단하고, "
-                 "지목된 스텝의 센서 비교로 검증해야 한다."),
+        "note": note,
     }
     if not candidates:
         result["note"] = (

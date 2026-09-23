@@ -15,6 +15,7 @@ from abc import ABC, abstractmethod
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 import ya_config
+from tools.agent_tools import TOOLS_BY_NAME
 
 
 class LLMClient(ABC):
@@ -34,26 +35,66 @@ class LLMClient(ABC):
         hypothesis: str | None,
         confidence: float | None,
         finalize_status: str | None = None,
-        claim: dict | None = None,
+        claims: list[dict] | None = None,
+        coverage: dict | None = None,
     ) -> str:
         """감사 기록을 근거로 원인 리포트 생성.
 
-        finalize_status 가 "inconclusive"(루프 한계 도달)면 결론을 확정 톤이 아니라
-        "미확정 + 유력 가설(후보)" 톤으로 서술해야 한다.
-        claim 이 있으면 게이트가 확인한 근거 수치다 - 그대로 인용하고 바꾸지 않는다.
+        finalize_status 가 "inconclusive"면 결론을 확정 톤이 아니라 "미확정 + 유력
+        가설(후보)" 톤으로 서술해야 한다. **왜 미확정인지는 판정 이름으로 짐작하지
+        말고 findings 의 마지막 finalize 판정문이 말하는 종료 경위를 그대로 옮겨라**
+        - findings 에는 finalize 기록이 여럿일 수 있다(앞선 회차의 반려 + 게이트리스
+        종료가 얹는 합성 판정문이 정상 조합이다), 그러니 **마지막** 것을 봐야 한다.
+        게이트를 안 탄 종료(경로 B)는 실제로는 루프 한계가 아니라 도구 호출 없는
+        텍스트 응답 이탈일 수 있고, 그때 판정문 머리말이 그 사실을 이미 담고 있다.
+        findings 항목의 `superseded: True` 는 같은 축을 다시 돌려 **대체된** 실행이라는
+        뜻이다 - 그 항목의 후보는 판별선을 넘었더라도 근거가 아니므로 인용하면 안 된다.
+        구현이 findings 를 LLM 에 넘긴다면 이 키를 함께 넘기고 그 뜻도 지시해야 한다.
+        claims 는 게이트가 접고 줄 세운 근거 **목록**이다 - 수치를 그대로 인용하고
+        바꾸지 않는다. 일부 판정(weak_signal·thin_sample·inconclusive)에서는
+        `passes: false` 인 항목이 섞여 온다 - 확정 근거로 세지 말고 '아직 갈리지
+        않은 후보' 로 적어라. 그 항목은 **두 종류이고 구조 플래그 `thin_sample` 이
+        가른다**: true 면 타깃 표본이 판정 하한에 못 미친 후보(분리 점수는 판별선을
+        넘었을 수도 있다)이고, false 면 판별선을 못 넘은 잔차다. 조치가 다르므로
+        구분해 적어라 - 앞쪽은 타깃 표본을 채워 재확인하는 것이고 뒤쪽은 타깃/대조군을
+        넓히는 것이다. `reject_reason` 문장을 파싱해 종류를 추측하지 마라.
+        하나만 고르지 마라: 순위는 코드가 매긴
+        것이고, `picked_by_llm` 이 붙은 것은 서술의 축일 뿐 나머지가 덜 중요하다는
+        뜻이 아니다.
+        `confounded_with` 가 있는 항목은 **같은 wafer 를 다른 이름으로도 설명할 수
+        있다**는 뜻이니, 둘 중 하나로 단정하지 말고 구분이 안 된다는 사실을 적어라.
+        `rolled_up_as` 는 **같은 설명의 다른 해상도**(설비 ⊃ 챔버)라 경합하는 근거가
+        아니다 - 구분이 안 된다고 쓰면 당연한 소리가 되고 진짜 미해결과 섞인다.
+        항목의 `resolution` 이 방향(coarser/finer)이고 `of` 가 상대 이름이다.
+        대조군에 굵은 이름을 지났으면서 가는 이름은 아닌 wafer 가 없다는
+        사실(대조군 범위)로 적어라.
+        coverage 는 **어디까지 봤는가**다(ran/unrun/no_data). 전축 실행이 종료의
+        전제 조건에서 빠졌으므로 부분 커버리지로 끝나는 분석이 정상적으로 생긴다 -
+        안 돌린 축이 있으면 결론은 돌린 축에 한한 것이니 그 사실을 명시하고,
+        안 본 축까지 없다고 쓰지 마라.
         """
         ...
 
 
-# EQP_CH 로 안 갈릴 때 순서대로 써 보는 나머지 등록 가설 (이름, 그 tool 을 고른 이유).
-# **hypotheses.yaml 에 가설을 추가하면 여기도 추가해야 한다** — 게이트는 등록 가설을
-# 전부 돌린 뒤에만 no_signal 을 선언하므로, 빠뜨리면 데모가 루프 한계까지 가서
-# inconclusive 로 끝난다(사유가 틀린 보고가 된다).
+# EQP_CH 가 갈렸어도 **반드시 함께 보는** 축. 챔버와 레시피는 같은 스텝의 같은 wafer 를
+# 두 이름으로 부르는 일이 흔하다(더미 RECENT_LOT 에서 ETCH9_B 와 PPID_X 가 정확히 같은
+# 3장을 가리킨다). 챔버가 갈렸다고 여기서 멈추면 그 교락이 아예 관측되지 않아, 게이트가
+# 접을 것도 없고 리포트는 근거 하나만 든 채 확신에 찬 문장을 쓴다 — 다축 집계가 잡으려는
+# 상황 자체가 데모에서 한 번도 안 나타난다.
+_ALWAYS_WITH_CHAMBER = (
+    "hyp_ppid_commonality",
+    "챔버가 갈렸지만 레시피도 함께 본다 - 같은 wafer 를 두 이름으로 설명하는 "
+    "교락인지 확인해야 의뢰 대상을 정할 수 있다.")
+
+# 경로 축이 전부 조용할 때 순서대로 써 보는 나머지 등록 가설 (이름, 고른 이유).
+# **hypotheses.yaml 에 가설을 추가하면 여기(또는 위)에도 추가해야 한다** — 게이트가
+# 요구해서가 아니라(전축 실행은 no_signal 의 전제 조건이 아니다), 빠뜨리면 데모가
+# 그 축을 한 번도 안 보여 주기 때문이다.
 _FALLBACK_HYPOTHESES = [
-    ("hyp_ppid_commonality",
-     "EQP_CH 로는 두 그룹이 안 갈렸다. 2차 legend(PPID)로 대조한다."),
     ("hyp_step_passage_commonality",
-     "PPID 로도 안 갈렸다. 스텝 통과 여부(비정규 스텝 포함)로 대조한다."),
+     "설비·PPID 로도 안 갈렸다. 스텝 통과 여부(비정규 스텝 포함)로 대조한다."),
+    ("hyp_metro_commonality",
+     "경로 축으로는 안 갈렸다. 계측값 구간(두께·CD)으로 대조한다."),
 ]
 
 
@@ -63,8 +104,9 @@ class ScriptedMockLLMClient(LLMClient):
     finalize(claim_id="", confidence=0.6, 게이트가 반려) → hyp_eqp_ch_commonality(1단: 어느 챔버)
     → (EQP_CH 에 통과 후보가 없으면 hyp_ppid_commonality 로 폴백, 2차 legend)
     → compare_sensor_distribution(2단: 왜) → finalize(claim_id=<통과 후보>, confidence=0.9, 승인)
-    순서로 진행하며, 각 단계 인자는 seed 메시지의 GROUPS_JSON 과 직전 ToolMessage(json) 를
-    파싱해 이어받는다. 등록 가설(EQP_CH → `_FALLBACK_HYPOTHESES` 순)을 다 돌렸는데도
+    순서로 진행하며, 각 단계 인자는 직전 ToolMessage(json) 를 파싱해 이어받는다
+    (대조 분모는 인자가 아니다 - `tools_node` 가 state 에서 주입한다. GROUPS_JSON 은
+    가설 서술에만 쓴다). 등록 가설(EQP_CH → `_FALLBACK_HYPOTHESES` 순)을 다 돌렸는데도
     분리되는 후보가 없으면 claim_id 를 비운 채 confidence=0.2 로 물러선다
     (게이트가 no_signal 로 판정).
 
@@ -76,7 +118,10 @@ class ScriptedMockLLMClient(LLMClient):
 
     # -------------------------------------------------- analyze
     def analyze_step(self, messages: list) -> AIMessage:
-        target, control = self._groups(messages)
+        # 대조 분모(group_ids/control_ids)는 도구 인자로 넘기지 않는다 - LLM 스키마에
+        # 없고 `tools_node` 가 state 에서 주입한다. 여기서 넘기면 각본만 운영과 다른
+        # 모양이 되어, e2e 가 실제로는 못 일어나는 경로를 시험하게 된다.
+        target, _ = self._groups(messages)
         tool_msgs = [m for m in messages if isinstance(m, ToolMessage)]
         done = [m.name for m in tool_msgs]
 
@@ -91,19 +136,28 @@ class ScriptedMockLLMClient(LLMClient):
 
         if "hyp_eqp_ch_commonality" not in done:
             return self._call(
-                "hyp_eqp_ch_commonality", {"group_ids": target, "control_ids": control},
+                "hyp_eqp_ch_commonality", {},
                 "종료 제안이 반려됐다. 챔버 편중 가설로 두 그룹을 대조한다.")
 
         res = self._result(tool_msgs, "hyp_eqp_ch_commonality")
         passing = [c for c in res.get("candidates", []) if c["passes"]]
+
+        # 통과 여부와 무관하게 레시피 축을 함께 돌린다 (교락 확인 - 위 상수 참조).
+        ppid_name, ppid_why = _ALWAYS_WITH_CHAMBER
+        if ppid_name not in done:
+            return self._call(ppid_name, {}, ppid_why)
+        passing += [c for c in self._result(tool_msgs, ppid_name).get("candidates", [])
+                    if c["passes"]]
+
         for name, why in _FALLBACK_HYPOTHESES:
             # EQP_CH 로 안 갈렸다. 남은 등록 가설을 순서대로 써 본다 - 첫 no_signal 로
-            # 물러서면 안 써 본 가설을 남긴 채 포기하는 셈이고, 게이트도 no_signal 을
-            # 선언하지 않는다(등록 가설을 전부 돌린 뒤에만 판정한다).
+            # 물러서면 안 써 본 가설을 남긴 채 포기하는 셈이다. 게이트는 이제 부분
+            # 커버리지로도 no_signal 을 받아 주지만, 데모는 모든 축을 보여 주는 쪽을
+            # 고른다(커버리지 줄에 "안 돌린 축" 만 잔뜩 찍히면 무대가 안 보인다).
             if passing:
                 break
             if name not in done:
-                return self._call(name, {"group_ids": target, "control_ids": control}, why)
+                return self._call(name, {}, why)
             res = self._result(tool_msgs, name)
             passing = [c for c in res.get("candidates", []) if c["passes"]]
 
@@ -118,31 +172,71 @@ class ScriptedMockLLMClient(LLMClient):
                                "원인이 root_lot 전체에 걸렸을 수 있어 lot 밖 대조군이 필요하다",
                  "confidence": 0.2},
                 "등록 가설을 다 돌렸으나 분리되는 후보가 없다. 확정할 근거가 없으므로 물러선다.")
-        top = passing[0]
+        # **지목은 게이트와 같은 순위 함수로 고른다.** 도구는 후보를 점수순으로
+        # 돌려주는데 게이트는 순열 p 로 줄을 세운다 - 둘이 어긋나면 반려가 오고,
+        # 이 스크립트에는 그 반려에 반응할 분기가 없어 같은 finalize 를 루프 한계까지
+        # 되풀이한다(확정될 분석이 inconclusive 로 끝난다). 순위를 여기서 다시
+        # 구현하지 않고 게이트가 쓰는 것을 그대로 부르면 어긋날 자리가 없어진다.
+        top = self._top_ranked(tool_msgs)
+        if top is None:                      # 방어: 위에서 passing 을 확인했으므로 정상 경로는 아니다
+            return self._call(
+                "finalize",
+                {"claim_id": "", "hypothesis": "통과 후보를 순위로 정렬하지 못했다",
+                 "confidence": 0.2},
+                "후보는 있으나 순위를 매길 수 없다. 지목 없이 물러선다.")
+
+        if top.level == "step_passage":
+            # 이 축은 키가 스텝 자체다 - "무엇을 썼는가" 가 아니라 "거쳤는가" 가 결론이다
+            hyp = (f"불량군만 {top.step_seq} 스텝을 거쳤다(분리 점수 {top.score}, "
+                   f"불량군 {top.target_pass}장 전용)")
+        else:
+            hyp = (f"{top.step_seq} 공정 {top.key} 편중(분리 점수 {top.score}, "
+                   f"불량군 {top.target_pass}장 전용)이 원인")
+
+        if "compare_sensor_distribution" not in TOOLS_BY_NAME:
+            # 2단이 **아예 없는 구성**(SENSOR_MODE=off)이다. 아래 "근거를 못 냈다" 와
+            # 구분해야 한다 - 거기서는 기다리면 언젠가 근거가 나오지만 여기서는 안
+            # 나온다. 2단을 기다리며 물러서면 이 구성에서는 무엇도 확정되지 못하고
+            # 매번 루프 소진으로 끝난다. 1단 근거는 게이트의 승인 조건(claim_id·최고
+            # 점수)을 이미 충족하므로 그것으로 판단하되, 무엇이 없는지 문장에 남긴다.
+            return self._call(
+                "finalize",
+                {"claim_id": top.claim_id,
+                 "hypothesis": hyp + " - 2단 센서가 연결되지 않은 구성이라 1단 경로 근거만으로 판단",
+                 "confidence": 0.85},
+                "센서 도구가 없는 구성이다. 1단 경로 근거로 판단한다.")
 
         if "compare_sensor_distribution" not in done:
             return self._call(
                 "compare_sensor_distribution",
-                {"step_seq": top["step_seq"],
-                 "group_ids": target, "control_ids": control},
+                {"step_seq": top.step_seq},
                 "챔버까지 좁혔다. 그 스텝의 센서 분포로 '왜' 를 본다.")
 
         sensor = self._result(tool_msgs, "compare_sensor_distribution")
-        val = top["value"][-1]
-        if top["level"] == "step_passage":
-            # 이 축은 키가 스텝 자체다 - "무엇을 썼는가" 가 아니라 "거쳤는가" 가 결론이다
-            hyp = (f"불량군만 {top['step_seq']} 스텝을 거쳤다(분리 점수 {top.get('score')}, "
-                   f"불량군 {top['target_pass']}장 전용)")
-        else:
-            hyp = (f"{top['value'][0]} 공정 {val} 편중(분리 점수 {top.get('score')}, "
-                   f"불량군 {top['target_pass']}장 전용)이 원인")
+        if sensor.get("status") == "no_signal":
+            # **봤는데 안 갈렸다.** 아래 "못 봤다" 와 구분해야 한다 - 여기서 0.5 로
+            # 물러서면 게이트가 반드시 반려하는데(< CONFIDENCE_THRESHOLD) 이 스크립트에는
+            # 더 시도할 것이 없어 같은 finalize 를 루프 한계까지 되풀이한다(실측: M2423
+            # 에서 loop 5·6·7 이 동일한 호출이었고 확정될 분석이 inconclusive 로 끝났다).
+            #
+            # 센서가 안 갈렸다는 것은 **관측된 사실**이지 근거의 부재가 아니다. 1단은
+            # 이미 게이트의 승인 조건(claim_id 조회 + 순위 1등)을 넘었으므로 그것으로
+            # 판단하되, 2단이 무엇을 말했는지를 결론 문장에 그대로 남긴다 - "센서를 안
+            # 보고 확정" 하는 조용한 오확증과는 반대다.
+            return self._call(
+                "finalize",
+                {"claim_id": top.claim_id,
+                 "hypothesis": hyp + " - 다만 2단 센서 분포는 두 그룹을 가르지 못했다",
+                 "confidence": 0.85},
+                "1단은 갈렸고 2단은 갈리지 않았다. 1단 근거로 판단하되 그 사실을 결론에 남긴다.")
+
         if sensor.get("status") != "ok":
             # 2단이 갈리지 않았거나(no_signal) 아예 못 돌았다(fetch_failed/insufficient_sample).
             # 1단 근거는 그대로 남기되 확신도를 낮춰 물러선다 — 센서 결과를 안 보고 0.9 를
             # 내면 없는 근거를 있다고 말하는 꼴이라, 이 Stage 가 없앤 조용한 오확증이 된다.
             return self._call(
                 "finalize",
-                {"claim_id": top["claim_id"],
+                {"claim_id": top.claim_id,
                  "hypothesis": hyp + " - 다만 2단 센서 근거는 확보하지 못했다",
                  "confidence": 0.5},
                 f"1단은 갈렸지만 2단이 근거를 못 냈다(status={sensor.get('status')}). "
@@ -151,13 +245,13 @@ class ScriptedMockLLMClient(LLMClient):
         hyp += f" - {c['sensor_name']} 효과크기 {c['effect_size']}"
         return self._call(
             "finalize",
-            {"claim_id": top["claim_id"], "hypothesis": hyp, "confidence": 0.9},
+            {"claim_id": top.claim_id, "hypothesis": hyp, "confidence": 0.9},
             "챔버 편중에 센서 근거까지 붙었다. 근거 충분.")
 
     # -------------------------------------------------- report
     def generate_report(self, target_wafers, target_source, target_group, status_summary,
                         findings, hypothesis, confidence, finalize_status=None,
-                        claim=None) -> str:
+                        claims=None, coverage=None) -> str:
         lines = [
             f"[분석 대상 입력] ({target_source}) {', '.join(target_wafers) or '없음'}",
             f"[불량 그룹] {', '.join(target_group) or '없음'}",
@@ -171,12 +265,97 @@ class ScriptedMockLLMClient(LLMClient):
                 lines.append(f"     - 판단: {f['thought']}")
             if f["tool"] == "finalize":
                 lines.append(f"     - 게이트: {f['result']}")
+        # 두 갈래(inconclusive·weak_signal)가 같은 술어를 쓴다 - 앞에서 한 번만 센다.
+        has_residual_lines = any(not c.get("passes", True) and not c.get("thin_sample")
+                                 for c in (claims or []))
+        suppress_conf = False
         if finalize_status == "inconclusive":
-            conclusion = f"미확정 (루프 한계 도달) - 유력 가설: {hypothesis or '없음'}"
+            # **게이트가 버린 지목을 유력 가설로 찍지 않는다.** 목은 프롬프트를 따르는
+            # LLM 의 대역이므로 같은 규칙을 타야 한다 - 안 그러면 판정문은 "무시했다"
+            # 인데 결론은 "유력 가설: 그것" 인 리포트가 목에서만 나와, 운영에서 잡아야
+            # 할 모순을 목이 정상으로 보여 준다. LLM 이 보는 신호는 판정문이다
+            # (`_finalize_gate` 가 붙이는 괄호) - state 는 LLM 에게 안 간다.
+            dropped = any(f["tool"] == "finalize"
+                          and "무시하고 증거 상태로 판정했다" in str(f.get("result", ""))
+                          for f in findings)
+            # **이름이 아니라 판정문에서 사유를 그대로 가져온다.** "inconclusive 는
+            # 루프 한계 도달" 로 고정하면 게이트리스 종료(실제로는 텍스트 응답
+            # 이탈일 수 있다)에서도 없는 트리거를 찍는다(재리뷰 Important 2, 실측
+            # 재현) - `_gateless_finalize` 가 판정문 머리말 자체를 진짜 트리거로
+            # 바꿔치기해 두므로 그것을 그대로 옮긴다. **판정문이 없으면(목을 직접
+            # 부르는 시험처럼) 트리거를 지어내지 않는다** - "미확정" 만 남긴다.
+            gate_lines = [f for f in findings if f["tool"] == "finalize"]
+            reason = None
+            if gate_lines:
+                m = re.search(r"미확정 \(([^)]+)\)", str(gate_lines[-1].get("result", "")))
+                reason = m.group(1) if m else None
+            head = f"미확정 ({reason})" if reason else "미확정"
+            # **버린 지목만 배제한다.** "쓸 수 있는 후보가 없다" 로 넓히면 거짓이 된다 -
+            # 통과 근거가 실린 채로 이 갈래에 오는 상태가 있고(지목만 센서였던 경우)
+            # 그때 [근거] 줄에는 완전 분리 후보가 찍힌다. 판정문과 결론이 서로를
+            # 부정하는 것이 이 규칙이 없애려던 바로 그 모양이다(3차 리뷰 I-1).
+            # 줄 이름도 실제 출력에 맞춘다 - `[판정]` 은 리포트 생성 실패 폴백에만 있다.
+            conclusion = (f"{head} - 마지막 지목은 게이트가 버려 유력 "
+                          f"가설이 아니다(사유는 위 [분석 과정] 의 게이트 줄)."
+                          if dropped else
+                          f"{head} - 유력 가설: {hypothesis or '없음'}.")
+            # 버린 지목에 딸린 자기 신고 확신도는 안 찍는다 - 근거가 아니고, 코드가
+            # 결론을 적는 자리(`report_node` 폴백)가 같은 이유로 이미 뺐다.
+            suppress_conf = dropped
+            # 두 갈래 다 잔차가 실려 있다는 보장이 없다 - **상한 절단**이 잔차를 다
+            # 밀어낼 수 있기 때문이다(`_record_evidence` 가 통과 근거를 먼저 예약한다).
+            # 이것이 공통 이유이고, inconclusive 에는 하나가 더 있다 - 통과 후보가
+            # 이미 있으면 `_evidence_groups` 하한이 잔차를 아예 안 더한다.
+            # 무조건 이 문장을 붙이면 실제로 [잔차] 줄이 없는 리포트에도 "[잔차]" 라는
+            # 글자가 찍혀, "잔차를 안 섞는다" 는 하한을 문장으로 어긴다.
+            # **지금은 목을 직접 부를 때만 도달한다.** 게이트 미경유 종료에서 잔차가
+            # 있으면 반드시 weak_signal 로 나가고(2026-09-12 게이트리스 종료 판정),
+            # 게이트 `(4)` 의 잔차 갈래는 현재 도달 불가로 표시돼 있다 - 같은 이유의
+            # "보험" 이다. `tests/test_mock_llm.py` 가 이 줄을 직접 잠근다.
+            if has_residual_lines:
+                conclusion += " 아래 [잔차] 줄은 판별선을 넘지 못한 후보다."
+        elif finalize_status == "weak_signal":
+            conclusion = ("약한 신호 - 후보는 나왔으나 판별선을 넘지 못했다. "
+                          "원인 없음이 아니라 이 표본으로는 확정할 만큼 갈리지 않았다는 "
+                          "뜻이며, 타깃/대조군을 넓히면 갈릴 수 있다.")
+            # 위의 공통 이유(상한 절단)로 조건부다 - 무조건 이 문장을 붙이면 없는
+            # 줄을 가리키는 거짓 문장이 나간다.
+            if has_residual_lines:
+                conclusion += " 아래 [잔차] 줄이 그 후보들이다."
+        elif finalize_status == "thin_sample":
+            conclusion = ("표본 미달 - 갈릴 가능성이 있는 후보는 있으나 타깃 표본 수가 "
+                          "판정 하한에 못 미쳐 원인으로 확정할 수 없다. 타깃 표본을 "
+                          "채워 재확인해야 한다.")
         elif finalize_status == "no_signal":
-            conclusion = ("신호 없음 - lot 내부 대조로는 타깃만 거친 설비/챔버/PPID 가 없다. "
+            # "설비/챔버/PPID 가 없다" 로 단정하지 않는다 - 전축 실행이 전제 조건이
+            # 아니게 되면서 부분 커버리지로 끝나는 분석이 정상이 됐다. 무엇을 봤고
+            # 무엇을 안 봤는지는 report_node 가 붙이는 [커버리지] 줄이 말한다.
+            conclusion = ("신호 없음 - 대조한 축에서는 타깃만 거친 항목이 없다. "
                           "원인 없음이 아니라 원인이 root_lot 전체에 걸렸을 수 있다는 뜻이며, "
                           "lot 밖 대조군이 필요하다.")
+        elif finalize_status == "no_separation":
+            # **최종 리뷰 I-1·I-3(a).** claims 는 게이트가 접은 근거 목록이라
+            # kind 로 통과한 2단 센서가 실렸는지 볼 수 있다 - 실렸는데 "가르는
+            # 항목이 없다" 를 축 전체로 말하면 거짓이다(센서는 갈랐다).
+            # coverage 의 no_data 도 같은 이유로 본다 - 계산 불가 축이 섞이면
+            # "다 대조했다" 가 거짓이다. 게이트 판정문(`graph/nodes.py`)과
+            # 같은 조건을 본다.
+            has_sensor = any(c.get("kind") == "sensor" for c in (claims or []))
+            sensor_note = (" 2단 센서는 판별선을 넘은 근거가 함께 실렸다 - "
+                           "원인 확정 근거는 아니다." if has_sensor else "")
+            no_data = (coverage or {}).get("no_data") or []
+            if no_data:
+                reason = "근거가 약한 것도 아니라"
+                scope_note = (f" 계산 불가 축({', '.join(no_data)})은 적재 범위와 "
+                             f"추출 조건을 확인해야 한다.")
+            else:
+                reason = "분석이 안 돌은 것도 근거가 약한 것도 아니라"
+                scope_note = ""
+            conclusion = (f"갈리는 항목 없음 - 계산된 가설 도구(hyp_*) 축에서는 "
+                          f"타깃과 대조군을 가르는 항목이 없다.{sensor_note} "
+                          f"{reason} lot 내부 대조로는 갈리지 않는다는 "
+                          f"뜻이며,{scope_note} lot 밖 대조군 또는 다른 관측축이 "
+                          f"필요하다.")
         elif finalize_status == "llm_call_failed":
             conclusion = ("분석 미수행 - LLM 분석 호출이 실패해 루프를 돌지 못했다. "
                           "원인을 못 찾은 것이 아니라 분석 자체가 안 돌았다는 뜻이며, "
@@ -186,6 +365,13 @@ class ScriptedMockLLMClient(LLMClient):
                           "대조군이 없거나 그 wafer 들의 설비 이력이 없어 계산이 성립하지 "
                           "않았다. 근거를 못 찾은 것이 아니라 볼 것이 없었다는 뜻이며, "
                           "적재 범위와 추출 조건을 확인해야 한다.")
+        elif finalize_status == "tool_failure":
+            # no_comparable_data 와 문구를 나눈다 - 저쪽은 "적재/추출 범위 확인",
+            # 이쪽은 "DB/서비스 상태 확인" 이다. 뭉개면 엔지니어가 멀쩡한 적재를 뒤진다.
+            conclusion = ("분석 미수행 - 가설 도구가 실행에 실패해 대조를 돌리지 못했다. "
+                          "볼 데이터가 없는 것이 아니라 조회가 실패한 것이며, "
+                          "DB/서비스 상태를 확인하고 재실행해야 한다 "
+                          "- 어느 축이 실패했는지는 [커버리지] 참조.")
         elif finalize_status == "no_anomaly":
             conclusion = "이상 없음 - 수율 임계 미만 lot 이 없다."
         elif finalize_status == "unknown_target":
@@ -202,7 +388,8 @@ class ScriptedMockLLMClient(LLMClient):
                           "root_lot 확장은 ETL(lot_type) 이후 활성화. 추후 분석 필요.")
         else:
             conclusion = hypothesis or "원인 미확정"
-        conf = f" (확신도 {confidence})" if confidence is not None else ""
+        conf = ("" if suppress_conf or confidence is None
+                else f" (확신도 {confidence})")
         lines += ["", f"[결론] {conclusion}{conf}"]
         # [근거] 줄은 여기서 붙이지 않는다 - report_node 가 코드로 붙인다(운영 클라이언트도
         # 동일하게 보장하려고 두 클라이언트 밖으로 뺐다). 여기서 또 붙이면 줄이 두 번 나온다.
@@ -218,6 +405,34 @@ class ScriptedMockLLMClient(LLMClient):
             raise ValueError("messages 에서 GROUPS_JSON 라인을 찾지 못했다")
         groups = json.loads(m.group(1))
         return groups["target"], groups["control"]
+
+    @staticmethod
+    def _top_ranked(tool_msgs):
+        """지금까지 본 도구 결과 전부에서 게이트 기준 1등 claim.
+
+        **게이트가 쓰는 함수를 그대로 부른다.** 여기서 순위를 다시 구현하면 규칙이
+        바뀔 때 한쪽만 고쳐져 조용히 어긋나고, 그 어긋남은 "반려 - 다시 제출 - 반려"
+        왕복으로만 드러난다(루프 한계까지 가서 inconclusive 로 끝난다).
+
+        지연 import 는 순환을 피하려는 것이 아니라(순환은 없다) 데모 전용 경로 때문에
+        운영 import 그래프를 넓히지 않으려는 것이다.
+        """
+        from graph import evidence
+
+        findings = []
+        for msg in tool_msgs:
+            try:
+                findings.append({"tool": msg.name, "result": json.loads(msg.content)})
+            except (TypeError, ValueError):
+                continue          # 도구 오류는 문자열로 온다 - 증거가 아니다
+        groups = evidence.build_bundle(findings).ranked_groups()
+        # **줄은 게이트가 세우되, 지목은 지목 가능한 것에서 고른다.** `ranked_groups()`
+        # 는 근거로 실을 것 전부(`passing()`)를 세우므로 센서가 1등일 수 있다 - 1단이
+        # 비통계 등급(참조 회차 0)이면 `dominates` 가 어느 쪽도 못 이겨 같은 층에 서고,
+        # 표시 순서는 점수순이라 효과크기가 큰 센서가 앞선다. 그것을 그대로 지목하면
+        # 게이트가 반려하는데 이 각본에는 반려에 반응할 분기가 없어, 위 docstring 이
+        # 경고한 왕복이 규칙이 갈라진 자리에서 그대로 되살아난다.
+        return next((g.lead for g in groups if g.lead.kind != "sensor"), None)
 
     @staticmethod
     def _result(tool_msgs, name):
@@ -281,24 +496,87 @@ class OpenAILLMClient(LLMClient):
 
     def generate_report(self, target_wafers, target_source, target_group, status_summary,
                         findings, hypothesis, confidence, finalize_status=None,
-                        claim=None) -> str:
+                        claims=None, coverage=None) -> str:
         sys = (
             "현장 반도체 엔지니어에게 한국어 높임말로 원인 분석 리포트를 쓴다. "
             "분석 과정(findings)의 수치는 절대 임의로 바꾸지 말고 그대로 인용하라. "
+            "단, findings 항목에 superseded: true 가 붙어 있으면 그 실행은 같은 축을 "
+            "다시 돌린 뒤 실행으로 대체된 것이다 - 그 항목의 후보는 판별선을 넘었더라도 "
+            "근거가 아니니 결론의 근거로 인용하지 마라. 대체된 실행에 통과 후보가 있는데 "
+            "판정이 '신호 없음' 인 것은 모순이 아니라 정상이며, 그 경위를 적을 수는 있다. "
             "구성: 분석 대상/현황 → 분석 과정 요약 → 결론(원인 가설과 근거). "
-            "판정이 inconclusive 면 결론을 확정하지 말고 '미확정(루프 한계 도달)'과 "
-            "유력 후보·추가 조사 필요 항목으로 서술하라. "
+            "아래에서 말하는 '판정문' 은 findings 에서 tool 이 finalize 인 항목의 "
+            "result 다 - 그런 항목이 여럿이면(앞선 회차의 반려 + 마지막 회차의 판정이 "
+            "정상 조합이다) **마지막** 것을 판정문으로 본다. "
+            "판정이 inconclusive 면 결론을 확정하지 말고 '미확정' 뒤에 판정문 머리의 "
+            "괄호 문구(종료 경위 - 예: 루프 한계 도달, 또는 도구 호출 없는 응답으로 "
+            "종료)를 그대로 옮겨 붙이고, 유력 후보·추가 조사 필요 항목으로 서술하라 - "
+            "판정 이름만 보고 '루프 한계 도달'을 지어내지 마라. 단 판정문 끝 괄호에 "
+            "버린 지목이 적혀 있으면 그 후보는 유력 후보에서 빼고, 무엇을 왜 버렸는지를 "
+            "적어라. "
+            "판정이 weak_signal 이면 '약한 신호'로 서술하라 - 가설 도구(hyp_*)에서 "
+            "판별선을 넘은 후보가 하나도 없는 상태다. 2단 센서 근거는 통과했을 수 "
+            "있으니 '후보가 아무것도 안 나왔다'고 쓰지는 마라. 어느 쪽이든 원인으로 "
+            "단정하지 말고, 무엇을 하면 갈리는지"
+            "(타깃/대조군 표본을 넓히기)를 후속 조치로 적어라. 확정 결론을 쓰지 마라. "
+            "판정이 weak_signal 인데 제출된 가설이 특정 후보를 원인으로 지목하고 "
+            "있어도 그 문장을 그대로 옮기지 마라 - 게이트는 그 후보를 원인으로 "
+            "확정하지 않았다. "
+            "판정이 thin_sample 이면 '표본 미달'로 서술하라 - 분리 점수는 충분하지만 "
+            "타깃 표본 수가 판정 하한에 못 미친 후보가 있다는 뜻이다. 후보를 원인으로 "
+            "확정하지 말고 타깃 표본을 채워 재확인하라는 후속 조치를 적어라. "
             "판정이 no_signal 이면 '신호 없음'으로 서술하라 - 원인 없음이 아니라 "
-            "lot 내부 대조로는 보이지 않는다는 뜻이며 lot 밖 대조군이 필요하다는 "
+            "대조한 축에서는 보이지 않는다는 뜻이며 lot 밖 대조군이 필요하다는 "
             "후속 조치를 명시하고, 확정 결론을 쓰지 마라. "
+            "판정이 weak_signal 이거나 no_signal 이거나 inconclusive 인데 커버리지에 안 돌린 축(unrun)이나 "
+            "도구 실패로 못 돈 축(failed)이 있으면 그 사실과 그 축 이름을 반드시 적어라 - "
+            "안 본 축까지 없다고 쓰면 사유가 틀린 보고다. 둘은 다르게 적어라: unrun 은 "
+            "'안 돌렸다', failed 는 '도구 실패로 못 돌렸다'. "
+            "판정이 confirmed 면 커버리지는 사실로만 참고하고, 확정된 "
+            "근거를 유보 톤으로 낮추지 마라. "
             "판정이 no_comparable_data 면 '분석 미수행 - 비교 가능한 데이터 없음'으로 "
             "서술하라 - 근거를 못 찾은 것이 아니라 대조에 쓸 짝이 없어 계산이 성립하지 "
             "않은 것이며, 적재 범위와 추출 조건 확인이 후속 조치다. 확정 결론을 쓰지 마라. "
+            "판정이 tool_failure 면 '분석 미수행 - 가설 도구 실행 실패'로 서술하라 - "
+            "볼 데이터가 없는 것(no_comparable_data)이 아니라 조회 자체가 실패한 것이니 "
+            "적재 범위가 아니라 DB/서비스 상태 확인과 재실행을 후속 조치로 적고, "
+            "확정 결론을 쓰지 마라. "
+            "판정문 끝 괄호에 '무시하고 증거 상태로 판정했다' 가 있으면 거기 적힌 "
+            "claim_id 는 게이트가 **버린** 지목이다 - 제출된 가설이 그 후보를 원인으로 "
+            "지목하고 있어도 그 문장을 그대로 옮기지 말고, '유력 후보' 로도 쓰지 마라. "
+            "게이트가 쓸 수 없다고 판정한 것을 유력하다고 적으면 같은 리포트가 스스로를 "
+            "부정한다. **버린 지목만** 배제하는 것이지 다른 근거까지 없다는 뜻이 아니다 - "
+            "[근거] 줄이 있으면 그것은 그대로 서술하라. 무엇을 왜 버렸는지도 그 괄호에 "
+            "있으니 그것을 근거로 다음에 할 일을 적어라. "
+            "판정이 no_separation 이면 '갈리는 항목 없음'으로 서술하라 - "
+            "분석 미수행이 아니다. 계산된 가설 도구(hyp_*) 축에서 타깃과 대조군을 "
+            "가르는 항목이 없었다는 관측이다. 2단 센서 근거는 통과했을 수 있으니 "
+            "그것까지 '가르는 항목이 없다'로 뭉개지 마라. coverage 에 no_data 축이 "
+            "있으면 결론을 계산된 축에 한정하고 그 축은 적재 범위와 추출 조건 확인을 "
+            "후속 조치로 적어라. 원인이 없다고 단정하지 말고 lot 밖 대조군이나 "
+            "다른 관측축이 필요하다고 적어라. 확정 결론을 쓰지 마라. "
+            "판정이 no_separation 인데 제출된 가설이 특정 후보를 원인으로 "
+            "지목하고 있어도 그 문장을 그대로 옮기지 마라 - 게이트는 정직한 "
+            "지목을 반려하지 않을 뿐 그 후보를 원인으로 확정하지 않았다. "
+            "판정이 inconclusive 에도 잔차가 실릴 수 있다 - 확정 근거가 아니라는 "
+            "뜻이지 근거가 한 줄도 없다는 뜻이 아니니, passes 가 false 인 항목은 "
+            "근거로 세지 말고 '아직 갈리지 않은 후보' 로 적어라. 단 thin_sample 이 "
+            "true 인 항목은 그 일반 표현 대신 '표본이 부족한 후보' 로 적어라. "
             "판정이 llm_call_failed 면 '분석 미수행 - LLM 분석 호출 실패'로 서술하라 - "
             "분석 루프가 아예 안 돌았으니 확정 결론을 쓰지 말고 재실행을 권하라. "
             "판정이 no_anomaly 면 '이상 없음'으로 서술하라. "
             "판정이 isolated/control_insufficient/unknown_target/eds_lookup_failed 이면 "
-            "'분석 미수행'과 그 사유를 명시하고 확정 결론을 쓰지 마라."
+            "'분석 미수행'과 그 사유를 명시하고 확정 결론을 쓰지 마라. "
+            "근거가 여러 건이면 **전부** 서술하라 - 하나로 줄이지 마라. 순위는 코드가 "
+            "매긴 것이며, 같은 wafer 를 두 이름으로 설명할 수 있는 항목(confounded_with)은 "
+            "'현재 증거로는 구분되지 않는다'고 밝히고 무엇을 더 봐야 갈리는지 적어라. "
+            "rolled_up_as 는 다르다 - **같은 설명을 다른 해상도로 부른 이름**(설비 PHOT7 은 "
+            "챔버 PHOT7_B 를 포함한다)이지 경합하는 다른 근거가 아니다. 항목의 resolution 이 "
+            "coarser 면 그 이름이 of 보다 굵은 쪽이고 finer 면 가는 쪽이니, 그 둘을 별개 "
+            "근거로 세지 말고 어느 쪽이 굵은지도 뒤집어 쓰지 마라. 둘 중 무엇인지 구분되지 "
+            "않는다고도 쓰지 마라 - 대신 대조군에 굵은 이름을 지났으면서 가는 이름은 아닌 "
+            "wafer 가 없다는 사실(대조군 범위의 한계)을 적고, 후속 조치는 다른 축을 더 보는 "
+            "것이 아니라 대조군 범위를 넓히는 것이다."
         )
         user = (
             f"분석 대상 입력 ({target_source}): {', '.join(target_wafers)}\n"
@@ -307,9 +585,70 @@ class OpenAILLMClient(LLMClient):
             f"결론 가설: {hypothesis or '미확정'} / 확신도: {confidence} / "
             f"판정: {finalize_status or '미상'}"
         )
-        if claim:
-            user += (f"\n게이트가 확인한 근거(수치를 그대로 인용하라): "
-                     f"{json.dumps(claim, ensure_ascii=False)}")
+        if coverage:
+            # 유보 지시는 **물러선 판정에만** 붙인다. claim_id 조회·순위 1등·순열 p 를
+            # 통과한 결론에까지 "돌린 축에 한한다" 를 달면 엔지니어가 근거를 저평가한다 -
+            # 커버리지 사실 자체는 report_node 가 [커버리지] 줄로 따로 싣는다.
+            # **failed 도 '못 본 축' 이다.** unrun 에만 매달면, 축이 unrun 에서 failed 로
+            # 옮겨진 순간 유보가 조용히 꺼진다 - 4축 중 3축이 장애로 못 돈 분석에서
+            # 전축 결론이 유보 없이 나간다.
+            hedge = ("" if finalize_status == "confirmed" else
+                     " unrun 이나 failed 가 비어 있지 않으면 결론은 돌린 축에 한한 "
+                     "것이다. 그 사실과 못 본 축 이름을 적고, 못 본 축까지 없다고 "
+                     "쓰지 마라.")
+            user += (f"\n커버리지(어디까지 봤는가): "
+                     f"{json.dumps(coverage, ensure_ascii=False)}.{hedge}"
+                     f" no_data 는 돌았지만 계산이 성립하지 않은 축이라 본 것으로 "
+                     f"세면 안 된다. failed 는 도구가 터져 아예 못 돈 축이다 - "
+                     f"'안 돌린 축' 이 아니라 '실패한 축' 으로 적어라.")
+        if claims:
+            # **commonality(step_history) 항목에만 참인 문장이다.** claims 는
+            # commonality·metro·sensor 세 종류를 한 리스트로 받는데, metro 는
+            # 이번 변경 범위 밖이라 여전히 crude pooling(score 가 stratum 합산)
+            # 이고 sensor 의 score 자리에는 효과크기가 온다 - 조건 없이 적으면
+            # 셋 중 둘에 거짓말이 된다(2026-09-17 리뷰 R-M-c). `extra.score_pooled`
+            # **값이 null 이 아닌지**로 가른다 - `graph/evidence.py::_strata_suffix`
+            # 와 같은 판별자다. ⚠️ **키 유무가 아니다**(RR-B1, 2026-09-20 재리뷰):
+            # `domain/engine.py::evaluate` 는 metro 후보에도 `score_pooled` 키를
+            # 무조건 달아 보낸다(값은 None) - `.get()` 이 기본값을 못 찾아 그대로
+            # 실리기 때문이다. 그래서 metro claim 도 `extra` 에 `score_pooled`
+            # **키는 있다**(값만 null). "필드가 있는 항목만" 이라고 적으면 metro
+            # 항목도 그 조건을 통과해 crude pooling 인 metro 에 "가중" 딱지가
+            # 붙는다 - 아래 문장은 **값**을 기준으로 적는다(metro 도 `n_strata`
+            # 는 실어 그것만으로는 못 가른다, m7). ⚠️ metro 를 MH 로 옮길 때
+            # `score_pooled` 부터 싣기 시작하면 그 순간 이 판별자도 거짓이
+            # 된다 - metro 값도 null 이 아니게 되어 이 조건으로는 못 가른다.
+            mh_weighted = any((c.get("extra") or {}).get("score_pooled") is not None
+                              for c in claims)
+            mh_note = (
+                "score_pooled 값이 null 이 아닌 항목만 score 가 stratum(root_lot)별 "
+                "Mantel-Haenszel 가중 평균이다 - 그 항목의 target_pass/target_total 로 "
+                "score 를 다시 계산하지 마라(stratum 이 여럿이면 그 값은 score 와 "
+                "다르다. score_pooled 자체는 단순 합산값이고 설명용일 뿐 score 를 "
+                "대신하지 않는다. strata_detail 의 stratum 이 2개 이상이고 그 "
+                "모양(타깃·대조군 표본 수)이 서로 다른 항목은 그 안의 stratum 별 "
+                "d 도 단순 평균하면 안 된다 - stratum 마다 가중치가 달라 가중치 "
+                "없는 평균은 score 와 다르다). score_pooled 값이 null 인 항목(metro "
+                "계측·kind가 sensor 인 항목 - **키는 있어도 값이 null 이면 여기 "
+                "속한다**)의 score/effect_size 는 이 규칙과 무관하다 - metro 는 "
+                "여전히 stratum 합산값이고 센서는 효과크기다. "
+            ) if mh_weighted else ""
+            user += (f"\n게이트가 확인한 항목 {len(claims)}건 "
+                     f"(순위는 코드가 매겼다. 수치를 그대로 인용하고, 하나만 고르지 말고 "
+                     f"전부 서술하라. {mh_note}"
+                     f"rank 가 같은 항목은 우열을 가릴 수 없다는 뜻이고, "
+                     f"confounded_with 가 있으면 같은 wafer 를 다른 이름으로도 설명할 수 "
+                     f"있다는 뜻이니 둘 중 하나로 단정하지 마라. rolled_up_as 는 같은 "
+                     f"설명을 굵은/세밀한 해상도로 부른 것뿐이니(방향은 resolution, 상대는 "
+                     f"of) 경합하는 근거로 쓰지 말고 대조군 범위의 한계로 적어라. "
+                     f"kind 가 sensor 인 항목은 2단 센서 근거다 - 2x2 도 순열 p 도 없고 "
+                     f"효과크기와 두 분포뿐이며 다중비교 보정을 하지 않은 후보다. "
+                     f"'왜' 를 채우는 근거로 인용하되 확정 결론의 주어로 쓰지 마라. "
+                     f"passes 가 false 인 항목은 근거가 아니다. thin_sample 이 true 면 "
+                     f"표본 수가 부족한 후보이고, 그 밖에는 판별선을 넘지 못한 잔차다"
+                     f"(reject_reason 이 미통과 이유를 말한다) - 둘을 구분해 서술하고 "
+                     f"근거로 세지 마라): "
+                     f"{json.dumps(claims, ensure_ascii=False)}")
         resp = self.llm.invoke([SystemMessage(content=sys), HumanMessage(content=user)])
         return resp.content.strip()
 
