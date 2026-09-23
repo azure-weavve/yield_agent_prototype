@@ -1639,6 +1639,121 @@ def test_a_folded_name_carries_its_own_numbers_into_the_line():
     assert "타깃 2/4" in line and "대조군 0/3" in line
 
 
+def test_a_confounding_line_does_not_end_with_cannot_be_told_apart():
+    """P2-5(Opus 리뷰 M1 재수정): 교락 줄은 "구분되지 않는다" 로 끝나지 않는다 - 항상
+    참인 문장(비교에 들어간 wafer 안에서는 구분이 없다)과, 빠진 wafer 를 채우거나
+    다른 root_lot 을 더하면 갈릴 **가능성**을 덧붙인다. 두 이름이 양방향('L 통과 ·
+    O 미통과' 와 "그 반대") 형태로 모두 들어간다.
+    """
+    ch = _cand("a:1", "ETCH9_B", 0.8, 0.02, ["W1", "W2"], level="chamber")
+    ppid = _cand("b:1", "PPID_X", 0.8, 0.02, ["W1", "W2"], level="ppid")
+    d = evidence.group_to_dict(evidence.build_bundle([
+        _finding("hyp_a", "a", "ok", [ch]),
+        _finding("hyp_b", "b", "ok", [ppid])]).ranked_groups()[0])
+    assert d["key"] == "ETCH9_B"
+
+    line = evidence.format_group_line(d)
+    assert not line.endswith("현재 증거로는 구분되지 않는다")
+    assert "현재 증거로는 구분되지 않는다." in line
+    assert "비교에 들어간 wafer 에는 '" in line
+    assert "'ETCH9_B 통과 · PPID_X 미통과'" in line
+    assert "그 반대도 없어" in line
+    # "다른 lot" 이 아니라 "다른 root_lot" 이다 - 대조군이 이미 분할 lot 을 포함한다(m5)
+    assert "다른 root_lot" in line
+    assert "다른 lot 을" not in line
+    # 필요조건("더해야 갈린다")이 아니라 가능성("더하면 갈릴 수 있다")이다
+    assert "갈릴 수 있다" in line
+
+
+def test_each_folded_candidate_names_only_itself_in_its_own_confounding_line():
+    """접힌 후보가 둘 이상이면 각 줄이 **자기 이름 하나만** 접힌 쪽으로 댄다 - 다른
+    접힌 후보의 이름이 섞이면 어느 후보와 무엇을 대조해야 갈리는지가 흐려진다.
+    """
+    lead = _cand("a:1", "ETCH9_B", 0.9, 0.02, ["W1", "W2"], level="chamber")
+    o1 = _cand("b:1", "PPID_X", 0.8, 0.02, ["W1", "W2"], level="ppid")
+    o2 = _cand("c:1", "RECIPE_Y", 0.7, 0.02, ["W1", "W2"], level="ppid")
+    d = evidence.group_to_dict(evidence.build_bundle([
+        _finding("hyp_a", "a", "ok", [lead]),
+        _finding("hyp_b", "b", "ok", [o1]),
+        _finding("hyp_c", "c", "ok", [o2])]).ranked_groups()[0])
+    assert d["key"] == "ETCH9_B"
+    assert {o["key"] for o in d["confounded_with"]} == {"PPID_X", "RECIPE_Y"}
+
+    confound_lines = [ln for ln in evidence.format_group_line(d).split("\n")
+                       if "교락" in ln]
+    assert len(confound_lines) == 2
+    for ln in confound_lines:
+        named = {name for name in ("PPID_X", "RECIPE_Y") if name in ln}
+        assert len(named) == 1, f"한 줄에는 접힌 쪽 이름이 하나만 있어야 한다: {ln!r}"
+
+
+def test_confirmed_verdict_head_carries_the_new_confounding_tail():
+    """P2-5 동결 예외: `_finalize_gate` 의 확정 판정문 머리말도 `format_group_line`
+    을 그대로 쓰므로(`nodes.py` `"승인 (근거 확인): {head}"`) 새 꼬리를 받는다.
+
+    LOT2406(더미 표준 사례, `data.generate_dummy.GROUP_WAFERS`/`CONTROL_WAFERS`)
+    은 챔버 ETCH9_B 와 레시피 PPID_X 가 같은 wafer 를 가리켜 교락되는 것으로 이미
+    잠겨 있다(`test_multi_axis_dummy.py::test_a_genuine_confounding_pair_keeps_
+    saying_it_cannot_be_told_apart`) - 그 전제를 여기서도 확인하고 판정문을 본다.
+    """
+    from data.generate_dummy import CONTROL_WAFERS, GROUP_WAFERS
+    from domain import engine, registry
+    from graph import nodes
+
+    findings = [{"loop": 1, "tool": f"hyp_{spec['id']}", "args": {},
+                 "result": engine.evaluate(spec, GROUP_WAFERS, CONTROL_WAFERS),
+                 "thought": ""}
+                for spec in registry.load_hypotheses()]
+    groups = evidence.build_bundle(findings).ranked_groups()
+    d = evidence.group_to_dict(groups[0])
+    assert len(d["confounded_with"]) == 1, "이 사례가 여전히 교락임을 전제로 한다"
+
+    update = {}
+    verdict = nodes._finalize_gate(
+        {"claim_id": groups[0].lead.claim_id, "hypothesis": "h", "confidence": 0.9},
+        loop=3, update=update, findings=findings)
+
+    assert update["finalize_status"] == "confirmed"
+    # "구분되지 않는다." 는 예전 꼬리에도 있어 공허한 단언이다 - 새 꼬리에만 있는
+    # 구절로 잠근다.
+    assert "비교에서 빠진 wafer" in verdict
+    assert "비교에 들어간 wafer 에는" in verdict
+    assert "다른 root_lot" in verdict
+    assert "갈릴 수 있다" in verdict
+
+
+def test_the_tied_sentence_is_unchanged_byte_for_byte():
+    """동점 줄은 이번 변경과 무관하다 - 전체 줄을 바이트 단위로 잠근다(m2 회귀)."""
+    b = evidence.build_bundle([
+        _finding("hyp_a", "a", "ok", [_cand("a:1", "A", 0.7, 0.03, ["W1", "W2"])]),
+        _finding("hyp_b", "b", "ok", [_cand("b:1", "B", 0.7, 0.03, ["W3", "W4"])]),
+    ])
+    dicts = evidence.groups_to_dicts(b.ranked_groups())
+    assert dicts[0]["tied"] and dicts[0]["tie_reason"] == "identical"
+
+    tied_line = evidence.format_group_line(dicts[0]).split("\n")[-1].strip()
+    assert tied_line == (
+        "같은 등수의 항목이 더 있다 - 순열 p 도 분리 점수도 같아 어느 쪽이 유력한지 "
+        "현재 증거로는 정할 수 없다")
+
+
+def test_the_roll_up_sentence_is_unchanged_byte_for_byte():
+    """포함관계 줄도 이번 변경과 무관하다 - 전체 줄을 바이트 단위로 잠근다(m2 회귀).
+
+    "가를 대조가 없다" 는 새 교락 꼬리와도 겹치는 부분 문자열이라, 여기서는 부분
+    문자열이 아니라 줄 전체를 == 로 비교해 거기에 기대지 않는다.
+    """
+    coarse, fine = _nested_pair()
+    d = evidence.group_to_dict(evidence.build_bundle([
+        _finding("hyp_eqp_ch", "eqp_ch_commonality", "ok", [coarse, fine])]).ranked_groups()[0])
+    assert d["key"] == "PHOT7_B" and d["confounded_with"] == []
+
+    roll_up_line = evidence.format_group_line(d).split("\n")[-1].strip()
+    assert roll_up_line == (
+        "굵은 해상도로는 PHOT7(equipment) 다 · 타깃 2/6 · 대조군 0/6 · 순열 p 0.03 - "
+        "대조군에 'PHOT7 통과 · PHOT7_B 미통과' 인 wafer 가 없어 둘을 가를 대조가 없다")
+
+
 def _weak_finding(tool="hyp_eqp_ch_commonality", hid="eqp_ch_commonality",
                   status="ok", score=0.4, target_pass=4, key="ETCH9_B"):
     """판별선(0.5)을 못 넘은 1단 후보 하나를 담은 finding."""
