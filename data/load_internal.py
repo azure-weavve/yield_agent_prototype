@@ -53,6 +53,7 @@ import os
 import re
 import sqlite3
 import sys
+from datetime import date, timedelta
 from pathlib import Path
 
 # 스크립트 경로(`python data/load_internal.py`)로 실행하면 sys.path[0] 이 data/ 라
@@ -230,7 +231,7 @@ STEP_INSERT = """
 def _chunked(seq, size: int):
     """리스트를 size 개씩 자른다. 마지막 조각은 짧을 수 있다.
 
-    lot 목록을 이 단위로 잘라 `_extract()` 를 여러 번 부른다. 청크가 끝나면 그
+    lot 목록을 이 단위로 잘라 `_extract(root_lots)` 를 여러 번 부른다. 청크가 끝나면 그
     DataFrame 과 dict 리스트가 참조를 잃고 해제되므로 메모리가 청크 하나 크기로
     유계가 된다.
     """
@@ -338,11 +339,18 @@ def load_incremental(chunks, db_path: Path, verbose: bool = True,
     conn.isolation_level = None          # 트랜잭션 경계를 이 함수가 직접 잡는다
     lots, n_y, n_s, del_y, del_s = [], 0, 0, 0, 0
     requested_lots, seen_lots = set(), set()
+    chunk_fatal, zero_row_lots = [], []
     try:
         conn.execute("BEGIN")
         for root_lots, yield_records, step_records in chunks:
             root_lots = list(root_lots)
             requested_lots.update(root_lots)
+            chunk_requested = set(root_lots)
+            chunk_seen = set()           # 이번 청크에서만 새로 채우는 감시 — 전체
+                                          # 누적 seen_lots 로는 청크 2 가 청크 1 의
+                                          # lot 을 실어 오는 사고를 못 잡는다(그 lot 은
+                                          # 청크 1 에서 이미 requested_lots 에 들어가
+                                          # "요청 안 한 lot" 이 아니게 된다).
             ph = ",".join("?" * len(root_lots))
             del_s += conn.execute(
                 f"DELETE FROM step_history WHERE root_lot_id IN ({ph})",
@@ -351,15 +359,33 @@ def load_incremental(chunks, db_path: Path, verbose: bool = True,
                 f"DELETE FROM yield WHERE root_lot_id IN ({ph})",
                 root_lots).rowcount
             n_y += _insert_batched(conn, YIELD_INSERT,
-                                   transform_yield(_collect_lots(yield_records, seen_lots)))
+                                   transform_yield(_collect_lots(
+                                       _collect_lots(yield_records, chunk_seen), seen_lots)))
             n_s += _insert_batched(conn, STEP_INSERT,
-                                   transform_steps(_collect_lots(step_records, seen_lots)))
+                                   transform_steps(_collect_lots(
+                                       _collect_lots(step_records, chunk_seen), seen_lots)))
             lots.extend(root_lots)
+
+            # F5: 청크 단위 stray 비교. 전체 실행 단위 비교(아래)만으로는 청크 2 가
+            # 청크 1 의 lot 을 실어 오는 사고를 못 잡는다.
+            chunk_stray = sorted(chunk_seen - chunk_requested)
+            if chunk_stray:
+                chunk_fatal.append(
+                    f"청크가 요청하지 않은 root_lot 을 실었다 {len(chunk_stray)}건 "
+                    f"(이 청크 요청: {sorted(chunk_requested)}, 예: {chunk_stray[:3]}): "
+                    f"다음 청크의 삭제 키에 안 걸려 이력이 두 벌로 남는다")
+            # F6: 요청했으나 이 청크에서 한 행도 안 온 lot. fatal 이 아니다 —
+            # 원천에서 사라진 lot(취소·보류 등)은 그 자체로 비정상이 아니다.
+            zero_row_lots.extend(sorted(chunk_requested - chunk_seen))
         report = validate(conn, n_y, n_s, root_lots=lots)
     except BaseException:
         conn.execute("ROLLBACK")         # 추출 실패·중단·스키마 위반 전부 여기로
         conn.close()
         raise
+
+    report["fatal"].extend(chunk_fatal)
+    report["n_zero_row_lots"] = len(zero_row_lots)
+    report["zero_row_lots"] = zero_row_lots
 
     # 요청 대 납품 계약 — _scope 는 요청한 lot 으로만 채워지므로, 원천이 요청과
     # 다른 표기(고정폭 CHAR 의 뒤 공백 등)로 lot 을 실으면 그 행은 삭제 키에도
@@ -572,6 +598,9 @@ def _print(r: dict) -> None:
         total_label = "[전체]" if r.get("committed") else "[전체](롤백 전)"
         _say(f"{total_label} yield {r['n_total_yield']}행 / step_history "
              f"{r['n_total_steps']}행 · root_lot {r['n_total_root_lots']}개")
+        if r.get("n_zero_row_lots"):
+            _say(f"[증분] 0행으로 돌아온 lot {r['n_zero_row_lots']}개 "
+                 f"(예: {r['zero_row_lots'][:3]}): 원천에서 사라진 lot 일 수 있다")
     _say(f"[구성] root_lot {r['n_root_lots']}개 · 이력 보유 wafer {r['n_wafers_with_history']}장 "
          f"· lot_type {r['lot_types']}")
     _say(f"[이력] wafer 당 스텝 {r['steps_per_wafer']} · ch_id 결측률 {r['ch_id_null_rate']}"
@@ -776,11 +805,34 @@ def read_csv_records(yield_csv, steps_csv, yield_unit, colmap=None):
 # --------------------------------------------------------------------------- #
 # 진입점
 # --------------------------------------------------------------------------- #
-def _extract():
-    """⚠️ 사내 추출 라이브러리를 연결할 자리.
+def _extract_lot_ids(since_date):
+    """⚠️ 사내 추출 라이브러리를 연결할 자리 (1/2).
 
-    반환: (yield_records, step_records) — 위 '입력 계약' 형태.
-    step_records 는 커도 되므로 리스트 대신 제너레이터를 반환해도 된다.
+    반환: 적재 대상 root_lot_id 목록.
+
+    since_date 가 None 이면 전체(rebuild 용). 날짜 문자열("2026-07-30")이면
+    **두 축의 합집합**으로 뽑는다:
+
+        검사일이 since_date 이후인 lot  UNION  스텝 처리시각이 since_date 이후인 lot
+
+    검사일만 보면 안 된다. 재작업 이력이 붙어도 yield 의 검사일은 그대로일 수 있어서,
+    그 lot 이 재확인 창에 안 걸리고 **이력은 늘었는데 DB 에는 영영 안 들어온다.**
+    """
+    raise NotImplementedError(
+        "사내 추출 라이브러리를 연결하세요. "
+        "적재 대상 root_lot_id 목록을 반환하면 됩니다."
+    )
+
+
+def _extract(root_lots: list[str]):
+    """⚠️ 사내 추출 라이브러리를 연결할 자리 (2/2).
+
+    입력: root_lot_id 목록 (LOAD_LOT_CHUNK 개 이하)
+    반환: (yield_records, step_records) — 위 '입력 계약' 형태
+
+    **lot 전체를 한 번에 받지 말 것.** 호출부가 청크로 나눠 여러 번 부르므로,
+    이 함수는 받은 lot 만 뽑아 돌려주면 된다. DataFrame 을 dict 로 바꾸는 것은
+    그대로 두어도 되고, 리스트 대신 제너레이터를 반환해도 된다.
     """
     raise NotImplementedError(
         "사내 추출 라이브러리를 연결하세요. "
@@ -788,46 +840,85 @@ def _extract():
     )
 
 
+def _run_incremental(lot_ids, db_path, force: bool, verbose: bool = True) -> dict:
+    """lot 목록을 청크로 잘라 추출하고 증분 적재한다."""
+    chunks = ((c, *_extract(c)) for c in _chunked(lot_ids, ya_config.LOAD_LOT_CHUNK))
+    return load_incremental(chunks, db_path, verbose=verbose, force=force)
+
+
 def main():
-    ap = argparse.ArgumentParser(description="사내 실데이터 → yield + step_history 적재")
-    # help 문구는 argparse 가 직접 찍는다 — `_say` 가 못 덮으므로 cp949 밖 글자를 쓰면
-    # `--help` 자체가 UnicodeEncodeError 로 죽는다 (em-dash·⚠️ 금지)
+    ap = argparse.ArgumentParser(description="사내 실데이터 -> yield + step_history 적재")
+    # help 문구는 argparse 가 직접 찍는다 - `_say` 가 못 덮으므로 cp949 밖 글자를 쓰면
+    # `--help` 자체가 UnicodeEncodeError 로 죽는다 (em-dash 금지)
+    mode = ap.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--rebuild", action="store_true",
+                     help="전체 재적재. 임시 DB 를 만들어 검증 통과 시 교체한다")
+    mode.add_argument("--since", nargs="?", type=int, const=ya_config.LOAD_SINCE_DAYS,
+                     metavar="N",
+                     help=f"최근 N일 안에 검사되거나 처리된 lot 을 다시 적재 "
+                          f"(기본 {ya_config.LOAD_SINCE_DAYS}일). 매일 이것을 쓴다")
+    mode.add_argument("--lots", metavar="A45Z5,B12X3",
+                     help="쉼표로 구분한 root_lot 목록만 적재 (수동 교정용)")
+    mode.add_argument("--yield-csv",
+                     help="사례 수율 CSV 경로 (CSV 적재 모드. --steps-csv/--yield-unit 도 필수)")
+    ap.add_argument("--steps-csv", help="사례 공정 이력 CSV 경로 (--yield-csv 와 함께 지정)")
+    ap.add_argument("--yield-unit", choices=["percent", "ratio"],
+                    help="CSV 입력일 때 필수. yield 컬럼 단위(percent=0~100, ratio=0~1)")
+    ap.add_argument("--colmap", help="원천 컬럼명 -> 계약 키 대응표 YAML 경로 (선택, CSV 전용)")
     ap.add_argument("--db", default=str(ya_config.DB_PATH),
                     help=f"적재 대상 DB (기본 {ya_config.DB_PATH}: 더미와 동일, 덮어씀 주의)")
     ap.add_argument("--force", action="store_true",
-                    help="치명적 정합성 오류가 있어도 기존 DB 를 교체한다")
-    ap.add_argument("--yield-csv", help="사례 수율 CSV 경로 (지정 시 --steps-csv 도 필수)")
-    ap.add_argument("--steps-csv", help="사례 공정 이력 CSV 경로 (지정 시 --yield-csv 도 필수)")
-    ap.add_argument("--yield-unit", choices=["percent", "ratio"],
-                    help="CSV 입력일 때 필수. yield 컬럼 단위(percent=0~100, ratio=0~1)")
-    ap.add_argument("--colmap", help="원천 컬럼명 -> 계약 키 대응표 YAML 경로 (선택)")
+                    help="치명적 정합성 오류가 있어도 확정한다")
     args = ap.parse_args()
 
     db = Path(args.db)
     # 상대경로("data/yield.db", "./data/yield.db")는 절대경로인 ya_config.DB_PATH 와
-    # 문자열/미해석 Path 로 비교하면 걸러지지 않는다 — repo 루트에서 돌리면 더미 보호가
+    # 문자열/미해석 Path 로 비교하면 걸러지지 않는다 - repo 루트에서 돌리면 더미 보호가
     # 조용히 뚫린다. 비교할 때만 resolve() 하고, load() 에 넘기는 db 는 원래 값 그대로 둔다.
     is_dummy_path = db.resolve() == Path(ya_config.DB_PATH).resolve()
 
-    if args.yield_csv or args.steps_csv:
-        if not (args.yield_csv and args.steps_csv):
+    # CSV 전용 옵션은 --yield-csv 모드에서만 의미가 있다. 다른 모드와 섞이면 조용히
+    # 무시하지 않고 멈춘다 - 예를 들어 --since 와 --yield-unit 을 함께 주면 오타로
+    # 보이지만 조용히 무시되면 사용자는 CSV 경로를 탄다고 착각하기 쉽다.
+    if args.yield_csv is None and (args.steps_csv or args.yield_unit or args.colmap):
+        ap.error("--steps-csv/--yield-unit/--colmap 은 --yield-csv 와 함께 써야 함")
+
+    if args.yield_csv is not None:
+        if not args.steps_csv:
             ap.error("--yield-csv 와 --steps-csv 는 함께 지정해야 함")
         if not args.yield_unit:
             ap.error("CSV 입력은 --yield-unit 이 필수 (percent 또는 ratio)")
         if is_dummy_path:
-            # --force 로도 못 넘긴다 — force 는 fatal 무시용이지 더미 보호용이 아니다
+            # --force 로도 못 넘긴다 - force 는 fatal 무시용이지 더미 보호용이 아니다
             ap.error(f"CSV 입력은 --db 를 더미 DB 경로가 아닌 값으로 지정해야 함: {db}")
         yield_records, step_records = read_csv_records(
             args.yield_csv, args.steps_csv, args.yield_unit, colmap=args.colmap)
-    else:
-        if args.yield_unit or args.colmap:
-            ap.error("--yield-unit/--colmap 은 --yield-csv/--steps-csv 와 함께 써야 함")
-        if is_dummy_path:
-            _say(f"[주의] {db} 는 더미 DB 와 같은 경로입니다. 기존 내용이 대체됩니다.")
-        yield_records, step_records = _extract()
+        report = load(yield_records, step_records, db, force=args.force)
+        raise SystemExit(0 if report["swapped"] else 1)
 
-    report = load(yield_records, step_records, db, force=args.force)
-    raise SystemExit(0 if report["swapped"] else 1)
+    if is_dummy_path:
+        _say(f"[주의] {db} 는 더미 DB 와 같은 경로입니다. 기존 내용이 대체됩니다.")
+
+    if args.rebuild:
+        lot_ids = _extract_lot_ids(None)
+        batches = (_extract(c) for c in _chunked(lot_ids, ya_config.LOAD_LOT_CHUNK))
+        report = rebuild(batches, db, force=args.force)
+        raise SystemExit(0 if report["swapped"] else 1)
+
+    if args.lots is not None:
+        lot_ids = [s.strip() for s in args.lots.split(",") if s.strip()]
+    else:
+        since = (date.today() - timedelta(days=args.since)).isoformat()
+        lot_ids = _extract_lot_ids(since)
+
+    # 주말·비가동으로 대상이 0개인 것은 정상이다. 여기서 걸러야 "추출이 비었다" 는
+    # 치명적 판정(검사 0번)이 매일 오경보로 뜨는 것을 막는다.
+    if not lot_ids:
+        _say("[증분] 대상 lot 0개. 적재할 것이 없습니다.")
+        raise SystemExit(0)
+
+    report = _run_incremental(lot_ids, db, force=args.force)
+    raise SystemExit(0 if report["committed"] else 1)
 
 
 if __name__ == "__main__":

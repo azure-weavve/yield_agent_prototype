@@ -957,3 +957,126 @@ def test_cli_colmap_without_csv_args_refuses(tmp_path, monkeypatch):
     with pytest.raises(SystemExit) as exc:
         li.main()
     assert exc.value.code == 2
+
+
+# --------------------------------------------------------------------------- #
+# Task 5 - 실행 모드와 lot 청크 추출 계약 (--rebuild/--since/--lots/--yield-csv)
+# --------------------------------------------------------------------------- #
+def test_extraction_runs_once_per_chunk(tmp_path, monkeypatch):
+    """전량을 한 번에 안 받는다. 이것이 메모리 유계의 실질 보증이다 -
+    한 번만 부르면 사내 lib 가 2,800만 행을 통째로 만들어 32GB 를 쓴다."""
+    db = _seed(tmp_path)
+    seen = []
+
+    def fake_extract(chunk):
+        seen.append(list(chunk))
+        return [], []
+
+    monkeypatch.setattr(li, "_extract", fake_extract)
+    monkeypatch.setattr(ya_config, "LOAD_LOT_CHUNK", 20)
+
+    lots = [f"L{i:03d}" for i in range(45)]
+    # force=True: 이 가짜 추출은 yield 0행이라 정상적으로 fatal 이 난다.
+    # 여기서 보는 것은 적재 결과가 아니라 호출 분할이다.
+    li._run_incremental(lots, db, force=True, verbose=False)
+
+    assert [len(c) for c in seen] == [20, 20, 5]
+    assert seen[0] == lots[:20]
+
+
+def test_an_empty_lot_list_ends_normally_without_touching_the_db(tmp_path, monkeypatch):
+    """주말·비가동으로 대상이 0개인 것은 정상이다.
+
+    이 분기가 없으면 검사 0번("yield 0행: 추출 결과가 비었다")이 매번 치명적
+    오류로 뜨고, 사람이 그 경보를 무시하기 시작하면 진짜 추출 장애도 같이 묻힌다.
+    """
+    db = _seed(tmp_path)
+    before = _counts(db)
+    monkeypatch.setattr(li, "_extract_lot_ids", lambda since: [])
+    monkeypatch.setattr(sys, "argv",
+                        ["load_internal", "--since", "7", "--db", str(db)])
+
+    try:
+        li.main()
+    except SystemExit as e:
+        assert e.code == 0
+    else:
+        raise AssertionError("SystemExit 가 나지 않았다")
+
+    assert _counts(db) == before
+
+
+def test_a_mode_must_be_given_explicitly():
+    """인자 없이 실행하면 전체 재적재가 조용히 도는 것을 막는다."""
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    proc = subprocess.run([sys.executable, "-m", "data.load_internal"],
+                          capture_output=True, cwd=root)
+    assert proc.returncode != 0
+    assert b"--rebuild" in proc.stderr or b"--since" in proc.stderr
+
+
+def test_cli_csv_and_incremental_modes_together_refuse(tmp_path, monkeypatch):
+    """D1: CSV 모드(--yield-csv)는 증분 모드와 같은 상호배타 그룹에 있다 - 함께
+    주면(예: --since 와 --yield-csv) 어느 쪽으로도 조용히 정해지지 않고 멈춘다."""
+    monkeypatch.setattr(ya_config, "DB_PATH", tmp_path / "dummy.db")
+    yc, sc = tmp_path / "yield.csv", tmp_path / "steps.csv"
+    _write_csv(yc, ["root_lot_id", "wafer_no", "lot_id", "lot_type", "yield", "date"], [])
+    _write_csv(sc, ["root_lot_id", "wafer_no", "step_seq", "eqp_id"], [])
+    argv = ["load_internal.py", "--since", "7", "--yield-csv", str(yc),
+            "--steps-csv", str(sc), "--yield-unit", "percent"]
+    monkeypatch.setattr(sys, "argv", argv)
+
+    with pytest.raises(SystemExit) as exc:
+        li.main()
+    assert exc.value.code == 2
+
+
+def test_cli_csv_only_option_with_a_non_csv_mode_refuses(tmp_path, monkeypatch):
+    """CSV 전용 옵션(--yield-unit 등)을 --yield-csv 없이 다른 모드와 섞으면 멈춘다 -
+    조용히 무시되면 오타를 낸 사용자가 CSV 경로를 탄다고 착각한다."""
+    monkeypatch.setattr(ya_config, "DB_PATH", tmp_path / "dummy.db")
+    monkeypatch.setattr(sys, "argv",
+                        ["load_internal.py", "--since", "7", "--yield-unit", "percent"])
+
+    with pytest.raises(SystemExit) as exc:
+        li.main()
+    assert exc.value.code == 2
+
+
+def test_a_stray_lot_carried_from_an_earlier_chunk_is_caught_per_chunk(tmp_path):
+    """F5: 전체 실행 단위로만 stray 를 비교하면, 청크 2 가 청크 1 의 lot 을 실어
+    오는 사고를 못 잡는다 - 그 lot 은 청크 1 에서 이미 requested_lots 에 들어가
+    있어 "요청 안 한 lot" 이 아니게 된다. 청크 단위 비교라야 잡힌다.
+    """
+    db = _seed(tmp_path)
+    chunk1_yield = [{"root_lot_id": "B77B7", "wafer_id": "01", "lot_id": "B77B7.1",
+                     "lot_type": "PP", "yield": 88.0, "date": "2026-08-01"}]
+    chunk1_steps = [{"root_lot_id": "B77B7", "wafer_id": "01", "step_seq": "CC002000",
+                     "eqp_id": "ETCH9", "timestamp": "t"}]
+    chunk2_yield = [{"root_lot_id": "C88C8", "wafer_id": "01", "lot_id": "C88C8.1",
+                     "lot_type": "PP", "yield": 70.0, "date": "2026-08-02"}]
+    # 청크 2 는 C88C8 만 요청했는데, step 이력에 청크 1 의 B77B7 행이 다시 섞여 온다
+    chunk2_steps = [{"root_lot_id": "C88C8", "wafer_id": "01", "step_seq": "CC002000",
+                     "eqp_id": "ETCH9", "timestamp": "t"},
+                    {"root_lot_id": "B77B7", "wafer_id": "02", "step_seq": "CC004000",
+                     "eqp_id": "CMP1", "timestamp": "t2"}]
+
+    report = li.load_incremental(
+        [(["B77B7"], chunk1_yield, chunk1_steps),
+         (["C88C8"], chunk2_yield, chunk2_steps)], db, verbose=False)
+
+    assert report["fatal"] and not report["committed"]
+    assert any("청크가 요청하지 않은 root_lot" in f for f in report["fatal"])
+
+
+def test_incremental_report_counts_requested_lots_that_delivered_zero_rows(tmp_path):
+    """F6: 요청했으나 0행으로 돌아온 lot 은 fatal 이 아니라 보고용 카운트로만
+    남는다 - 원천에서 사라진 lot(예: 취소·보류)은 그 자체로 비정상이 아니다."""
+    db = _seed(tmp_path)
+
+    report = li.load_incremental(
+        [(["B77B7", "Z00Z0"], B_YIELDS, B_STEPS)], db, verbose=False)
+
+    assert report["committed"] and not report["fatal"]
+    assert report["n_zero_row_lots"] == 1
+    assert report["zero_row_lots"] == ["Z00Z0"]

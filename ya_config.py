@@ -14,6 +14,12 @@ BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = BASE_DIR / "data" / "yield.db"
 EMB_DIR = BASE_DIR / "data" / "embeddings"
 
+# 사내 적재 - lot 청크 크기. `_extract()` 를 이 단위로 나눠 부른다. 청크가 끝나면
+# 그 DataFrame 과 dict 가 해제되므로 메모리가 청크 하나 크기로 유계가 된다.
+LOAD_LOT_CHUNK = int(os.getenv("LOAD_LOT_CHUNK", "20"))
+# `--since` 의 기본 일수. 재작업이 며칠 안에 끝나는지에 맞춰 실측 후 조정한다.
+LOAD_SINCE_DAYS = int(os.getenv("LOAD_SINCE_DAYS", "7"))
+
 # 수율 "이상" 판정 임계 (문서 9절: 절대값 방식)
 YIELD_THRESHOLD = 90.0
 
