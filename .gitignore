@@ -20,3 +20,8 @@ docs/tasks/*/.workflow/
 
 # P1-3 사례 원천 자료·사례 DB (사내 실데이터 - 커밋 금지)
 data/cases/
+
+# 적재 중 크래시가 남긴 잔해 (H6) - rebuild() 의 tmp+swap 파일과 SQLite 의 hot
+# journal. 복구에 필요할 수 있어 로컬에는 남겨두되 커밋하지 않는다.
+*.db-journal
+*.db.tmp

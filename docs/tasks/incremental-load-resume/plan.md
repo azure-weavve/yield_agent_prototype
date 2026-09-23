@@ -114,6 +114,29 @@ BLOCKING 0. 아래 **G1~G9 만** 고친다(커밋 하나). 재리뷰는 이 목�
 - 기록만(고치지 않음): G9 롤백 분기 미잠금, G7 테스트가 `--since` 분기만 봄, MINOR-8, `--yield-csv ""` 트레이스백,
   `802e557` 커밋 메시지 한 글자 인코딩 깨짐.
 
+## 최종 리뷰 결과 (Opus, main...branch 전체)와 결정 — 닫힌 목록 H1~H7
+
+BLOCKING 0. 사용자 결정(2026-09-23): I-1 은 스텝 처리시각 축을 좁힌다, I-2 는 지금 고친다.
+
+- **H1 (I-1, 사용자 결정)** `--since` 두 번째 축을 **yield 원천에 이미 있는 lot** 으로 좁힌다:
+  `처리시각 >= since AND root_lot_id IN (SELECT root_lot_id FROM <수율원천>)`. 이유: 검사 전 재공 lot 은
+  yield 가 없어 이력이 고아로 잡혀 매일 롤백되거나 고아 경고가 상시화된다(원 설계가 날짜 축을 버린 이유와 같다).
+  "검사 후 재작업을 잡는다" 는 원 취지는 유지되고, 재공 lot 은 검사 뒤 검사일 축으로 들어온다.
+  고칠 곳: `_extract_lot_ids` docstring, 모듈 docstring 계약 블록, 점검표 3-5 예시 SQL, 그 밖에 이 축을 설명하는 문서.
+- **H2 (I-2)** `--rebuild` 에도 청크별 요청 대 납품 검사. `main()` 이 청크 lot 목록을 함께 넘기고 stray 면 fatal
+  (교체 안 함). CSV/`load()` 경로는 요청 lot 개념이 없으므로 동작 불변(기존 CSV 테스트 무수정 통과).
+  테스트: 청크 2 가 청크 1 lot 의 step 행을 실어 오면 swapped False. 검사 제거 변이로 단독 사망.
+- **H3 (I-3)** 점검표 3-1 에 "적재 중에는 같은 DB 읽기가 막힌다(에이전트 `database is locked`), 반대로 긴 읽기가
+  걸려 있으면 COMMIT 이 실패해 롤백된다 - 에이전트가 쉬는 시간에 돌린다" 한 줄.
+- **H4 (M-4)** "구 스키마 DB 는 첫 증분 전 `--rebuild`" 문구에서 `data/cases/*.db` 를 뺀다. 사례 DB 는 증분 대상이
+  아니고 읽는 코드가 `step_history.root_lot_id` 를 안 쓴다(`tools/commonality.py` 는 yield 에서 root_lot 을 읽음).
+- **H5 (M-6)** 점검표 "더미/운영 DB 경로는 거부된다" 를 코드대로: `ya_config.DB_PATH` 와 같은 경로만 CSV 모드에서 거부.
+- **H6 (M-7)** `.gitignore` 에 `*.db-journal`, `*.db.tmp` 추가(크래시 뒤 hot journal 은 복구에 필요한 파일).
+- **H7 (M-5)** `--lots` 빈 값 검사를 더미 경고보다 앞으로.
+
+기록만: M-1(`--since` 에서 한 청크가 통째로 0행이면 추출 장애일 가능성 - 재고 후보), M-2(yield stray 가 기존 lot 이면
+IntegrityError 트레이스백), M-3(없는 `--db` 경로에 0바이트 파일), M-8(메모리 상한은 청크 2개), M-9(문서 예시 천 단위 쉼표).
+
 ## 수용 기준
 
 - 전체 스위트 통과(693 + 새 테스트), 회귀 0.

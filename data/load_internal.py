@@ -14,10 +14,16 @@
   _extract_lot_ids(since_date) -> ["A45Z5", "B12X3", ...]
       since_date=None      : 전체 root_lot (--rebuild 용)
       since_date="2026-07-30": 검사일이 그 날 이후인 lot
-                               UNION 스텝 처리시각이 그 날 이후인 lot
+                               UNION (스텝 처리시각이 그 날 이후이면서, 수율 원천에
+                               이미 있는 lot)
 
       ⚠️ 검사일만 보면 안 된다. 재작업 이력이 붙어도 yield 의 검사일은 그대로일
          수 있어서, 그 lot 이 재확인 창에 안 걸리고 이력이 영영 안 들어온다.
+
+      ⚠️ 두 번째 축(처리시각)은 **수율 원천에 이미 있는 lot** 으로 좁힌다. 검사 전
+         재공 lot 까지 넣으면 yield 는 없고 이력만 있는 상태가 돼 고아(orphan)
+         경고가 상시화되거나 그 배치가 fatal 로 롤백된다. 검사 후 재작업을 잡는다는
+         원 취지는 유지되고, 재공 lot 은 검사가 끝난 뒤 검사일 축으로 들어온다.
 
   _extract(root_lots) -> (yield_records, step_records)
       root_lots 는 LOAD_LOT_CHUNK(기본 20) 개 이하. 호출부가 나눠 부른다.
@@ -868,10 +874,15 @@ def _extract_lot_ids(since_date):
     since_date 가 None 이면 전체(rebuild 용). 날짜 문자열("2026-07-30")이면
     **두 축의 합집합**으로 뽑는다:
 
-        검사일이 since_date 이후인 lot  UNION  스텝 처리시각이 since_date 이후인 lot
+        검사일이 since_date 이후인 lot
+        UNION (스텝 처리시각이 since_date 이후이면서 수율 원천에 이미 있는 lot)
 
     검사일만 보면 안 된다. 재작업 이력이 붙어도 yield 의 검사일은 그대로일 수 있어서,
     그 lot 이 재확인 창에 안 걸리고 **이력은 늘었는데 DB 에는 영영 안 들어온다.**
+
+    두 번째 축은 **수율 원천에 이미 있는 lot** 으로 좁힌다. 검사 전 재공 lot 까지
+    넣으면 yield 는 없고 이력만 있는 상태가 돼 매일 고아(orphan) 경고가 뜨거나
+    그 배치가 fatal 로 롤백된다 - 그 lot 은 검사가 끝난 뒤 검사일 축으로 들어온다.
     """
     raise NotImplementedError(
         "사내 추출 라이브러리를 연결하세요. "
