@@ -267,6 +267,19 @@ def _collect_lots(records, bag: set):
         yield r
 
 
+def _chunk_stray_fatal(chunk_requested: set, chunk_seen: set, consequence: str) -> list:
+    """청크가 요청한 lot 밖의 root_lot 을 실었는지 비교해 fatal 메시지 목록을 낸다
+    (없으면 빈 리스트). load_incremental 과 rebuild(H2) 가 같은 판정을 공유한다 -
+    비교 자체는 같지만 어긋났을 때의 해악은 호출부마다 달라 `consequence` 로 받는다.
+    """
+    chunk_stray = sorted(chunk_seen - chunk_requested)
+    if not chunk_stray:
+        return []
+    return [f"이 청크가 요청하지 않은 root_lot 을 실었다 {len(chunk_stray)}건 "
+           f"(이 청크 요청: {sorted(chunk_requested)}, 예: {chunk_stray[:3]}): "
+           f"추출 계약 위반 - {consequence}"]
+
+
 def _insert_batched(conn, sql, rows_iter):
     n, batch = 0, []
     for row in rows_iter:
@@ -284,8 +297,12 @@ def _insert_batched(conn, sql, rows_iter):
 def rebuild(batches, db_path: Path, verbose: bool = True, force: bool = False) -> dict:
     """전체 재적재. 임시 파일에 만들고 검증 통과 시에만 원자적 교체.
 
-    batches: `(yield_records, step_records)` 튜플의 반복자. 호출부가 lot 청크마다
-             하나씩 흘려보내면 전량을 메모리에 들지 않는다.
+    batches: 반복자. 원소는 `(yield_records, step_records)` 2-튜플(기존 계약 -
+             `load()`·CSV 경로가 쓴다, 요청 lot 개념이 없어 청크 검사를 안 한다)
+             이거나, `(root_lots, yield_records, step_records)` 3-튜플(H2 -
+             `--rebuild` CLI 가 쓴다. 그 청크가 요청한 lot 목록을 실어 청크별로
+             요청 대 납품을 검사한다). 길이로 구분한다 - 기존 호출부는 손대지 않고
+             그대로 2-튜플을 넘기면 전과 동일하게 동작한다.
 
     운영 DB 를 직접 DROP 하면, 추출 실패·프로세스 중단·검증 실패 시 어제까지 멀쩡하던
     데이터가 사라진 채 남는다(분석이 전부 no_paired_stratum 으로 끝나는데 원인이 안 보임).
@@ -305,13 +322,27 @@ def rebuild(batches, db_path: Path, verbose: bool = True, force: bool = False) -
         conn.executescript(DDL)
 
         n_y = n_s = 0
-        for yield_records, step_records in batches:
-            n_y += _insert_batched(conn, YIELD_INSERT, transform_yield(yield_records))
-            n_s += _insert_batched(conn, STEP_INSERT, transform_steps(step_records))
+        chunk_fatal = []                             # H2: 3-튜플 배치에서만 채워진다
+        for batch in batches:
+            if len(batch) == 3:
+                root_lots, yield_records, step_records = batch
+                chunk_seen = set()
+                n_y += _insert_batched(conn, YIELD_INSERT,
+                                       transform_yield(_collect_lots(yield_records, chunk_seen)))
+                n_s += _insert_batched(conn, STEP_INSERT,
+                                       transform_steps(_collect_lots(step_records, chunk_seen)))
+                chunk_fatal.extend(_chunk_stray_fatal(
+                    set(root_lots), chunk_seen,
+                    "다른 청크와 겹치면 그 lot 의 행이 이 재적재 안에서 두 번 들어간다"))
+            else:
+                yield_records, step_records = batch
+                n_y += _insert_batched(conn, YIELD_INSERT, transform_yield(yield_records))
+                n_s += _insert_batched(conn, STEP_INSERT, transform_steps(step_records))
 
         conn.executescript(INDEXES)                  # 인덱스는 적재 후에 만든다
         conn.commit()
         report = validate(conn, n_y, n_s)
+        report["fatal"].extend(chunk_fatal)
     except BaseException:
         conn.close()
         tmp_path.unlink(missing_ok=True)             # 기존 DB 는 건드리지 않는다
@@ -387,12 +418,10 @@ def load_incremental(chunks, db_path: Path, verbose: bool = True,
             #   lot 이면 그 삭제가 이미 지나가 이력이 두 벌이 된다(뒤 청크의 lot 이면
             #   뒤 삭제가 지워 무해하지만 둘을 가를 수 없어 함께 막는다).
             # validate() 는 이 계약을 모르므로(내부는 DB 만 본다) 여기서 직접 비교한다.
-            chunk_stray = sorted(chunk_seen - chunk_requested)
-            if chunk_stray:
-                chunk_fatal.append(
-                    f"이 청크가 요청하지 않은 root_lot 을 실었다 {len(chunk_stray)}건 "
-                    f"(이 청크 요청: {sorted(chunk_requested)}, 예: {chunk_stray[:3]}): "
-                    f"추출 계약 위반 - 요청 lot 의 삭제 키 밖이라 중복이나 누적이 생길 수 있다")
+            # rebuild()(H2)와 같은 헬퍼를 쓴다 - 비교는 같고 해악(consequence)만 다르다.
+            chunk_fatal.extend(_chunk_stray_fatal(
+                chunk_requested, chunk_seen,
+                "요청 lot 의 삭제 키 밖이라 중복이나 누적이 생길 수 있다"))
             # F6: 요청했으나 이 청크에서 한 행도 안 온 lot. fatal 이 아니다 —
             # 원천에서 사라진 lot(취소·보류 등)은 그 자체로 비정상이 아니다.
             zero_row_lots.extend(sorted(chunk_requested - chunk_seen))
@@ -909,6 +938,18 @@ def main():
     if args.since is not None and args.since < 0:
         ap.error(f"--since 는 음수를 받을 수 없음: {args.since}")
 
+    # H7: --lots 빈 값 검사를 더미 경고보다 앞에 둔다. 문자열 파싱뿐이라 부작용이
+    # 없고, 먼저 걸러야 어차피 거부될 입력에 더미 경고("대상 lot 만 갱신됩니다")가
+    # 먼저 찍혀 사람이 헷갈리는 일이 없다.
+    lots_from_arg = None
+    if args.lots is not None:
+        lots_from_arg = [s.strip() for s in args.lots.split(",") if s.strip()]
+        # G6: 공백·쉼표만 있는 --lots 는 조용히 "대상 0개" 로 정상 종료시키면 안 된다.
+        # --since 가 0개를 찾는 것과 달리, --lots 는 사람이 직접 값을 타이핑한
+        # 것이므로 빈 결과는 거의 항상 입력 실수다.
+        if not lots_from_arg:
+            ap.error(f"--lots 에 유효한 root_lot 이 없음: {args.lots!r}")
+
     # CSV 전용 옵션은 --yield-csv 모드에서만 의미가 있다. 다른 모드와 섞이면 조용히
     # 무시하지 않고 멈춘다 - 예를 들어 --since 와 --yield-unit 을 함께 주면 오타로
     # 보이지만 조용히 무시되면 사용자는 CSV 경로를 탄다고 착각하기 쉽다.
@@ -940,17 +981,14 @@ def main():
 
     if args.rebuild:
         lot_ids = _extract_lot_ids(None)
-        batches = (_extract(c) for c in _chunked(lot_ids, ya_config.LOAD_LOT_CHUNK))
+        # H2: 청크마다 그 청크가 요청한 lot 목록(c)도 함께 넘긴다 - rebuild() 가
+        # load_incremental 과 같은 청크 단위 요청 대 납품 검사를 하게 한다.
+        batches = ((c, *_extract(c)) for c in _chunked(lot_ids, ya_config.LOAD_LOT_CHUNK))
         report = rebuild(batches, db, force=args.force)
         raise SystemExit(0 if report["swapped"] else 1)
 
-    if args.lots is not None:
-        lot_ids = [s.strip() for s in args.lots.split(",") if s.strip()]
-        # G6: 공백·쉼표만 있는 --lots 는 조용히 "대상 0개" 로 정상 종료시키면 안 된다.
-        # --since 가 0개를 찾는 것과 달리, --lots 는 사람이 직접 값을 타이핑한
-        # 것이므로 빈 결과는 거의 항상 입력 실수다.
-        if not lot_ids:
-            ap.error(f"--lots 에 유효한 root_lot 이 없음: {args.lots!r}")
+    if lots_from_arg is not None:
+        lot_ids = lots_from_arg
     else:
         since = (date.today() - timedelta(days=args.since)).isoformat()
         lot_ids = _extract_lot_ids(since)

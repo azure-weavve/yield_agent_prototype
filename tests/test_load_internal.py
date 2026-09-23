@@ -1297,3 +1297,43 @@ def test_g9_committed_zero_row_line_says_it_was_deleted(tmp_path, monkeypatch):
 
     assert report["committed"] and not report["fatal"]
     assert "이번 커밋으로 DB 에서 지워졌다" in out
+
+
+# --------------------------------------------------------------------------- #
+# 최종 리뷰 - 닫힌 목록 H1~H7 (plan.md "최종 리뷰 결과와 결정") - H2
+# --------------------------------------------------------------------------- #
+def test_h2_rebuild_chunk_stray_blocks_the_swap(tmp_path):
+    """H2: --rebuild 도 load_incremental 과 같은 청크 단위 요청 대 납품 검사를
+    한다. 청크 2 는 B77B7 만 요청했는데 청크 1(A45Z5)의 step 행이 다시 섞여
+    오면(추출 파이프라인이 청크 경계를 못 지킨 버그) swap 하면 안 된다.
+    """
+    chunk1_yield = [{"root_lot_id": "A45Z5", "wafer_id": "01", "lot_id": "A45Z5.1",
+                     "lot_type": "PP", "yield": 91.2, "date": "2026-07-01"}]
+    chunk1_steps = [{"root_lot_id": "A45Z5", "wafer_id": "01", "step_seq": "CC002000",
+                     "eqp_id": "ETCH9", "timestamp": "t"}]
+    chunk2_yield = [{"root_lot_id": "B77B7", "wafer_id": "01", "lot_id": "B77B7.1",
+                     "lot_type": "PP", "yield": 88.0, "date": "2026-08-01"}]
+    chunk2_steps = [
+        {"root_lot_id": "B77B7", "wafer_id": "01", "step_seq": "CC002000",
+         "eqp_id": "ETCH9", "timestamp": "t"},
+        # 청크 1(A45Z5)의 step 행이 청크 2 에 다시 실려 온다 - 청크 2 는 B77B7 만 요청했다
+        {"root_lot_id": "A45Z5", "wafer_id": "01", "step_seq": "CC002000",
+         "eqp_id": "ETCH9", "timestamp": "t"},
+    ]
+    batches = [
+        (["A45Z5"], chunk1_yield, chunk1_steps),
+        (["B77B7"], chunk2_yield, chunk2_steps),
+    ]
+
+    report = li.rebuild(batches, tmp_path / "t.db", verbose=False)
+
+    assert not report["swapped"]
+    assert any("이 청크가 요청하지 않은" in f for f in report["fatal"])
+
+
+def test_h2_rebuild_without_lot_lists_is_unaffected(tmp_path):
+    """H2 대칭: load()/CSV 경로가 쓰는 기존 2-튜플 계약은 청크 검사 없이 그대로
+    동작해야 한다(요청 lot 개념이 없다)."""
+    report = li.load(YIELDS, STEPS, tmp_path / "t.db", verbose=False)
+
+    assert report["swapped"] and not report["fatal"]
