@@ -9,6 +9,22 @@
   별도 캐시 DB(sensor_cache.db) + SensorStore 계층으로 따로 붙인다. 여기서 다루지 않는다.
 
 ────────────────────────────────────────────────────────────────────────
+사내가 채울 함수 2개
+
+  _extract_lot_ids(since_date) -> ["A45Z5", "B12X3", ...]
+      since_date=None      : 전체 root_lot (--rebuild 용)
+      since_date="2026-07-30": 검사일이 그 날 이후인 lot
+                               UNION 스텝 처리시각이 그 날 이후인 lot
+
+      ⚠️ 검사일만 보면 안 된다. 재작업 이력이 붙어도 yield 의 검사일은 그대로일
+         수 있어서, 그 lot 이 재확인 창에 안 걸리고 이력이 영영 안 들어온다.
+
+  _extract(root_lots) -> (yield_records, step_records)
+      root_lots 는 LOAD_LOT_CHUNK(기본 20) 개 이하. 호출부가 나눠 부른다.
+
+      ⚠️ 전량을 한 번에 만들지 말 것. dict 2,800만 개는 10GB 를 넘고, 적재가
+         끝날 때까지 그 리스트가 살아 있어 메모리가 32GB 까지 오른다(사내 실측).
+────────────────────────────────────────────────────────────────────────
 입력 계약 — `_extract()` 가 반환할 형태 (원천 컬럼명 그대로 통과시켜도 된다)
 
   yield_records : [{root_lot_id, wafer_id, lot_id, lot_type, yield, date,

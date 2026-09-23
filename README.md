@@ -182,7 +182,10 @@ prototype/
 ├── main.py                실행 진입점 (하이브리드 분석 루프 데모)
 ├── data/
 │   ├── generate_dummy.py  더미 생성 (yield + step_history + 임베딩, 유사 그룹 심기)
-│   ├── load_internal.py   사내 실데이터 적재 ETL (추출은 사내 lib — _extract() 에 연결)
+│   ├── load_internal.py   사내 실데이터 적재 ETL (전체 --rebuild / 증분 --since,--lots
+│   │                      / 사례 CSV --yield-csv --steps-csv --yield-unit --db
+│   │                      data/cases/caseNN.db, 추출은 사내 lib -
+│   │                      _extract_lot_ids()·_extract() 에 연결)
 │   ├── yield.db           (생성물) SQLite — gitignore
 │   └── embeddings/        (생성물) hnswlib 인덱스 — gitignore
 ├── domain/                도메인 전문가가 손대는 자리
