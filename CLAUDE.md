@@ -26,9 +26,9 @@ See [docs/next_step_claude.md](docs/next_step_claude.md) (P0-2).
 
 - Claude main: requirements, design, planning, task split, coordination.
 - Claude Sonnet 5: implement/test/fix `owner: claude` work.
-- Claude Opus 5 (`high effort`): independently review Claude-owned work.
-- Codex GPT-5.6 Terra: implement/test/fix `owner: codex` work.
-- Codex GPT-5.6 Sol (`high effort`): independently review Codex-owned work.
+- Claude Opus 5.5 (`high effort`): independently review Claude-owned work.
+- Codex GPT-6 Terra: implement/test/fix `owner: codex` work.
+- Codex GPT-6 Sol (`high effort`): independently review Codex-owned work.
 - Codex GPT-6 Astra (`low effort`): final integrated review of all task changes.
 - Explicit user instructions override this file.
 

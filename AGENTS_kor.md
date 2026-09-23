@@ -4,9 +4,9 @@
 
 - Claude 메인: 설계, 구현계획, Claude/Codex 작업 분할
 - Claude Sonnet 5: `owner: claude` 범위 구현 및 수정
-- Claude Opus 5 (`high effort`): Claude 담당 구현 리뷰
-- Codex GPT-5.6 Terra: `owner: codex` 범위 구현, 테스트, 수정
-- Codex GPT-5.6 Sol (`high effort`): Codex 담당 구현 리뷰
+- Claude Opus 5.5 (`high effort`): Claude 담당 구현 리뷰
+- Codex GPT-6 Terra: `owner: codex` 범위 구현, 테스트, 수정
+- Codex GPT-6 Sol (`high effort`): Codex 담당 구현 리뷰
 - Codex GPT-6 Astra (`low effort`): Claude와 Codex 전체 변경사항의 최종 통합 리뷰
 - 사용자가 명시적으로 역할을 변경하면 해당 지시를 우선한다.
 

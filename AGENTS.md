@@ -4,9 +4,9 @@
 
 - Claude main: design, planning, Claude/Codex split.
 - Claude Sonnet 5: implement/fix `owner: claude` scope.
-- Claude Opus 5 (`high effort`): review Claude-owned implementation.
-- Codex GPT-5.6 Terra: implement/test/fix `owner: codex` scope.
-- Codex GPT-5.6 Sol (`high effort`): review Codex-owned implementation.
+- Claude Opus 5.5 (`high effort`): review Claude-owned implementation.
+- Codex GPT-6 Terra: implement/test/fix `owner: codex` scope.
+- Codex GPT-6 Sol (`high effort`): review Codex-owned implementation.
 - Codex GPT-6 Astra (`low effort`): final integrated review of all task changes.
 - Explicit user instructions override this file.
 

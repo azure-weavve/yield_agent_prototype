@@ -25,9 +25,9 @@ finalize 게이트의 판정 의미론 - 판정 이름, 하한, 판정문 문면
 
 - Claude 메인: 요구사항 분석, 설계, 구현계획, 작업 분할 및 전체 조율
 - Claude Sonnet 5: Claude 담당 범위 구현, 테스트, 리뷰 지적에 따른 수정
-- Claude Opus 5 (`high effort`): Claude 담당 구현의 독립 리뷰
-- Codex GPT-5.6 Terra: Codex 담당 범위 구현, 테스트, 리뷰 지적에 따른 수정
-- Codex GPT-5.6 Sol (`high effort`): Codex 담당 구현의 독립 리뷰
+- Claude Opus 5.5 (`high effort`): Claude 담당 구현의 독립 리뷰
+- Codex GPT-6 Terra: Codex 담당 범위 구현, 테스트, 리뷰 지적에 따른 수정
+- Codex GPT-6 Sol (`high effort`): Codex 담당 구현의 독립 리뷰
 - Codex GPT-6 Astra (`low effort`): Claude와 Codex의 모든 변경을 대상으로 한 최종 전체 리뷰
 - 사용자가 명시적으로 역할을 변경하면 해당 지시를 우선한다.
 
