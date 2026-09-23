@@ -13,8 +13,11 @@ import time
 import uuid
 
 ROOT = Path(__file__).resolve().parent
-IMPLEMENTATION_MODEL = "gpt-5.6-sol"
+IMPLEMENTATION_MODEL = "gpt-5.6-terra"
+SCOPED_REVIEW_MODEL = "gpt-5.6-sol"
+SCOPED_REVIEW_EFFORT = "high"
 REVIEW_MODEL = "gpt-6-astra"
+REVIEW_EFFORT = "low"
 FINALS = {"complete", "blocked", "needs_design_revision"}
 PENDING = {"queued", "dispatch_unknown", "running"}
 
@@ -137,17 +140,43 @@ First execute in PowerShell:
 Set-Location -LiteralPath {quote(repo)}
 {base} claim {args}
 If transient operation lock fails, retry shortly. If run is not active or already claimed, STOP.
-After successful claim, coordinate a gpt-5.6-sol implementation subagent and a separate
-gpt-6-astra review subagent. Explicitly specify models and separate contexts.
-Children must not delegate again. Main checks scope and acceptance criteria and reports progress.
-Review follows implementation; Sol fixes findings and Astra rechecks. Never substitute models.
+First inspect ownership markers in the plan. Implement only `owner: codex` scope; preserve
+completed Claude-owned changes. If ownership is missing or conflicts, stop and finish with
+needs_design_revision. Coordinate these separate contexts in order, never substituting models:
+1. gpt-5.6-terra implements, tests, and fixes Codex-owned scope.
+2. gpt-5.6-sol at high effort reviews only Codex-owned scope; reviewers never edit product code.
+3. Terra fixes valid Sol findings, runs relevant validation, and Sol re-reviews every fix.
+4. Only after Sol passes, gpt-6-astra at low effort reviews the full task diff, including
+   Claude-owned work and the interfaces between scopes; Astra never edits product code.
+If Astra finds a Claude-scope defect, record its location, trigger, impact, and evidence in
+review.md, then finish needs_design_revision. If it finds a Codex-scope defect, Terra fixes it,
+Sol re-reviews at high effort, and Astra repeats the integrated review at low effort.
+If a required model, effort, execution capability, or validation is unavailable, finish blocked
+with a concrete reason. Children must not delegate again. Main checks scope and acceptance
+criteria and reports progress.
 Do not invoke Claude, recursively run workflow.py run, commit, push, or deploy.
-Update {rel}/handoff.md and {rel}/review.md for this run.
+Update {rel}/handoff.md and {rel}/review.md for this run before finishing.
+handoff.md must cover: Codex changes; separation from Claude-owned changes; acceptance-criteria
+status and evidence; validation commands/results; skipped validation and reasons; deviations and
+reasons; remaining issues; review baseline commit and diff scope; and relevant pre-existing or
+uncommitted changes. For valid Codex findings, update it with fixes, validation, and any rejected
+finding's code/test evidence.
+review.md must cover: reviewed code version and full diff scope; Sol scoped-review result;
+Astra integrated-review result; each defect's severity, location, trigger, impact, and evidence;
+confirmed versus suspected findings; acceptance-criteria verification; unverified items and
+reasons; and final status (pass / changes required / validation incomplete). Use these section
+titles exactly: `Codex scoped review — Sol (high effort)` and
+`Integrated final review — Astra (low effort)`.
 Then record the final outcome with:
-{base} finish {args} --status STATUS --summary 'SUMMARY' --implementation-model 'MODEL' --review-model 'MODEL'
+{base} finish {args} --status STATUS --summary 'SUMMARY' --implementation-model 'MODEL' --scoped-review-model 'MODEL' --scoped-review-effort 'EFFORT' --review-model 'MODEL' --review-effort 'EFFORT'
 Replace placeholders; STATUS is complete, blocked, or needs_design_revision.
-Use complete only after fresh artifacts and required verification pass.
-Model names are self-reports, not independent proof. Use empty strings for models not run.
+Use complete only after fresh artifacts and required verification pass; every plan acceptance
+criterion is met; any Claude-owned scope was implemented by Sonnet and reviewed by Opus at high
+effort; Codex-owned scope passed Terra implementation and Sol's final high-effort review; no
+blocking findings remain; and Astra reviewed the final full revision at low effort.
+For complete, report gpt-5.6-terra; gpt-5.6-sol and high; gpt-6-astra and low, respectively.
+Model names and effort values are self-reports, not independent proof. Use empty strings for
+models/efforts not run.
 On missing capabilities or failed verification, record blocked with a concrete reason.
 Do not edit workflow state directly. Finish must succeed before reporting recorded completion.
 """
@@ -196,7 +225,8 @@ def run(raw, thread_id=None, dry_run=False, timeout=60, repo=ROOT):
             "run_id": run_id, "task": task.relative_to(repo).as_posix(),
             "thread_id": target, "status": "dispatch_unknown", "created_at": now(),
             "request": str(request_path), "model_verification": "self_report",
-            "implementation_model": "", "review_model": "",
+            "implementation_model": "", "scoped_review_model": "",
+            "scoped_review_effort": "", "review_model": "", "review_effort": "",
             "before": {name: sig(task / name) for name in ("handoff.md", "review.md")},
         }
         save(task, state)
@@ -251,21 +281,48 @@ def claim(raw, run_id, repo=ROOT):
         return state
 
 
+RESULT_FIELDS = {
+    "status", "summary", "implementation_model", "scoped_review_model",
+    "scoped_review_effort", "review_model", "review_effort",
+}
+LEGACY_RESULT_FIELDS = {"status", "summary", "implementation_model", "review_model"}
+
+
+def normalize_result(result):
+    if not isinstance(result, dict):
+        raise WorkflowError("invalid result fields")
+    fields = set(result)
+    status = result.get("status")
+    if fields == LEGACY_RESULT_FIELDS and status in FINALS and status != "complete":
+        result = {**result, "scoped_review_model": "", "scoped_review_effort": "",
+                  "review_effort": ""}
+        fields = set(result)
+    if fields != RESULT_FIELDS or any(not isinstance(result[key], str) for key in RESULT_FIELDS):
+        raise WorkflowError("invalid result fields")
+    return result
+
+
+def same_final_result(state, result):
+    return (state.get("status") == result["status"]
+            and all(state.get(key, "") == value for key, value in result.items()))
+
+
 def finish(raw, run_id, result, repo=ROOT):
     repo = repo.resolve()
     with Lock(repo / ".workflow.lock"):
         task, marker, state = correlated(raw, run_id, repo)
-        if state["status"] in FINALS and all(state.get(key) == value for key, value in result.items()) and result.get("status") == state["status"]:
+        result = normalize_result(result)
+        if state["status"] in FINALS and same_final_result(state, result):
             marker.unlink()
             return state
         if state["status"] != "running" or result.get("status") not in FINALS:
             raise WorkflowError("invalid finish")
-        keys = {"status", "summary", "implementation_model", "review_model"}
-        if set(result) != keys or any(not isinstance(result[key], str) for key in keys):
-            raise WorkflowError("invalid result fields")
         if result["status"] == "complete":
             if (result["implementation_model"] != IMPLEMENTATION_MODEL
-                    or result["review_model"] != REVIEW_MODEL):
+                    or result["scoped_review_model"] != SCOPED_REVIEW_MODEL
+                    or result["scoped_review_effort"] != SCOPED_REVIEW_EFFORT
+                    or result["review_model"] != REVIEW_MODEL
+                    or result["review_effort"] != REVIEW_EFFORT):
                 raise WorkflowError("reported model mismatch")
             for name in ("handoff.md", "review.md"):
                 if sig(task / name) is None or sig(task / name) == state["before"][name]:
@@ -324,7 +381,10 @@ def main(argv=None):
             child.add_argument("--status", choices=sorted(FINALS), required=True)
             child.add_argument("--summary", required=True)
             child.add_argument("--implementation-model", default="")
+            child.add_argument("--scoped-review-model", default="")
+            child.add_argument("--scoped-review-effort", default="")
             child.add_argument("--review-model", default="")
+            child.add_argument("--review-effort", default="")
     args = parser.parse_args(argv)
     try:
         if args.action == "run":
@@ -334,7 +394,10 @@ def main(argv=None):
         elif args.action == "finish":
             out = finish(args.task, args.run_id, {
                 "status": args.status, "summary": args.summary,
-                "implementation_model": args.implementation_model, "review_model": args.review_model,
+                "implementation_model": args.implementation_model,
+                "scoped_review_model": args.scoped_review_model,
+                "scoped_review_effort": args.scoped_review_effort,
+                "review_model": args.review_model, "review_effort": args.review_effort,
             })
         elif args.action == "abandon":
             out = abandon(args.task, args.run_id)
