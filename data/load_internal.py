@@ -380,17 +380,19 @@ def load_incremental(chunks, db_path: Path, verbose: bool = True,
                                    transform_steps(_collect_lots(step_records, chunk_seen)))
             lots.extend(root_lots)
 
-            # 요청 대 납품 계약(청크 단위) — _scope 는 요청한 lot 으로만 채워지므로,
-            # 원천이 요청과 다른 표기(고정폭 CHAR 의 뒤 공백 등)나 다른 청크의 lot 을
-            # 실으면 그 행은 삭제 키에도 _in_scope() 에도 안 걸려 검사 1~6 을 전부
-            # 통과해버린다. validate() 는 이 계약을 모르므로(내부는 DB 만 본다) 여기서
-            # 직접 비교한다.
+            # 요청 대 납품 계약(청크 단위). 어긋나는 모양이 둘이고 해악이 다르다:
+            # - 요청과 다른 표기(고정폭 CHAR 의 뒤 공백 등): 삭제 키에도 _in_scope() 에도
+            #   안 걸려 검사 1~6 을 통과하고, 재적재마다 누적된다.
+            # - 다른 청크의 lot: _scope 안에는 있지만 삭제 타이밍이 어긋난다 - 앞 청크의
+            #   lot 이면 그 삭제가 이미 지나가 이력이 두 벌이 된다(뒤 청크의 lot 이면
+            #   뒤 삭제가 지워 무해하지만 둘을 가를 수 없어 함께 막는다).
+            # validate() 는 이 계약을 모르므로(내부는 DB 만 본다) 여기서 직접 비교한다.
             chunk_stray = sorted(chunk_seen - chunk_requested)
             if chunk_stray:
                 chunk_fatal.append(
                     f"이 청크가 요청하지 않은 root_lot 을 실었다 {len(chunk_stray)}건 "
                     f"(이 청크 요청: {sorted(chunk_requested)}, 예: {chunk_stray[:3]}): "
-                    f"추출 계약 위반 - 다음 청크의 삭제 키에 안 걸려 이력이 두 벌로 남는다")
+                    f"추출 계약 위반 - 요청 lot 의 삭제 키 밖이라 중복이나 누적이 생길 수 있다")
             # F6: 요청했으나 이 청크에서 한 행도 안 온 lot. fatal 이 아니다 —
             # 원천에서 사라진 lot(취소·보류 등)은 그 자체로 비정상이 아니다.
             zero_row_lots.extend(sorted(chunk_requested - chunk_seen))
