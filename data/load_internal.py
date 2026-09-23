@@ -338,19 +338,19 @@ def load_incremental(chunks, db_path: Path, verbose: bool = True,
     conn = sqlite3.connect(db_path)
     conn.isolation_level = None          # 트랜잭션 경계를 이 함수가 직접 잡는다
     lots, n_y, n_s, del_y, del_s = [], 0, 0, 0, 0
-    requested_lots, seen_lots = set(), set()
     chunk_fatal, zero_row_lots = [], []
     try:
         conn.execute("BEGIN")
         for root_lots, yield_records, step_records in chunks:
             root_lots = list(root_lots)
-            requested_lots.update(root_lots)
             chunk_requested = set(root_lots)
-            chunk_seen = set()           # 이번 청크에서만 새로 채우는 감시 — 전체
-                                          # 누적 seen_lots 로는 청크 2 가 청크 1 의
-                                          # lot 을 실어 오는 사고를 못 잡는다(그 lot 은
-                                          # 청크 1 에서 이미 requested_lots 에 들어가
-                                          # "요청 안 한 lot" 이 아니게 된다).
+            chunk_seen = set()           # 이번 청크에서 실제로 실려 온 root_lot.
+                                          # 청크마다 새로 만든다 - 실행 전체를 누적해서
+                                          # 비교하면(옛 구현) 청크 2 가 청크 1 의 lot 을
+                                          # 실어 오는 사고를 못 잡는다. 그 lot 은 청크 1
+                                          # 에서 이미 "요청한 lot" 에 들어가 있어서다.
+                                          # 청크 단위 비교는 이 사고를 포함해 전역 비교가
+                                          # 잡던 것을 전부 잡으므로 전역 비교는 따로 안 둔다.
             ph = ",".join("?" * len(root_lots))
             del_s += conn.execute(
                 f"DELETE FROM step_history WHERE root_lot_id IN ({ph})",
@@ -359,43 +359,42 @@ def load_incremental(chunks, db_path: Path, verbose: bool = True,
                 f"DELETE FROM yield WHERE root_lot_id IN ({ph})",
                 root_lots).rowcount
             n_y += _insert_batched(conn, YIELD_INSERT,
-                                   transform_yield(_collect_lots(
-                                       _collect_lots(yield_records, chunk_seen), seen_lots)))
+                                   transform_yield(_collect_lots(yield_records, chunk_seen)))
             n_s += _insert_batched(conn, STEP_INSERT,
-                                   transform_steps(_collect_lots(
-                                       _collect_lots(step_records, chunk_seen), seen_lots)))
+                                   transform_steps(_collect_lots(step_records, chunk_seen)))
             lots.extend(root_lots)
 
-            # F5: 청크 단위 stray 비교. 전체 실행 단위 비교(아래)만으로는 청크 2 가
-            # 청크 1 의 lot 을 실어 오는 사고를 못 잡는다.
+            # 요청 대 납품 계약(청크 단위) — _scope 는 요청한 lot 으로만 채워지므로,
+            # 원천이 요청과 다른 표기(고정폭 CHAR 의 뒤 공백 등)나 다른 청크의 lot 을
+            # 실으면 그 행은 삭제 키에도 _in_scope() 에도 안 걸려 검사 1~6 을 전부
+            # 통과해버린다. validate() 는 이 계약을 모르므로(내부는 DB 만 본다) 여기서
+            # 직접 비교한다.
             chunk_stray = sorted(chunk_seen - chunk_requested)
             if chunk_stray:
                 chunk_fatal.append(
-                    f"청크가 요청하지 않은 root_lot 을 실었다 {len(chunk_stray)}건 "
+                    f"이 청크가 요청하지 않은 root_lot 을 실었다 {len(chunk_stray)}건 "
                     f"(이 청크 요청: {sorted(chunk_requested)}, 예: {chunk_stray[:3]}): "
-                    f"다음 청크의 삭제 키에 안 걸려 이력이 두 벌로 남는다")
+                    f"추출 계약 위반 - 다음 청크의 삭제 키에 안 걸려 이력이 두 벌로 남는다")
             # F6: 요청했으나 이 청크에서 한 행도 안 온 lot. fatal 이 아니다 —
             # 원천에서 사라진 lot(취소·보류 등)은 그 자체로 비정상이 아니다.
             zero_row_lots.extend(sorted(chunk_requested - chunk_seen))
         report = validate(conn, n_y, n_s, root_lots=lots)
     except BaseException:
-        conn.execute("ROLLBACK")         # 추출 실패·중단·스키마 위반 전부 여기로
-        conn.close()
+        # 추출 실패·중단·스키마 위반 전부 여기로. SQLITE_FULL/IOERR 류는 SQLite 가
+        # 트랜잭션을 스스로 이미 되돌려 놓을 수 있다 - 그 상태에서 ROLLBACK 을 다시
+        # 실행하면 "cannot rollback - no transaction is active" 가 나며, 그 새
+        # 예외가 원래 실패 사유를 가리면 안 된다. COMMIT 실패 경로(아래)와 같은 모양.
+        try:
+            conn.execute("ROLLBACK")
+        except BaseException:
+            pass
+        finally:
+            conn.close()
         raise
 
     report["fatal"].extend(chunk_fatal)
     report["n_zero_row_lots"] = len(zero_row_lots)
     report["zero_row_lots"] = zero_row_lots
-
-    # 요청 대 납품 계약 — _scope 는 요청한 lot 으로만 채워지므로, 원천이 요청과
-    # 다른 표기(고정폭 CHAR 의 뒤 공백 등)로 lot 을 실으면 그 행은 삭제 키에도
-    # _in_scope() 에도 안 걸려 검사 1~6 을 전부 통과해버린다. validate() 는 이
-    # 계약을 모르므로(내부는 DB 만 본다) 여기서 직접 비교한다.
-    stray = sorted(seen_lots - requested_lots)
-    if stray:
-        report["fatal"].append(
-            f"요청하지 않은 root_lot 이 실려 왔다 {len(stray)}건 (예: {stray[:3]}): "
-            f"이 행들은 lot 단위 삭제 키에 안 걸려 지워지지 않고 재적재마다 누적된다")
 
     committed = force or not report["fatal"]
     try:
@@ -591,7 +590,10 @@ def validate(conn: sqlite3.Connection, n_yield: int, n_steps: int,
 def _print(r: dict) -> None:
     _say(f"[적재] yield {r['n_yield']}행 / step_history {r['n_steps']}행")
     if "n_lots" in r:                       # 증분에서만
-        _say(f"[증분] 대상 lot {r['n_lots']}개 · 삭제 yield {r['n_deleted_yield']}행"
+        # G4: 롤백되면 이 시점의 삭제 행수도 [전체] 카운트와 같은 문제다 - 곧
+        # 되돌려질 DELETE 결과를 확정된 것처럼 찍으면 안 된다. [전체] 와 같은 라벨.
+        incr_label = "[증분]" if r.get("committed") else "[증분](롤백 전)"
+        _say(f"{incr_label} 대상 lot {r['n_lots']}개 · 삭제 yield {r['n_deleted_yield']}행"
              f" / step_history {r['n_deleted_steps']}행")
         # 롤백되면 이 시점의 [전체] 카운트는 곧 되돌려질 값이다 — 확정된 것처럼
         # 그냥 찍으면 사람이 커밋된 줄 착각한다. 커밋 여부를 라벨에 밝힌다.
@@ -599,8 +601,14 @@ def _print(r: dict) -> None:
         _say(f"{total_label} yield {r['n_total_yield']}행 / step_history "
              f"{r['n_total_steps']}행 · root_lot {r['n_total_root_lots']}개")
         if r.get("n_zero_row_lots"):
-            _say(f"[증분] 0행으로 돌아온 lot {r['n_zero_row_lots']}개 "
-                 f"(예: {r['zero_row_lots'][:3]}): 원천에서 사라진 lot 일 수 있다")
+            zero_msg = (f"[증분] 0행으로 돌아온 lot {r['n_zero_row_lots']}개 "
+                       f"(예: {r['zero_row_lots'][:3]}): 원천에서 사라진 lot 일 수 있다")
+            if r.get("committed"):
+                # G9: 이 lot 들은 DELETE 는 되고 다시 채워지지 않았다 - 커밋됐으면
+                # "원천에서 사라졌을 수 있다" 는 추측이 아니라 이번에 실제로 지워진
+                # 것이다.
+                zero_msg += " - 이번 커밋으로 DB 에서 지워졌다"
+            _say(zero_msg)
     _say(f"[구성] root_lot {r['n_root_lots']}개 · 이력 보유 wafer {r['n_wafers_with_history']}장 "
          f"· lot_type {r['lot_types']}")
     _say(f"[이력] wafer 당 스텝 {r['steps_per_wafer']} · ch_id 결측률 {r['ch_id_null_rate']}"
@@ -877,6 +885,12 @@ def main():
     # 조용히 뚫린다. 비교할 때만 resolve() 하고, load() 에 넘기는 db 는 원래 값 그대로 둔다.
     is_dummy_path = db.resolve() == Path(ya_config.DB_PATH).resolve()
 
+    # G5: 음수 N 은 미래 날짜를 만든다("오늘 - (-N)일") - 조용히 받으면 사내 추출이
+    # 미래 검사일을 찾다가 조용히 0건으로 끝나거나(원인 불명), 원천 쪽 구현에 따라
+    # 다르게 실패한다. 사람 실수(부호)일 가능성이 높으므로 여기서 바로 멈춘다.
+    if args.since is not None and args.since < 0:
+        ap.error(f"--since 는 음수를 받을 수 없음: {args.since}")
+
     # CSV 전용 옵션은 --yield-csv 모드에서만 의미가 있다. 다른 모드와 섞이면 조용히
     # 무시하지 않고 멈춘다 - 예를 들어 --since 와 --yield-unit 을 함께 주면 오타로
     # 보이지만 조용히 무시되면 사용자는 CSV 경로를 탄다고 착각하기 쉽다.
@@ -897,7 +911,14 @@ def main():
         raise SystemExit(0 if report["swapped"] else 1)
 
     if is_dummy_path:
-        _say(f"[주의] {db} 는 더미 DB 와 같은 경로입니다. 기존 내용이 대체됩니다.")
+        # G7: --rebuild 는 실제로 DB 전체를 갈아끼우지만("대체"), --since/--lots 는
+        # 요청한 lot 만 지우고 다시 넣는다. 같은 "대체됩니다" 문구를 쓰면 증분
+        # 모드에서도 DB 전체가 날아가는 것처럼 읽혀 사람이 겁먹거나(과잉 대응) 실제
+        # 위험(다른 lot 은 그대로 남는다는 것)을 오히려 놓친다.
+        if args.rebuild:
+            _say(f"[주의] {db} 는 더미 DB 와 같은 경로입니다. 기존 내용이 대체됩니다.")
+        else:
+            _say(f"[주의] {db} 는 더미 DB 와 같은 경로입니다. 대상 lot 만 갱신됩니다.")
 
     if args.rebuild:
         lot_ids = _extract_lot_ids(None)
@@ -907,6 +928,11 @@ def main():
 
     if args.lots is not None:
         lot_ids = [s.strip() for s in args.lots.split(",") if s.strip()]
+        # G6: 공백·쉼표만 있는 --lots 는 조용히 "대상 0개" 로 정상 종료시키면 안 된다.
+        # --since 가 0개를 찾는 것과 달리, --lots 는 사람이 직접 값을 타이핑한
+        # 것이므로 빈 결과는 거의 항상 입력 실수다.
+        if not lot_ids:
+            ap.error(f"--lots 에 유효한 root_lot 이 없음: {args.lots!r}")
     else:
         since = (date.today() - timedelta(days=args.since)).isoformat()
         lot_ids = _extract_lot_ids(since)

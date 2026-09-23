@@ -454,7 +454,8 @@ def test_a_stray_lot_seen_only_in_yield_is_still_caught(tmp_path):
                                  verbose=False)
 
     assert report["fatal"] and not report["committed"]
-    assert any("요청하지 않은 root_lot" in f for f in report["fatal"])
+    # G2: 전역 stray 검사는 없어지고 청크 검사만 남았다 - 청크 메시지 전용 문구로 좁힌다.
+    assert any("이 청크가 요청하지 않은" in f for f in report["fatal"])
     assert _counts(db) == before
 
 
@@ -484,7 +485,8 @@ def test_a_stray_lot_seen_only_in_steps_is_still_caught(tmp_path):
                                  verbose=False)
 
     assert report["fatal"] and not report["committed"]
-    assert any("요청하지 않은 root_lot" in f for f in report["fatal"])
+    # G2: 전역 stray 검사는 없어지고 청크 검사만 남았다 - 청크 메시지 전용 문구로 좁힌다.
+    assert any("이 청크가 요청하지 않은" in f for f in report["fatal"])
     assert _counts(db) == before
 
 
@@ -1080,3 +1082,218 @@ def test_incremental_report_counts_requested_lots_that_delivered_zero_rows(tmp_p
     assert report["committed"] and not report["fatal"]
     assert report["n_zero_row_lots"] == 1
     assert report["zero_row_lots"] == ["Z00Z0"]
+
+
+# --------------------------------------------------------------------------- #
+# Task 5 Opus 재리뷰 - 닫힌 목록 G1~G9 (plan.md "Task 5 리뷰 결과와 결정")
+# --------------------------------------------------------------------------- #
+class _CloseTrackingConn:
+    """실제 connection 을 감싸 close() 호출 여부만 관측한다. execute 는 서브클래스가
+    필요한 SQL 만 가로채고 나머지는 실제 connection 에 위임한다."""
+
+    def __init__(self, real):
+        object.__setattr__(self, "_real", real)
+        object.__setattr__(self, "closed", False)
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+    def __setattr__(self, name, value):
+        if name == "closed":
+            object.__setattr__(self, name, value)
+        else:
+            setattr(self._real, name, value)
+
+    def close(self):
+        object.__setattr__(self, "closed", True)
+        self._real.close()
+
+
+def test_g1_outer_rollback_failure_does_not_mask_the_original_error(tmp_path, monkeypatch):
+    """G1: validate() 이전 실패에서도 COMMIT 실패 경로와 같은 모양을 쓴다.
+
+    SQLite 가 SQLITE_FULL/IOERR 류로 트랜잭션을 스스로 이미 되돌려 놓은 상황을
+    흉내낸다(validate 를 가짜로 바꿔 그 안에서 직접 ROLLBACK 한 뒤 예외를 던짐).
+    바깥 except 가 정리 차 다시 시도하는 ROLLBACK 은 "트랜잭션 없음" 으로 실패하는데,
+    이 새 예외가 원래 실패 사유(ORIGINAL)를 가리면 안 되고 connection 은 닫혀야 한다.
+    """
+    db = _seed(tmp_path)
+
+    def bad_validate(conn, *a, **k):
+        conn.execute("ROLLBACK")          # SQLite 가 스스로 되돌린 상황을 흉내
+        raise ValueError("ORIGINAL")
+
+    monkeypatch.setattr(li, "validate", bad_validate)
+
+    real_connect = sqlite3.connect
+    holder = {}
+
+    def fake_connect(path):
+        w = _CloseTrackingConn(real_connect(path))
+        holder["conn"] = w
+        return w
+
+    monkeypatch.setattr(li.sqlite3, "connect", fake_connect)
+
+    with pytest.raises(ValueError, match="ORIGINAL"):
+        li.load_incremental([(["B77B7"], B_YIELDS, B_STEPS)], db, verbose=False)
+
+    assert holder["conn"].closed
+
+
+def test_g2_a_yield_lot_leaked_from_an_earlier_chunk_is_caught_per_chunk(tmp_path):
+    """G2: step 쪽 누수(F5)의 대칭 - yield 쪽도 앞 청크의 lot 이 새 나오면 잡혀야
+    한다. 청크 2 는 C88C8 만 요청했는데 yield 스트림에 청크 1 의 B77B7 행이
+    다시 섞여 온다."""
+    db = _seed(tmp_path)
+    chunk1_yield = [{"root_lot_id": "B77B7", "wafer_id": "01", "lot_id": "B77B7.1",
+                     "lot_type": "PP", "yield": 88.0, "date": "2026-08-01"}]
+    chunk1_steps = [{"root_lot_id": "B77B7", "wafer_id": "01", "step_seq": "CC002000",
+                     "eqp_id": "ETCH9", "timestamp": "t"}]
+    chunk2_yield = [
+        {"root_lot_id": "C88C8", "wafer_id": "01", "lot_id": "C88C8.1",
+         "lot_type": "PP", "yield": 70.0, "date": "2026-08-02"},
+        {"root_lot_id": "B77B7", "wafer_id": "02", "lot_id": "B77B7.1",
+         "lot_type": "PP", "yield": 60.0, "date": "2026-08-02"},
+    ]
+    chunk2_steps = [{"root_lot_id": "C88C8", "wafer_id": "01", "step_seq": "CC002000",
+                     "eqp_id": "ETCH9", "timestamp": "t"}]
+
+    report = li.load_incremental(
+        [(["B77B7"], chunk1_yield, chunk1_steps),
+         (["C88C8"], chunk2_yield, chunk2_steps)], db, verbose=False)
+
+    assert report["fatal"] and not report["committed"]
+    assert any("이 청크가 요청하지 않은" in f for f in report["fatal"])
+
+
+def test_g3_rebuild_extraction_runs_once_per_chunk(tmp_path, monkeypatch):
+    """G3: --rebuild 경로도 lot 을 청크로 나눠 _extract 를 부른다
+    (test_extraction_runs_once_per_chunk 의 rebuild 판)."""
+    db = tmp_path / "t.db"
+    seen = []
+
+    def fake_extract(chunk):
+        seen.append(list(chunk))
+        return [], []
+
+    lots = [f"L{i:03d}" for i in range(45)]
+    monkeypatch.setattr(li, "_extract_lot_ids", lambda since: lots)
+    monkeypatch.setattr(li, "_extract", fake_extract)
+    monkeypatch.setattr(ya_config, "LOAD_LOT_CHUNK", 20)
+    monkeypatch.setattr(sys, "argv",
+                        ["load_internal.py", "--rebuild", "--db", str(db), "--force"])
+
+    try:
+        li.main()
+    except SystemExit:
+        pass
+
+    assert [len(c) for c in seen] == [20, 20, 5]
+    assert seen[0] == lots[:20]
+
+
+def test_g4_rollback_report_does_not_print_misleading_deleted_counts(tmp_path, monkeypatch):
+    """G4: 롤백된 배치의 [증분] 삭제 행수도 [전체] 줄(F2)과 같은 문제다 - 곧
+    되돌려질 DELETE 결과를 확정된 것처럼 찍으면 안 된다."""
+    db = _seed(tmp_path)
+    buf = io.TextIOWrapper(io.BytesIO(), encoding="cp949")
+    monkeypatch.setattr(sys, "stdout", buf)
+
+    orphans = B_STEPS + [
+        {"root_lot_id": "B77B7", "wafer_id": "09", "step_seq": "CC002000",
+         "eqp_id": "ETCH9", "timestamp": "t"},
+        {"root_lot_id": "B77B7", "wafer_id": "10", "step_seq": "CC002000",
+         "eqp_id": "ETCH9", "timestamp": "t"}]
+    report = li.load_incremental([(["B77B7"], B_YIELDS, orphans)], db, verbose=True)
+    buf.flush()
+    out = buf.buffer.getvalue().decode("cp949")
+
+    assert report["fatal"] and not report["committed"]
+    assert "[증분] 대상 lot" not in out            # 라벨 없는 [증분] 줄은 찍히면 안 된다
+    assert "[증분](롤백 전) 대상 lot" in out
+
+
+def test_g5_negative_since_refuses(tmp_path, monkeypatch):
+    """G5: 음수 N 은 "오늘 - (-N)일" 로 미래 날짜가 된다 - 거의 항상 부호 실수다."""
+    monkeypatch.setattr(ya_config, "DB_PATH", tmp_path / "dummy.db")
+    monkeypatch.setattr(sys, "argv", ["load_internal.py", "--since", "-3"])
+
+    with pytest.raises(SystemExit) as exc:
+        li.main()
+    assert exc.value.code == 2
+
+
+def test_g6_lots_with_only_whitespace_and_commas_refuses(tmp_path, monkeypatch):
+    """G6: --lots 는 사람이 직접 타이핑한 값이다 - 공백·쉼표만 있어 결과가
+    비면 --since 가 0개를 찾는 것과 달리 거의 항상 입력 실수다."""
+    monkeypatch.setattr(ya_config, "DB_PATH", tmp_path / "dummy.db")
+    monkeypatch.setattr(sys, "argv", ["load_internal.py", "--lots", " , ,"])
+
+    with pytest.raises(SystemExit) as exc:
+        li.main()
+    assert exc.value.code == 2
+
+
+def test_g7_incremental_dummy_warning_says_lot_scoped_not_replaced(tmp_path, monkeypatch):
+    """G7: 증분 모드(--since/--lots)의 더미 경고는 "대체" 가 아니라 lot 단위
+    갱신임을 말해야 한다. --rebuild 는 "대체" 문구 그대로 유지."""
+    monkeypatch.setattr(ya_config, "DB_PATH", tmp_path / "dummy.db")
+    monkeypatch.setattr(li, "_extract_lot_ids", lambda since: [])
+    monkeypatch.setattr(sys, "argv", ["load_internal.py", "--since", "7"])
+    buf = io.TextIOWrapper(io.BytesIO(), encoding="cp949")
+    monkeypatch.setattr(sys, "stdout", buf)
+
+    with pytest.raises(SystemExit):
+        li.main()
+    buf.flush()
+    out = buf.buffer.getvalue().decode("cp949")
+
+    assert "대체됩니다" not in out
+    assert "대상 lot 만 갱신됩니다" in out
+
+
+def test_g8_cleanup_rollback_failure_does_not_mask_the_commit_error(tmp_path, monkeypatch):
+    """G8: COMMIT 도 실패하고, 정리 차 재시도하는 ROLLBACK 도 실패하는 분기.
+    F4 의 내부 try/except(정리용 ROLLBACK 보호)가 없으면 두 번째 실패가 첫 번째
+    실패(COMMIT, 사람이 봐야 할 진짜 사유)를 가린다."""
+    db = _seed(tmp_path)
+
+    class _FailingCommitAndRollbackConn(_CloseTrackingConn):
+        def execute(self, sql, *a):
+            if sql == "COMMIT":
+                raise sqlite3.OperationalError("database is locked")
+            if sql == "ROLLBACK":
+                raise sqlite3.OperationalError("cannot rollback - no transaction is active")
+            return self._real.execute(sql, *a)
+
+    real_connect = sqlite3.connect
+    holder = {}
+
+    def fake_connect(path):
+        w = _FailingCommitAndRollbackConn(real_connect(path))
+        holder["conn"] = w
+        return w
+
+    monkeypatch.setattr(li.sqlite3, "connect", fake_connect)
+
+    with pytest.raises(sqlite3.OperationalError, match="locked"):
+        li.load_incremental([(["A45Z5"], YIELDS, STEPS)], db, verbose=False)
+
+    assert holder["conn"].closed
+
+
+def test_g9_committed_zero_row_line_says_it_was_deleted(tmp_path, monkeypatch):
+    """G9: 커밋된 경우 0행 lot 줄은 추측("사라진 lot 일 수 있다")에 그치지 않고
+    이번 커밋으로 실제 지워졌다는 사실을 덧붙인다."""
+    db = _seed(tmp_path)
+    buf = io.TextIOWrapper(io.BytesIO(), encoding="cp949")
+    monkeypatch.setattr(sys, "stdout", buf)
+
+    report = li.load_incremental(
+        [(["B77B7", "Z00Z0"], B_YIELDS, B_STEPS)], db, verbose=True)
+    buf.flush()
+    out = buf.buffer.getvalue().decode("cp949")
+
+    assert report["committed"] and not report["fatal"]
+    assert "이번 커밋으로 DB 에서 지워졌다" in out
