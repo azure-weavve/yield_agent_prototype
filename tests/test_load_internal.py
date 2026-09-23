@@ -327,6 +327,7 @@ def test_a_broken_batch_is_blocked_even_though_the_db_is_mostly_clean(tmp_path):
     report = li.load_incremental([(["B77B7"], B_YIELDS, orphans)], db, verbose=False)
 
     assert report["fatal"] and not report["committed"]
+    assert any("고아" in f for f in report["fatal"])   # 어느 검사가 잡았는지
     assert _counts(db) == (2, 3)               # 원래 상태 그대로
 
 
@@ -422,6 +423,146 @@ def test_a_lot_typed_differently_from_the_request_is_blocked(tmp_path):
     assert report["fatal"] and not report["committed"]
     assert any("요청하지 않은 root_lot" in f for f in report["fatal"])
     assert _counts(db) == before
+
+
+def test_a_stray_lot_seen_only_in_yield_is_still_caught(tmp_path):
+    """yield 쪽 `_collect_lots` 가 빠지면 못 잡는 사고를 경로별로 좁혀 확인한다.
+
+    옛 테스트(`..._typed_differently_from_the_request_is_blocked`)는 yield·step
+    양쪽에 동시에 어긋난 표기를 보내서, 둘 중 한쪽 감시만 남아도 통과해 버렸다
+    (한쪽이 죽어도 다른 쪽이 잡는다). 여기서는 **yield 에만** 표기가 어긋난
+    wafer 를 하나 섞는다(부분 불일치 - wafer 1장은 정상, 1장만 "B77B7 ").
+    이 "B77B7 " 표기는 `_scope`(요청 lot "B77B7")밖이라 고아/이력없음 검사의
+    SELECT 자체에 안 잡힌다 — 잡히는 유일한 경로는 stray 비교(seen_lots)뿐이다.
+    """
+    db = _seed(tmp_path)
+    stray_yield = [
+        {"root_lot_id": "B77B7", "wafer_id": "01", "lot_id": "B77B7.1",
+         "lot_type": "PP", "yield": 88.0, "date": "2026-08-01"},
+        {"root_lot_id": "B77B7 ", "wafer_id": "02", "lot_id": "B77B7.1",
+         "lot_type": "PP", "yield": 70.0, "date": "2026-08-01"},
+    ]
+    normal_steps = [
+        {"root_lot_id": "B77B7", "wafer_id": "01", "step_seq": "CC002000",
+         "eqp_id": "ETCH9", "timestamp": "t"},
+        {"root_lot_id": "B77B7", "wafer_id": "02", "step_seq": "CC002000",
+         "eqp_id": "ETCH9", "timestamp": "t"},
+    ]
+    before = _counts(db)
+
+    report = li.load_incremental([(["B77B7"], stray_yield, normal_steps)], db,
+                                 verbose=False)
+
+    assert report["fatal"] and not report["committed"]
+    assert any("요청하지 않은 root_lot" in f for f in report["fatal"])
+    assert _counts(db) == before
+
+
+def test_a_stray_lot_seen_only_in_steps_is_still_caught(tmp_path):
+    """위 테스트의 반대 경로. step 쪽 `_collect_lots` 만 남아도 잡혀야 한다.
+
+    여기서는 **step 에만** "B77B7 " wafer 를 하나 섞는다(부분 불일치 - wafer 1장은
+    정상, 1장만 어긋난 표기). yield 쪽은 전부 정상 표기라 위 테스트와 독립적으로,
+    step 쪽 `_collect_lots` 가 빠지면 이 테스트만 죽어야 한다.
+    """
+    db = _seed(tmp_path)
+    normal_yield = [
+        {"root_lot_id": "B77B7", "wafer_id": "01", "lot_id": "B77B7.1",
+         "lot_type": "PP", "yield": 88.0, "date": "2026-08-01"},
+        {"root_lot_id": "B77B7", "wafer_id": "02", "lot_id": "B77B7.1",
+         "lot_type": "PP", "yield": 70.0, "date": "2026-08-01"},
+    ]
+    stray_steps = [
+        {"root_lot_id": "B77B7", "wafer_id": "01", "step_seq": "CC002000",
+         "eqp_id": "ETCH9", "timestamp": "t"},
+        {"root_lot_id": "B77B7 ", "wafer_id": "02", "step_seq": "CC002000",
+         "eqp_id": "ETCH9", "timestamp": "t"},
+    ]
+    before = _counts(db)
+
+    report = li.load_incremental([(["B77B7"], normal_yield, stray_steps)], db,
+                                 verbose=False)
+
+    assert report["fatal"] and not report["committed"]
+    assert any("요청하지 않은 root_lot" in f for f in report["fatal"])
+    assert _counts(db) == before
+
+
+def test_rollback_report_does_not_print_a_misleading_total_line(tmp_path, monkeypatch):
+    """롤백된 배치의 [전체] 줄이 곧 되돌려질 수치를 확정된 것처럼 찍으면 안 된다.
+
+    validate() 는 커밋 전에 돌므로 이 시점의 COUNT(*) 는 아직 커밋 안 된 이번
+    배치의 변경을 포함한다. 그대로 찍으면 롤백돼 사라질 수치가 사람 눈에는
+    확정된 것처럼 보인다.
+    """
+    db = _seed(tmp_path)
+    buf = io.TextIOWrapper(io.BytesIO(), encoding="cp949")
+    monkeypatch.setattr(sys, "stdout", buf)
+
+    orphans = B_STEPS + [
+        {"root_lot_id": "B77B7", "wafer_id": "09", "step_seq": "CC002000",
+         "eqp_id": "ETCH9", "timestamp": "t"},
+        {"root_lot_id": "B77B7", "wafer_id": "10", "step_seq": "CC002000",
+         "eqp_id": "ETCH9", "timestamp": "t"}]
+    report = li.load_incremental([(["B77B7"], B_YIELDS, orphans)], db, verbose=True)
+    buf.flush()
+    out = buf.buffer.getvalue().decode("cp949")
+
+    assert report["fatal"] and not report["committed"]
+    assert "[되돌림]" in out
+    assert "[전체] yield" not in out            # 라벨 없는 [전체] 줄은 찍히면 안 된다
+    assert "[전체](롤백 전)" in out
+
+
+def test_commit_failure_still_closes_the_connection_and_keeps_the_original_error(
+        tmp_path, monkeypatch):
+    """COMMIT 실패는 락 경합 등으로 라이브 DB 경로에서 현실적으로 일어난다.
+
+    connection 이 안 닫히면 다음 실행이 잠금을 못 얻는다. 그리고 정리 차 다시
+    시도하는 ROLLBACK 이 실패해도, 사람이 봐야 할 원래 실패 사유(COMMIT 실패)가
+    가려지면 안 된다.
+    """
+    db = _seed(tmp_path)
+
+    class _FailingCommitConn:
+        """COMMIT 만 가로채 실패시키고 나머지는 실제 connection 에 그대로 위임한다."""
+
+        def __init__(self, real):
+            object.__setattr__(self, "_real", real)
+            object.__setattr__(self, "closed", False)
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+        def __setattr__(self, name, value):
+            if name == "closed":
+                object.__setattr__(self, name, value)
+            else:
+                setattr(self._real, name, value)
+
+        def execute(self, sql, *a):
+            if sql == "COMMIT":
+                raise sqlite3.OperationalError("database is locked")
+            return self._real.execute(sql, *a)
+
+        def close(self):
+            object.__setattr__(self, "closed", True)
+            self._real.close()
+
+    real_connect = sqlite3.connect
+    holder = {}
+
+    def fake_connect(path):
+        w = _FailingCommitConn(real_connect(path))
+        holder["conn"] = w
+        return w
+
+    monkeypatch.setattr(li.sqlite3, "connect", fake_connect)
+
+    with pytest.raises(sqlite3.OperationalError, match="locked"):
+        li.load_incremental([(["A45Z5"], YIELDS, STEPS)], db, verbose=False)
+
+    assert holder["conn"].closed
 
 
 # --------------------------------------------------------------------------- #

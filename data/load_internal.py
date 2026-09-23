@@ -372,7 +372,20 @@ def load_incremental(chunks, db_path: Path, verbose: bool = True,
             f"이 행들은 lot 단위 삭제 키에 안 걸려 지워지지 않고 재적재마다 누적된다")
 
     committed = force or not report["fatal"]
-    conn.execute("COMMIT" if committed else "ROLLBACK")
+    try:
+        conn.execute("COMMIT" if committed else "ROLLBACK")
+    except BaseException:
+        # 라이브 DB 경로라 잠금 경합으로 COMMIT/ROLLBACK 자체가 실패할 수 있다.
+        # connection 이 안 닫히면 다음 실행이 잠금을 못 얻는다 — 반드시 닫는다.
+        # 여기서 다시 시도하는 ROLLBACK 이 실패해도 그 예외로 원래 예외를 가리지
+        # 않는다(사람이 봐야 할 것은 최초 실패 사유다).
+        try:
+            conn.execute("ROLLBACK")
+        except BaseException:
+            pass
+        finally:
+            conn.close()
+        raise
     conn.close()
 
     report.update(committed=committed, db_path=str(db_path), n_lots=len(lots),
@@ -554,7 +567,10 @@ def _print(r: dict) -> None:
     if "n_lots" in r:                       # 증분에서만
         _say(f"[증분] 대상 lot {r['n_lots']}개 · 삭제 yield {r['n_deleted_yield']}행"
              f" / step_history {r['n_deleted_steps']}행")
-        _say(f"[전체] yield {r['n_total_yield']}행 / step_history "
+        # 롤백되면 이 시점의 [전체] 카운트는 곧 되돌려질 값이다 — 확정된 것처럼
+        # 그냥 찍으면 사람이 커밋된 줄 착각한다. 커밋 여부를 라벨에 밝힌다.
+        total_label = "[전체]" if r.get("committed") else "[전체](롤백 전)"
+        _say(f"{total_label} yield {r['n_total_yield']}행 / step_history "
              f"{r['n_total_steps']}행 · root_lot {r['n_total_root_lots']}개")
     _say(f"[구성] root_lot {r['n_root_lots']}개 · 이력 보유 wafer {r['n_wafers_with_history']}장 "
          f"· lot_type {r['lot_types']}")
