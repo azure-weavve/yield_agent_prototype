@@ -131,8 +131,8 @@ python workflow.py run --task "docs/tasks/작업명"
 
 Codex는 AGENTS.md의 "Claude에서 인계받은 작업" 규칙에 따라 다음 순서로 처리한다.
 
-1. GPT-5.6 Terra가 `owner: codex` 범위를 구현하고 테스트한다.
-2. GPT-5.6 Sol (`high effort`)이 Codex 담당 구현을 독립 리뷰한다.
+1. GPT-6 Terra가 `owner: codex` 범위를 구현하고 테스트한다.
+2. GPT-6 Sol (`high effort`)이 Codex 담당 구현을 독립 리뷰한다.
 3. 지적이 있으면 Terra가 수정하고 Sol이 다시 리뷰한다.
 4. Codex 담당 범위가 정리되면 GPT-6 Astra (`low effort`)가 Claude와 Codex의 전체 변경사항을 최종 리뷰한다.
 5. Astra가 Codex 담당 범위의 결함을 찾으면 Terra 수정 → Sol 재리뷰 → Astra 전체 재리뷰 순서로 진행한다.

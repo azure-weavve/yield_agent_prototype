@@ -13,8 +13,8 @@ import time
 import uuid
 
 ROOT = Path(__file__).resolve().parent
-IMPLEMENTATION_MODEL = "gpt-5.6-terra"
-SCOPED_REVIEW_MODEL = "gpt-5.6-sol"
+IMPLEMENTATION_MODEL = "gpt-6-terra"
+SCOPED_REVIEW_MODEL = "gpt-6-sol"
 SCOPED_REVIEW_EFFORT = "high"
 REVIEW_MODEL = "gpt-6-astra"
 REVIEW_EFFORT = "low"
@@ -143,8 +143,8 @@ If transient operation lock fails, retry shortly. If run is not active or alread
 First inspect ownership markers in the plan. Implement only `owner: codex` scope; preserve
 completed Claude-owned changes. If ownership is missing or conflicts, stop and finish with
 needs_design_revision. Coordinate these separate contexts in order, never substituting models:
-1. gpt-5.6-terra implements, tests, and fixes Codex-owned scope.
-2. gpt-5.6-sol at high effort reviews only Codex-owned scope; reviewers never edit product code.
+1. gpt-6-terra implements, tests, and fixes Codex-owned scope.
+2. gpt-6-sol at high effort reviews only Codex-owned scope; reviewers never edit product code.
 3. Terra fixes valid Sol findings, runs relevant validation, and Sol re-reviews every fix.
 4. Only after Sol passes, gpt-6-astra at low effort reviews the full task diff, including
    Claude-owned work and the interfaces between scopes; Astra never edits product code.
@@ -174,7 +174,7 @@ Use complete only after fresh artifacts and required verification pass; every pl
 criterion is met; any Claude-owned scope was implemented by Sonnet and reviewed by Opus at high
 effort; Codex-owned scope passed Terra implementation and Sol's final high-effort review; no
 blocking findings remain; and Astra reviewed the final full revision at low effort.
-For complete, report gpt-5.6-terra; gpt-5.6-sol and high; gpt-6-astra and low, respectively.
+For complete, report gpt-6-terra; gpt-6-sol and high; gpt-6-astra and low, respectively.
 Model names and effort values are self-reports, not independent proof. Use empty strings for
 models/efforts not run.
 On missing capabilities or failed verification, record blocked with a concrete reason.

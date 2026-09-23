@@ -22,8 +22,8 @@ Before work:
 - do not start if the run ID is inactive or already claimed.
 
 Model flow:
-1. `gpt-5.6-terra`: implement/test/fix Codex-owned scope.
-2. Separate `gpt-5.6-sol` context at `high effort`: review Codex-owned scope.
+1. `gpt-6-terra`: implement/test/fix Codex-owned scope.
+2. Separate `gpt-6-sol` context at `high effort`: review Codex-owned scope.
 3. Terra fixes Sol findings; Sol re-reviews.
 4. After Codex scope passes, separate `gpt-6-astra` context at `low effort`: final review of the full task diff, including Claude-owned changes already reviewed by Opus.
 
@@ -69,7 +69,7 @@ Never overwrite another run's state if IDs differ. Do not edit state files direc
 - Never claim unrun validation passed.
 - Sol performs deep Codex-scope review; Astra performs final cross-scope integration review.
 
-## Codex Implementation — GPT-5.6 Terra
+## Codex Implementation — GPT-6 Terra
 
 1. Validate `plan.md` against the code.
 2. Implement only `owner: codex` scope.
@@ -89,7 +89,7 @@ Never overwrite another run's state if IDs differ. Do not edit state files direc
 
 For valid Sol/Astra Codex-scope findings, Terra fixes them, reruns relevant validation, and updates `handoff.md`. If rejecting a finding, record code/test evidence.
 
-## Codex Review — GPT-5.6 Sol (high effort)
+## Codex Review — GPT-6 Sol (high effort)
 
 Use a separate context at `high effort`. Do not edit product code.
 

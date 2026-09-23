@@ -109,8 +109,8 @@ def test_finish_recovers_marker_after_final_write(tmp_path,monkeypatch):
 def test_request_describes_ownership_review_order_and_docs(tmp_path):
  r,t=env(tmp_path);text=workflow.request(t,r,"run")
  for phrase in (
-  "owner: codex", "needs_design_revision", "gpt-5.6-terra",
-  "gpt-5.6-sol at high effort", "Only after Sol passes",
+  "owner: codex", "needs_design_revision", "gpt-6-terra",
+  "gpt-6-sol at high effort", "Only after Sol passes",
   "gpt-6-astra at low effort", "reviewers never edit product code",
   "Astra never edits product code", "Codex scoped review — Sol (high effort)",
  "Integrated final review — Astra (low effort)", "self-reports, not independent proof",

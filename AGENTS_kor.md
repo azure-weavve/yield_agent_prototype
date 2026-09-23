@@ -23,8 +23,8 @@
 
 인계된 작업에서는 다음 모델 분담을 사용한다.
 
-1. `gpt-5.6-terra`가 Codex 담당 범위를 구현·테스트·수정한다.
-2. 별도 컨텍스트의 `gpt-5.6-sol`이 `high effort`로 Codex 담당 구현을 리뷰한다.
+1. `gpt-6-terra`가 Codex 담당 범위를 구현·테스트·수정한다.
+2. 별도 컨텍스트의 `gpt-6-sol`이 `high effort`로 Codex 담당 구현을 리뷰한다.
 3. Sol 지적이 있으면 Terra가 수정하고 Sol이 수정본을 다시 리뷰한다.
 4. Codex 담당 구현 리뷰가 끝난 뒤 별도 컨텍스트의 `gpt-6-astra`가 `low effort`로 이번 작업의 전체 변경사항을 최종 리뷰한다.
 5. Astra는 Claude가 이미 구현하고 Opus가 리뷰한 범위까지 포함해 전체 통합 상태를 확인한다.
@@ -73,7 +73,7 @@ Claude나 `workflow.py run`을 재귀 호출하지 않는다.
 - 실행하지 않은 검증을 통과했다고 기록하지 않는다.
 - 서로 다른 리뷰 단계의 목적을 섞지 않는다. Sol은 Codex 구현 범위를 깊게 보고, Astra는 전체 통합 상태를 마지막에 확인한다.
 
-## Codex 구현 작업 — GPT-5.6 Terra
+## Codex 구현 작업 — GPT-6 Terra
 
 1. plan.md와 실제 코드의 일치 여부를 확인한다.
 2. `owner: codex`로 지정된 범위만 구현한다.
@@ -96,7 +96,7 @@ Sol 또는 Astra의 Codex 범위 지적을 받으면 타당성을 확인하고 �
 지적에 동의하지 않으면 코드나 검증 근거를 기록한다.
 수정 후 관련 검증과 handoff.md를 갱신한다.
 
-## Codex 범위 리뷰 — GPT-5.6 Sol (high effort)
+## Codex 범위 리뷰 — GPT-6 Sol (high effort)
 
 Terra 구현과 분리된 컨텍스트에서 `high effort`로 리뷰한다.
 제품 코드를 직접 수정하지 않고 코드 검사와 필요한 검증을 수행한다.

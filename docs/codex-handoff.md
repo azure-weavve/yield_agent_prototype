@@ -21,8 +21,8 @@ Codex 앱에서 대상 대화를 열어 진행과 추가 질문을 확인한다.
 1. 스크립트가 계획과 대상 UUID를 확인하고 실행별 요청 문서를 만든다.
 2. `codex queue`로 요청 문서의 경로를 앱 대화에 전달한다.
 3. 메인 Codex가 claim 명령으로 요청을 수락하고 running으로 기록한다.
-4. Terra (`gpt-5.6-terra`) 서브에이전트가 `owner: codex` 범위를 구현·테스트한다.
-5. 별도 Sol (`gpt-5.6-sol`, `high effort`) 컨텍스트가 Codex 범위를 리뷰한다.
+4. Terra (`gpt-6-terra`) 서브에이전트가 `owner: codex` 범위를 구현·테스트한다.
+5. 별도 Sol (`gpt-6-sol`, `high effort`) 컨텍스트가 Codex 범위를 리뷰한다.
    지적 사항은 Terra가 수정하고 Sol이 재검토한다. 통과 전에는 Astra로 진행하지 않는다.
 6. 별도 Astra (`gpt-6-astra`, `low effort`) 컨텍스트가 Claude 변경까지 포함한 최종 전체 변경을 리뷰한다.
    Claude 범위는 Sonnet 구현과 Opus 리뷰를 마친 상태여야 한다. 리뷰어는 제품 코드를 수정하지 않는다.
